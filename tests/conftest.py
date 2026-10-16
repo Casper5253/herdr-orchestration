@@ -20,3 +20,7 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch):
     # ocrun's default launch mode to visible (real console windows). A test
     # that needs the visible default sets the variable explicitly.
     monkeypatch.delenv("HERDR_ENV", raising=False)
+    # Likewise the session's pane id and prefix would make team_prefix() query
+    # the live herdr server instead of the policy under test.
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HX_HERDR_PREFIX", raising=False)

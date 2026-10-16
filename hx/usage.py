@@ -96,7 +96,7 @@ def resolve_claude_status_path(policy: dict[str, Any]) -> Path:
         return Path(env)
 
     state_dir = _claude_state_dir()
-    prefix = policy.get("team_prefix", "hx-")
+    prefix = team_prefix(policy)
     session_id = _lead_session_id(str(prefix))
     if session_id:
         candidate = state_dir / f"claude-status-{_safe_session_id(session_id)}.json"
@@ -463,6 +463,31 @@ def _herdr_agent_list() -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
+TEAM_AGENT = re.compile(r"([a-z0-9]+-)(?:claude|codex|opencode)")
+
+
+def team_prefix(policy: dict[str, Any]) -> str:
+    """The prefix of the team hx runs in (dev- or hx-), per the herdr-team skill.
+
+    HX_HERDR_PREFIX wins; otherwise the herdr agent whose pane is this pane
+    names the team; policy.team_prefix is the fallback outside Herdr.
+    """
+    env = os.environ.get("HX_HERDR_PREFIX")
+    if env:
+        return env
+    pane = os.environ.get("HERDR_PANE_ID")
+    if pane:
+        try:
+            agents = _herdr_agent_list().get("result", {}).get("agents", [])
+        except Exception:
+            agents = []
+        for agent in agents:
+            match = TEAM_AGENT.fullmatch(str(agent.get("name") or ""))
+            if agent.get("pane_id") == pane and match:
+                return match[1]
+    return str(policy.get("team_prefix", "hx-"))
+
+
 def agents_usage(
     policy: dict[str, Any],
     prefix: str | None = None,
@@ -471,7 +496,7 @@ def agents_usage(
     if now is None:
         now = _utcnow()
     if prefix is None:
-        prefix = os.environ.get("HX_HERDR_PREFIX", policy.get("team_prefix", "hx-"))
+        prefix = team_prefix(policy)
 
     try:
         data = _herdr_agent_list()

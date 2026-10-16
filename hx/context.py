@@ -148,7 +148,7 @@ class Controller:
         self.guard_path = Path(os.environ.get("HX_COMPACT_GUARD_PATH", self.ledger.leases_path.parent / "compact-guard.json"))
 
     def _agent(self, name: str) -> dict[str, Any]:
-        prefix = self.policy.get("team_prefix", "hx-")
+        prefix = usage.team_prefix(self.policy)
         if name not in {prefix + kind for kind in ("codex", "opencode", "claude")}:
             raise ValueError("agent is outside the configured team")
         return agent_info(name)
@@ -354,7 +354,7 @@ class Controller:
                     raise ValueError("compaction completion not verified in same session with lower fresh telemetry")
                 time.sleep(.25)
             next_action = checkpoint._extract_section(text, "Next action")
-            message = f"[team from {self.policy.get('team_prefix', 'hx-')}claude] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
+            message = f"[team from {usage.team_prefix(self.policy)}claude] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
             _herdr("prompt", name, message, "--wait", "--until", "idle", "--timeout", "300000", timeout=310)
             current = self._agent(name)
             reply = _herdr_read(name)
