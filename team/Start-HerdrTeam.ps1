@@ -1,9 +1,9 @@
 # Opens a Herdr team for one project: <team>-claude (lead), <team>-codex and <team>-opencode.
 # Usage (from any Herdr pane):
-#   & "$env:USERPROFILE\.herdr-team\Start-HerdrTeam.ps1" C:\path\to\repo [-Team dev|hx] [-NoOpenCode]
+#   & "$env:USERPROFILE\.herdr-team\Start-HerdrTeam.ps1" C:\path\to\repo [-Team <name>, default dev] [-NoOpenCode]
 #   Add -LeadPane <pane-id> to keep an already-running Claude as the lead: it is renamed <team>-claude and the
 #   other two agents open beside it in that pane's workspace instead of a new workspace.
-param([Parameter(Mandatory)][string]$Project, [ValidateSet('dev', 'hx')][string]$Team = 'dev', [string]$LeadPane, [switch]$NoOpenCode)
+param([Parameter(Mandatory)][string]$Project, [ValidatePattern('^[a-z0-9][a-z0-9-]*$')][string]$Team = 'dev', [string]$LeadPane, [switch]$NoOpenCode)
 
 $ErrorActionPreference = 'Stop'
 if ($env:HERDR_ENV -ne '1') { throw 'Run this from inside a Herdr pane.' }

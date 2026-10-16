@@ -1,4 +1,4 @@
-"""team_prefix: the dev- and hx- teams are both recognised, per the herdr-team skill."""
+"""team_prefix: any <team>- name is recognised, per the herdr-team skill."""
 from __future__ import annotations
 
 import pytest
@@ -9,11 +9,13 @@ AGENTS = {"result": {"agents": [
     {"name": "dev-claude", "pane_id": "w8:p1"},
     {"name": "dev-codex", "pane_id": "w8:p2"},
     {"name": "hx-claude", "pane_id": "w9:p1"},
+    {"name": "alpha-opencode", "pane_id": "w10:p3"},
+    {"name": "my-team-codex", "pane_id": "w11:p2"},
     {"agent": "claude", "pane_id": "w3:p1"},
 ]}}
 
 
-@pytest.mark.parametrize(("pane", "expected"), [("w8:p1", "dev-"), ("w8:p2", "dev-"), ("w9:p1", "hx-"), ("w3:p1", "hx-")])
+@pytest.mark.parametrize(("pane", "expected"), [("w8:p1", "dev-"), ("w8:p2", "dev-"), ("w9:p1", "hx-"), ("w10:p3", "alpha-"), ("w11:p2", "my-team-"), ("w3:p1", "hx-")])
 def test_prefix_comes_from_this_panes_agent(monkeypatch: pytest.MonkeyPatch, pane: str, expected: str) -> None:
     monkeypatch.setenv("HERDR_PANE_ID", pane)
     monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)

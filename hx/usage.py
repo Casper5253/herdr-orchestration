@@ -463,11 +463,11 @@ def _herdr_agent_list() -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
-TEAM_AGENT = re.compile(r"([a-z0-9]+-)(?:claude|codex|opencode)")
+TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)(?:claude|codex|opencode)")
 
 
 def team_prefix(policy: dict[str, Any]) -> str:
-    """The prefix of the team hx runs in (dev- or hx-), per the herdr-team skill.
+    """The prefix of the team hx runs in (any <team>- name), per the herdr-team skill.
 
     HX_HERDR_PREFIX wins; otherwise the herdr agent whose pane is this pane
     names the team; policy.team_prefix is the fallback outside Herdr.
