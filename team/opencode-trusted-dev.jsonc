@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Herdr trusted dev team overlay, loaded only via OPENCODE_CONFIG by Start-HerdrTeam.ps1.
+  // OpenCode 1.18 applies the LAST matching rule, so the narrow allows come after the herdr ask.
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "herdr *": "ask",
+      "herdr agent list*": "allow",
+      "herdr agent get *": "allow",
+      "herdr agent read *": "allow",
+      "herdr agent wait *": "allow",
+      "herdr pane list*": "allow",
+      "herdr pane read *": "allow",
+      "herdr status*": "allow",
+      "herdr --skill*": "allow",
+      "herdr agent prompt dev-claude *": "allow",
+      "herdr agent prompt dev-codex *": "allow"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+# Herdr trusted dev team. Rollback: delete this file.
+# Read-only discovery/status: run outside the sandbox without prompting.
+prefix_rule(pattern=["herdr", "agent", ["list", "get", "read", "wait"]], decision="allow")
+prefix_rule(pattern=["herdr", "pane", ["list", "read", "current", "layout", "get"]], decision="allow")
+prefix_rule(pattern=["herdr", ["workspace", "tab"], "list"], decision="allow")
+prefix_rule(pattern=["herdr", "status"], decision="allow")
+prefix_rule(pattern=["herdr", "--skill"], decision="allow")
+# Delegation only to the named trusted teammates (names exist only in a herdr-team workspace).
+prefix_rule(pattern=["herdr", "agent", "prompt", ["dev-claude", "dev-opencode"]], decision="allow")
+# Keyboard injection, raw pane control and agent lifecycle stay with the user.
+prefix_rule(pattern=["herdr", "agent", ["send-keys", "start", "rename", "focus", "attach"]], decision="prompt")
+prefix_rule(pattern=["herdr", "pane", ["run", "send-text", "send-keys", "close", "split", "move", "input"]], decision="prompt")
+prefix_rule(pattern=["herdr", ["workspace", "tab", "server", "worktree"], ["create", "close", "stop"]], decision="prompt")
+# Routine in-repo dev work (added 2026-10-12 to stop repeated approval prompts).
+# The project venv's base python lives under WindowsApps, which the MXC sandbox blocks, so these must run unprompted outside it.
+# Only plain commands match: no pipes, ';', '&&', $env expressions or powershell -Command wrappers.
+prefix_rule(pattern=[["backend/.venv/Scripts/python.exe", "backend\\.venv\\Scripts\\python.exe", ".venv/Scripts/python.exe", ".venv\\Scripts\\python.exe"]], decision="allow")
+prefix_rule(pattern=["git"], decision="allow")
+prefix_rule(pattern=["npm", "run", ["build", "lint", "test"]], decision="allow")
+prefix_rule(pattern=["npm.cmd", "run", ["build", "lint", "test"]], decision="allow")
+# Still prompt: push, reset, clean, rebase, checkout, restore.
