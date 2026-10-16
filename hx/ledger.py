@@ -220,11 +220,19 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
-def _release_lock(lock_path: Path) -> None:
-    try:
-        os.remove(lock_path)
-    except FileNotFoundError:
-        pass
+def _release_lock(lock_path: Path, attempts: int = 50, delay: float = 0.02) -> None:
+    # On Windows a waiter reading the lock's pid briefly holds the file open, and
+    # os.remove then fails with WinError 32 (sharing violation); retry for up to ~1s.
+    for attempt in range(attempts):
+        try:
+            os.remove(lock_path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 class LeaseLock:

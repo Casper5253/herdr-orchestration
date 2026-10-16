@@ -16,7 +16,7 @@ Repo: `hx/`, `hooks/`, `skills/`, `bench/`, `team/`, `install.ps1`, `policy.json
 Installed by `install.ps1` (every replaced file backed up as `*.bak-<timestamp>`): `~/.herdr-team/*` (launcher with `-Team`/`-LeadPane`, Claude team settings with hooks and status line, OpenCode overlay with glm-5.3-flash), `~/.codex/rules/herdr-team.rules` (hx-* prompts, `python -m pytest|hx`, `hx`), `~/.codex/trusted-dev.config.toml` (team-neutral identity, repo trust), `~/.agents/pstack/local/{herdr-team,hx-router}` + sync, `~/.local/bin/hx(.cmd)`, one pointer line in `~/.claude/CLAUDE.md`.
 
 ## 3. Model-routing policy
-OpenCode first: its allowances are per model, so the router walks a ladder and skips any model whose 5h, week or month window is above 85% or that hit a quota error in the last 30 minutes.
+OpenCode first. **Correction (16 Oct, FINDINGS 16): OpenCode Go is one shared pool** of about $60/month ($12 per 5h, $30 per week), not per-model allowances. The router reads availability from the pool, walks the ladder cheapest-capable first, and skips a model only for its own recent quota error. When the pool is above 85% it falls back to Codex gpt-6-luna or a Claude Sonnet subagent. At the time of writing the week is at 88%, so routine work is already routed to Codex.
 - economy: gpt-6-luna → glm-5.3-flash → qwen3.8-flash → mimo-v2.6-flash
 - default: qwen3.7-plus → glm-5.3-flash
 - strong: kimi-k2.7-code
@@ -46,7 +46,7 @@ Set at dispatch, never by reconfiguring a live session. low = discovery, mechani
 Workers write checkpoints (objective, decisions, exact errors, tests, next action); `hx task done` validates before closing and releases the session reservation. `hx compact <agent>` runs only at a completed task boundary: it reserves the session, validates the checkpoint, sends `/compact` through Herdr, verifies the same session came back smaller, and makes the worker acknowledge the checkpoint's next action with a nonce. A timeout or unverifiable outcome leaves `compact-unknown` and blocks dispatch until `hx context recover`. Mid-task pressure is left to native auto-compaction. The lead is compacted by Claude itself, with the PreCompact and SessionStart(compact) hooks carrying task state.
 
 ## 7. Tests and outcomes
-232 unit tests pass (`python -m pytest tests -q`). Live checks:
+240 unit tests pass (`python -m pytest tests -q`). Live checks:
 - Communication: Claude↔Codex, Claude↔OpenCode in both directions (Codex↔OpenCode relied on the earlier validation).
 - End-to-end on `e2e/todo-cli`: feature routed to the warm session (glm-5.3-flash) → implemented → Codex review (2 findings) → one correction round → 33 tests → merged → task closed with a valid checkpoint → **live compaction 310K → 31.6K tokens, same session** → follow-up task built by the compacted session reusing its earlier work (38 tests).
 - Escalation live: minimax-m3 capability failure → kimi-k2.7-code succeeded.
@@ -60,8 +60,11 @@ Workers write checkpoints (objective, decisions, exact errors, tests, next actio
 - Compaction cut the persistent worker's re-sent context by about 10x (310K → 31.6K).
 - No before/after number for a whole week of work yet: that needs `.hx/routing.jsonl` from real use. Claude and Codex usage avoided is not measured.
 
+## 8b. Codex sandbox
+Team Codex now runs CLI 0.163.0 with the normal elevated sandbox; 0.163.0 contains the fix for the 0.162.x regression (verified side by side). The MXC workaround is removed from the team profile; the desktop app's own Codex is untouched.
+
 ## 9. Known limitations
-- OpenCode quota is estimated from this machine's history only; there is no API for remaining Go allowance. Real 429/quota detection is unit-tested, never seen live.
+- OpenCode quota is estimated from this machine's history only (it matched the vendor dashboard within ~2 points on 16 Oct); there is no API for remaining Go allowance. Real 429/quota detection is unit-tested, never seen live.
 - Codex and Claude headroom often reads `unknown` (Codex refreshes only when Codex runs; Claude only in team sessions with the status line). The router treats unknown as usable, not exhausted.
 - Lead self-compaction is not proactive: the lead relies on Claude's auto-compact plus hooks. Whether a queued `/compact` to the lead's own pane runs after its turn is being tested last.
 - The hooks swallow errors to protect the session; they should also log what they swallow.
