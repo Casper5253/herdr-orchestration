@@ -79,5 +79,14 @@
   "excluded_models": {
     "deepseek-v4.1-flash": "APIError: requires Global regions (workspace privacy setting); docs/FINDINGS.md 5",
     "deepseek-v4-pro": "same provider restriction assumed; untested"
-  }
+  },
+  "context_limits": {
+    "glm-5.3-flash": 200000,
+    "qwen3.8-flash": 200000,
+    "mimo-v2.6-flash": 200000,
+    "minimax-m3": 200000,
+    "qwen3.7-plus": 200000,
+    "kimi-k2.7-code": 200000
+  },
+  "context_limits_note": "Effective limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code)."
 }
