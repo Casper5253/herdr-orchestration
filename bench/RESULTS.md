@@ -27,3 +27,7 @@ glm-5.3-flash on bugfix, debug, feature with `--variant low` vs `--variant high`
 
 No consistent effect: glm-5.3-flash declares no variants and barely reasons either way. For OpenCode, effort is expressed by model tier; `--variant` is only passed to models that declare variants.
 Same task, other pools (one run each, low effort): Codex `gpt-5.6-luna` pass in 28s with 155 reasoning tokens; Claude Sonnet subagent pass in 7s, ~39K tokens.
+
+## gpt-6-luna (OpenCode Go), 2026-10-16 (stamps luna6, luna6-retry)
+bugfix pass 26s $0.0030; feature: first run aborted mid-stream (last finish `tool-calls`, no final answer), retry pass 73s $0.0059; debug pass 53s $0.0045; refactor pass 111s $0.0087; tests pass 43s $0.0042 (caught both mutants, which qwen3.7-plus and kimi missed).
+About half glm-5.3-flash's cost; declares real variants (none..max, OpenAI reasoningEffort). Go cap is only $15/month, so it leads the economy ladder and the router rotates to glm when it fills.

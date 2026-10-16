@@ -25,10 +25,11 @@ Spend OpenCode Go first, because each OpenCode model has its own allowance (5h 2
 7. **Close**: the owner writes the checkpoint (`hx checkpoint write <id> --objective .. --decisions .. --errors <exact text or none> --tests '<cmd> -> <result>' --next ..`), then `hx task done <id>` (refuses to close on an invalid checkpoint; releases the task's reservations). A stranded reservation: `hx task release <id>`. Cross-family review (author ≠ reviewer) for anything risky.
 
 ## Models (OpenCode Go, from the 2026-10-16 benchmark)
-- economy: `glm-5.3-flash` (fast, 5/5), then `qwen3.8-flash`, `mimo-v2.6-flash`.
-- default: `minimax-m3`, `qwen3.7-plus`. minimax-m3 can burn its whole 32K reasoning budget and write nothing on large edits: give it bounded tasks.
+- economy: `gpt-6-luna` (cheapest, 5/5 with one aborted run retried, real effort variants; small $15 cap), then `glm-5.3-flash` (fast, 5/5), `qwen3.8-flash`, `mimo-v2.6-flash`.
+- default: `qwen3.7-plus`, then `glm-5.3-flash`. minimax-m3 is excluded: it burns its whole 32K reasoning budget and writes nothing on larger edits.
 - strong: `kimi-k2.7-code` (escalation only; about 6x glm cost per task).
 - persistent session model: `glm-5.3-flash`.
+- Codex fallback: economy `gpt-6-luna`, strong `gpt-6.1-sol` (`hx ocrun --worker codex --model <m> --effort <e>`). Claude fallback: a Sonnet subagent.
 - excluded: deepseek models (account needs the Global-regions privacy setting; that is the user's decision).
 Ladders, caps and thresholds live in `policy.json`. Re-run `bench/run.py` before changing defaults.
 

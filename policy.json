@@ -58,6 +58,7 @@
   "default_effort": "medium",
   "ladders": {
     "economy": [
+      "gpt-6-luna",
       "glm-5.3-flash",
       "qwen3.8-flash",
       "mimo-v2.6-flash"
@@ -104,6 +105,14 @@
       "low",
       "medium",
       "xhigh"
+    ],
+    "gpt-6-luna": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
     ]
   },
   "opencode_variants_note": "Declared --variant choices per model from opencode models --verbose (2026-10-16). glm-5.3-flash ignores an effort that is not one of these; route/ocrun must not send it.",
@@ -118,7 +127,8 @@
     "mimo-v2.6-flash": 200000,
     "minimax-m3": 200000,
     "qwen3.7-plus": 200000,
-    "kimi-k2.7-code": 200000
+    "kimi-k2.7-code": 200000,
+    "gpt-6-luna": 200000
   },
   "context_limits_note": "Effective limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code)."
 }
