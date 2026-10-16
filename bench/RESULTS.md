@@ -15,3 +15,15 @@ qwen3.7-plus and kimi-k2.7-code `tests` failures are genuine: their tests did no
 
 Decision: economy = glm-5.3-flash, default = minimax-m3 (also the persistent hx-opencode model), strong = kimi-k2.7-code.
 Caveat: one attempt per cell and small tasks; the benchmark separates economy from broken, not default from strong.
+
+## Effort (variant) test, 2026-10-16 (stamps effort-low, effort-high)
+glm-5.3-flash on bugfix, debug, feature with `--variant low` vs `--variant high` (now actually passed to `opencode run`; the first attempt only prefixed the prompt, and two runs shared one stamp).
+
+| task | low: pass / reasoning tok / cost | high: pass / reasoning tok / cost |
+|---|---|---|
+| bugfix | yes / 0 / $0.0050 | yes / 7 / $0.0043 |
+| debug | yes / 11 / $0.0050 | yes / 54 / $0.0057 |
+| feature | yes / 474 / $0.0083 | yes / 101 / $0.0058 |
+
+No consistent effect: glm-5.3-flash declares no variants and barely reasons either way. For OpenCode, effort is expressed by model tier; `--variant` is only passed to models that declare variants.
+Same task, other pools (one run each, low effort): Codex `gpt-5.6-luna` pass in 28s with 155 reasoning tokens; Claude Sonnet subagent pass in 7s, ~39K tokens.

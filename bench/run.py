@@ -53,6 +53,7 @@ def parse_events(events_path: Path) -> dict[str, Any]:
         "cache_read": 0,
         "cache_write": 0,
         "total_tokens": 0,
+        "reasoning_tokens": 0,
         "cost": 0.0,
         "tool_calls": 0,
         "tool_errors": 0,
@@ -78,12 +79,13 @@ def parse_events(events_path: Path) -> dict[str, Any]:
                     (tokens, "input"),
                     (tokens, "output"),
                     (tokens, "total"),
+                    (tokens, "reasoning"),
                     (cache, "read"),
                     (cache, "write"),
                 ):
                     val = src.get(key)
                     if isinstance(val, (int, float)):
-                        totals[f"{key}_tokens" if key in {"input", "output", "total"} else f"cache_{key}"] += val
+                        totals[f"{key}_tokens" if key in {"input", "output", "total", "reasoning"} else f"cache_{key}"] += val
                 cost = part.get("cost")
                 if isinstance(cost, (int, float)):
                     totals["cost"] += float(cost)
@@ -135,15 +137,18 @@ def git_init(repo: Path) -> None:
 
 
 def run_opencode(
-    model: str, repo: Path, prompt: str, timeout: int, events_path: Path
+    model: str, repo: Path, prompt: str, timeout: int, events_path: Path,
+    variant: str | None = None,
 ) -> tuple[int, str]:
     cmd = [
         "opencode", "run",
         "-m", f"opencode-go/{model}",
         "--format", "json",
         "--dir", str(repo),
-        prompt,
     ]
+    if variant:
+        cmd += ["--variant", variant]
+    cmd.append(prompt)
     events_path.parent.mkdir(parents=True, exist_ok=True)
     with events_path.open("wb") as out:
         try:
@@ -171,17 +176,15 @@ def run_check(task: str, repo: Path) -> tuple[bool, str, int]:
 def run_one(
     model: str, task: str, stamp: str, timeout: int, variant: str | None,
 ) -> dict[str, Any]:
-    run_dir = RUNS_DIR / stamp / model / task
+    run_dir = RUNS_DIR / stamp / (f"{model}@{variant}" if variant else model) / task
     copy_repo(task, run_dir)
     git_init(run_dir)
 
     prompt_text = (TASKS_DIR / task / "prompt.md").read_text(encoding="utf-8")
-    if variant:
-        prompt_text = f"(variant={variant})\n\n{prompt_text}"
 
     events_path = run_dir / "events.jsonl"
     t0 = time.monotonic()
-    exit_code, oc_err = run_opencode(model, run_dir, prompt_text, timeout, events_path)
+    exit_code, oc_err = run_opencode(model, run_dir, prompt_text, timeout, events_path, variant)
     latency = time.monotonic() - t0
 
     metrics = parse_events(events_path)
@@ -190,6 +193,7 @@ def run_one(
     record = {
         "stamp": stamp,
         "model": model,
+        "variant": variant,
         "task": task,
         "pass": passed,
         "reason": reason,
@@ -198,6 +202,7 @@ def run_one(
             "total": metrics["total_tokens"],
             "input": metrics["input_tokens"],
             "output": metrics["output_tokens"],
+            "reasoning": metrics["reasoning_tokens"],
             "cache_read": metrics["cache_read"],
             "cache_write": metrics["cache_write"],
         },
