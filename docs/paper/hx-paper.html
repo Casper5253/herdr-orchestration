@@ -1,0 +1,412 @@
+<title>hx: Herdr Team Control Plane</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap">
+<style>
+/* Layout: preprint. One 68ch reading column; evidence citations sit in a right margin rail on wide screens and fold inline on narrow ones. */
+:root {
+  --paper: #f6f7f5;
+  --ink: #1c2026;
+  --muted: #5b6470;
+  --rule: #d5d9dd;
+  --accent: #2c5a86;
+  --accent-soft: #e3ebf3;
+  --measured: #2f7a4f;
+  --estimated: #a06a12;
+  --unknown: #7a8088;
+  --bad: #a43b32;
+  --panel: #eceeeb;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #13171c; --ink: #dde2e8; --muted: #9aa3ad; --rule: #2c333b; --accent: #8db5dd;
+    --accent-soft: #1d2a37; --measured: #6fc395; --estimated: #e0b060; --unknown: #9aa1a9; --bad: #e58a80; --panel: #1a1f25;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #13171c; --ink: #dde2e8; --muted: #9aa3ad; --rule: #2c333b; --accent: #8db5dd;
+  --accent-soft: #1d2a37; --measured: #6fc395; --estimated: #e0b060; --unknown: #9aa1a9; --bad: #e58a80; --panel: #1a1f25;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--paper); color: var(--ink);
+  font-family: var(--f-body); font-size: 17px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 48px 96px; }
+.col { max-width: 68ch; }
+@media (min-width: 1100px) { .wrap { display: grid; grid-template-columns: minmax(0, 68ch) 1fr; column-gap: 48px; } .wrap > * { grid-column: 1; } .wrap > .wide { grid-column: 1 / -1; } }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 600; text-wrap: balance; line-height: 1.2; }
+h1 { font-size: clamp(2rem, 4.2vw, 2.9rem); margin: 0 0 12px; letter-spacing: -0.01em; }
+h2 { font-size: 1.45rem; margin: 56px 0 8px; padding-top: 16px; border-top: 1px solid var(--rule); }
+h2 .n, h3 .n { color: var(--accent); margin-right: 0.5em; font-variant-numeric: tabular-nums; }
+h3 { font-size: 1.1rem; margin: 32px 0 4px; }
+p { margin: 0 0 14px; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+code { background: var(--panel); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+.byline { font-family: var(--f-display); color: var(--muted); font-size: 0.95rem; letter-spacing: 0.02em; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 14px 0 28px; font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); }
+.abstract { background: var(--panel); padding: 20px 22px; border-left: 3px solid var(--accent); }
+.abstract h4 { margin: 0 0 6px; font-family: var(--f-display); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.8rem; color: var(--muted); }
+.abstract p:last-child { margin-bottom: 0; }
+.label { font-family: var(--f-display); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.74rem; color: var(--muted); }
+/* evidence citations: a small mono tag that points at a commit, finding or file */
+.cite { font-family: var(--f-mono); font-size: 0.72em; color: var(--accent); background: var(--accent-soft); padding: 0 4px; border-radius: 3px; white-space: nowrap; }
+.note { font-size: 0.84rem; line-height: 1.5; color: var(--muted); border-left: 2px solid var(--rule); padding: 2px 0 2px 12px; margin: 0 0 16px; }
+@media (min-width: 1100px) { .note { grid-column: 2; grid-row: span 3; align-self: start; margin-top: 4px; max-width: 34ch; } }
+.tag { font-family: var(--f-mono); font-size: 0.7rem; padding: 1px 6px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap; }
+.t-m { color: var(--measured); } .t-e { color: var(--estimated); } .t-u { color: var(--unknown); } .t-bad { color: var(--bad); }
+.tbl { overflow-x: auto; margin: 16px 0 22px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+th { font-family: var(--f-display); font-weight: 600; text-align: left; border-bottom: 1.5px solid var(--ink); padding: 6px 10px 6px 0; }
+td { border-bottom: 1px solid var(--rule); padding: 6px 10px 6px 0; vertical-align: top; }
+td.num, th.num { text-align: right; }
+caption { caption-side: bottom; text-align: left; font-size: 0.82rem; color: var(--muted); padding-top: 8px; }
+figure { margin: 22px 0 26px; }
+figcaption { font-size: 0.84rem; color: var(--muted); margin-top: 8px; }
+figcaption b { color: var(--ink); font-family: var(--f-display); }
+.diagram { overflow-x: auto; background: var(--panel); padding: 14px; border-radius: 4px; }
+pre.mermaid { margin: 0; font-family: var(--f-mono); font-size: 0.8rem; }
+svg text { fill: var(--ink); font-family: var(--f-mono); font-size: 11px; }
+svg .axis { stroke: var(--rule); }
+svg .bar { fill: var(--accent); }
+svg .bar-bad { fill: var(--bad); }
+svg .bar-alt { fill: var(--estimated); }
+svg .muted { fill: var(--muted); }
+ol.findings { padding-left: 1.4em; } ol.findings li { margin-bottom: 8px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 0.92rem; margin: 10px 0 18px; }
+.kv dt { font-family: var(--f-mono); font-size: 0.84rem; color: var(--accent); }
+.kv dd { margin: 0; min-width: 0; }
+.callout { border: 1px solid var(--rule); padding: 14px 18px; margin: 18px 0; }
+.callout .label { display: block; margin-bottom: 4px; }
+hr.end { border: 0; border-top: 1px solid var(--rule); margin: 56px 0 18px; }
+.refs { font-size: 0.86rem; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { a { transition: color .15s; } }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="col">
+  <div class="label">Technical report · Herdr team · 16 October 2026</div>
+  <h1>hx: a deterministic control plane for a three-agent coding team</h1>
+  <div class="byline">hx-claude (lead) · hx-codex (review, context controller) · hx-opencode (implementation) · for Casper</div>
+  <div class="meta">
+    <span>repo ~/Documents/Projects/herdr-orchestration</span>
+    <span>50 commits</span>
+    <span>240 unit tests</span>
+    <span>≈5 h wall clock</span>
+  </div>
+</header>
+
+<section class="abstract col">
+  <h4>Abstract</h4>
+  <p>Three coding agents from three vendors (Claude Code, Codex and OpenCode) already worked together as a Herdr team. Everyone picked models by hand, nobody tracked what any subscription had left, and long sessions re-sent hundreds of thousands of cached tokens per call. We built <b>hx</b>, a stdlib-only CLI plus two hooks and two skills, which turns routing, quota checks, task ownership, checkpointing and compaction into deterministic commands the lead calls. Models are only asked where judgment is needed.</p>
+  <p>The work was itself done by the team the tool now runs. A seven-model benchmark moved routine work off the most expensive model (Kimi K2.7, about 10× the cost per task of gpt-6-luna). A live end-to-end run compacted a worker from 310K to 31.6K tokens in the same session and resumed work on the next task. The user's own dashboard also refuted one founding assumption, that OpenCode Go limits are per model, and the design was corrected the same day. We report the architecture, the evidence for each choice, eleven bugs that only live runs exposed, and what is still unproven.</p>
+</section>
+
+<h2 class="col"><span class="n">1</span>Problem and constraints</h2>
+<p class="col">The team has three subscriptions with separate allowances. OpenCode Go is cheap and was meant to be spent first; Claude and Codex are scarce and better at judgment. The brief asked for automatic choices of worker, model, effort and route, plus autonomous context management, while keeping the existing Herdr workflow intact, keeping every change reversible, and avoiding new infrastructure.</p>
+<p class="col">Two constraints shaped everything else. First, <b>deterministic before generative</b>: availability, quotas, retries, ownership and compaction thresholds are facts a script can read, so they should not cost a model call. Second, <b>evidence before claims</b>: every provider fact in this report is tagged <span class="tag t-m">measured</span>, <span class="tag t-e">estimated</span> or <span class="tag t-u">unknown</span>, the same tags <code>hx usage</code> prints.</p>
+<aside class="note">Provider audits written by the team before any design: <span class="cite">docs/audit/codex.md</span> <span class="cite">opencode.md</span> <span class="cite">claude.md</span>. Each fact carries one of the three tags.</aside>
+
+<h2 class="col"><span class="n">2</span>Architecture</h2>
+<p class="col">hx is a control plane, not an agent. It has no daemon, database, broker or dashboard. Every component is a command that the lead, a hook or a worker calls, and all state is a small JSON or Markdown file.</p>
+<figure class="wide">
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+  subgraph Herdr["Herdr workspace (visible panes)"]
+    L["hx-claude<br/>lead"]
+    C["hx-codex<br/>review · hard work"]
+    O["hx-opencode<br/>persistent worker"]
+  end
+  subgraph HX["hx CLI (deterministic)"]
+    U["usage"] --> R["route"]
+    T["task · checkpoint"]
+    X["context · compact"]
+    W["ocrun (visible window)"]
+  end
+  subgraph State["files"]
+    P["policy.json"]
+    LD[".hx/ledger.json<br/>checkpoints/"]
+    RL[".hx/routing.jsonl"]
+    LS["~/.herdr-team/state<br/>leases.json"]
+  end
+  DB[("opencode.db")] --> U
+  CX[("codex rollouts")] --> U
+  SL[("claude status line")] --> U
+  L -- calls --> HX
+  R --> RL
+  T --> LD
+  X --> LS
+  X -- "/compact via herdr" --> O
+  W -- "opencode run / codex exec" --> WK["one-off worker<br/>PowerShell window"]
+  L -- "herdr agent prompt" --> C
+  L -- "herdr agent prompt" --> O
+  P --> R
+  </pre></div>
+  <figcaption><b>Figure 1.</b> hx sits beside the Herdr team. It reads three telemetry sources, decides with a policy file, and writes the ledger, checkpoints, leases and a routing log. Model calls happen only in the agents and workers.</figcaption>
+</figure>
+<div class="col">
+<dl class="kv">
+  <dt>hx usage</dt><dd>Headroom per pool and window, tagged by evidence quality.</dd>
+  <dt>hx route</dt><dd>Staged router: attempt cap → failure cause → pool → model ladder with fallback. Returns worker, model, effort, variant, method and a decision id.</dd>
+  <dt>hx task</dt><dd>Per-project ledger with canonical file ownership, worktree verification, session reservations and an O_EXCL lock with dead-pid stealing only.</dd>
+  <dt>hx checkpoint</dt><dd>Agent-authored state (decisions, exact errors, tests, next action) plus git facts, validated against the ledger revision.</dd>
+  <dt>hx context / compact</dt><dd>Decides and executes protected compaction of persistent workers at task boundaries.</dd>
+  <dt>hx ocrun</dt><dd>One-off OpenCode or Codex worker in its own visible PowerShell window; the result is read back and classified.</dd>
+</dl>
+</div>
+<aside class="note">Design reviewed twice by hx-codex before code (10 binding amendments, <span class="cite">9979389</span>) and again after code (10 + 3 findings, <span class="cite">06c4996</span> <span class="cite">b4dc26f</span>).</aside>
+
+<h2 class="col"><span class="n">3</span>Herdr orchestration and teams</h2>
+<p class="col">Herdr gives each agent a named pane and a socket CLI. A team is three named agents: the lead (Claude), Codex and OpenCode. They exchange short structured briefs and reports with <code>herdr agent prompt</code>. Diffs are never pasted: the reader runs <code>git diff</code> itself, which keeps messages to a few lines and context small.</p>
+
+<h3><span class="n">3.1</span>A second team beside the first</h3>
+<p class="col">Herdr names must be unique, and the original <code>dev-*</code> team was busy in another workspace. The launcher gained a <code>-Team dev|hx</code> prefix and a <code>-LeadPane</code> option that keeps an already-running Claude as lead. Trust rules were widened by name for the three agent families (Codex execpolicy rules, Claude <code>--settings</code>, an OpenCode config overlay), and the <code>herdr-team</code> skill now reads the prefix from the agent's own name.</p>
+<aside class="note">The auto-mode classifier refused to let the lead edit agent permission files itself. Every permission change therefore ships as a reviewed <code>install.ps1</code> the user runs once, and each replaced file is backed up first <span class="cite">dc59600</span>.</aside>
+
+<h3><span class="n">3.2</span>Persistent panes and one-off workers</h3>
+<p class="col">Iterative work goes to the warm persistent session; bounded work goes to a one-off worker with a per-task model. At first those workers ran headless. The user asked to see them, since a person spots an idle or stuck agent in seconds. Now every <code>hx ocrun</code> opens its own PowerShell window that stays open, and hx finds the run's result afterwards through <code>opencode export</code> or the Codex rollout.</p>
+<aside class="note">Visible mode <span class="cite">145727a</span>, Codex worker <span class="cite">e49c297</span>. OpenCode lists sessions per git root, so the lookup must run from the job's own directory <span class="cite">FINDINGS 15</span>.</aside>
+
+<h3><span class="n">3.3</span>The confined Codex, and how it ended</h3>
+<p class="col">Codex CLI 0.162.x shipped a Windows regression: the elevated sandbox's setup fails with <code>helper_unknown_error: setup refresh had errors</code> because Codex's own running helper holds a file the setup tries to re-permission (openai/codex #51634). The team ran Codex under the MXC preview sandbox instead, and Herdr commands escaped it through narrow execpolicy <code>allow</code> rules. 0.163.0 was released on 15 October and contains the fix (PR #51822). A side-by-side test settled it: the same <code>workspace-write</code> command fails on 0.162.1 and succeeds on 0.163.0. The team launcher now pins 0.163.0 for the Codex pane only, and the MXC workaround is removed from the team profile.</p>
+<aside class="note">Fix commit is an ancestor of tag <code>rust-v0.163.0</code> (202 ahead, 0 behind). Change <span class="cite">2c8cd53</span>.</aside>
+
+<h2 class="col"><span class="n">4</span>Skills globalization</h2>
+<p class="col">A skill written for one agent is invisible to the other two. The machine already had a single source, <code>~/.agents/pstack</code>, whose <code>sync.py</code> writes every skill to <code>~/.claude/skills</code> (read by Claude and OpenCode) and <code>~/.codex/skills</code>. hx added two skills through that path rather than beside it:</p>
+<div class="col">
+<dl class="kv">
+  <dt>herdr-team</dt><dd>The collaboration contract (brief and report formats, scope, two-round correction limit), now prefix-aware and pointing at hx.</dd>
+  <dt>hx-router</dt><dd>The lead's playbook: when to route, which model and effort, how to verify, when to compact, and what never to do.</dd>
+</dl>
+</div>
+<p class="col">The repo copies are the source; the installer copies them into <code>pstack/local</code>, runs <code>sync.py</code> and then <code>sync.py --check</code>, and aborts if the three mirrors disagree. One line in the global <code>CLAUDE.md</code> points every future lead at the skill. A skill is useful only if each agent actually loads it, so delivery was checked per agent (<code>opencode debug skill</code>, the Claude skill list) rather than assumed. That check caught a YAML bug: an unquoted <code>description</code> containing <code>": "</code> made the loader fall back to the heading.</p>
+<aside class="note">Frontmatter bug <span class="cite">FINDINGS 12</span>. Pointer line restored after an encoding bug turned an em dash into mojibake <span class="cite">FINDINGS 11</span> <span class="cite">3a25ab7</span>.</aside>
+
+<h2 class="col"><span class="n">5</span>Token efficiency through autonomy</h2>
+<p class="col">Autonomy is cheap when the routine decisions cost nothing. hx answers "who, which model, how hard, and is there room" with file reads and arithmetic. The lead spends its own tokens only on scoping, reviewing diffs and resolving disagreements.</p>
+
+<h3><span class="n">5.1</span>Where the money actually went</h3>
+<p class="col">The first measurement came from OpenCode's own message table, which stores a cost and token count for every assistant message. Over the seven days before this work, Kimi K2.7 accounted for $17.10 across 584 calls, re-sending about 138K cached tokens each time. Kimi had been the default persistent model.</p>
+
+<h3><span class="n">5.2</span>A founding assumption, refuted</h3>
+<p class="col">The OpenCode audit read the plan docs as granting a separate allowance per model, and the first router rotated models to multiply capacity. Late in the day the user reported their dashboard: 82% of the 5-hour window and 90% of the week. Summing local spend over all models reproduces both numbers within about two points, so the limit is one shared pool of about $60 a month: $12 per 5 hours and $30 per week.</p>
+<figure class="col">
+  <svg viewBox="0 0 640 170" width="100%" role="img" aria-label="OpenCode Go pool usage per window">
+    <text x="0" y="14" class="muted">5-hour window · cap ≈ $12</text>
+    <rect x="0" y="22" width="600" height="22" class="axis" fill="none" stroke-width="1"/>
+    <rect x="0" y="22" width="289.6" height="22" class="bar-bad"/>
+    <rect x="289.6" y="22" width="144.3" height="22" class="bar"/>
+    <rect x="433.9" y="22" width="51.1" height="22" class="bar-alt"/>
+    <text x="490" y="38">$9.70 = 81%</text>
+    <text x="0" y="78" class="muted">week · cap ≈ $30</text>
+    <rect x="0" y="86" width="600" height="22" class="axis" fill="none" stroke-width="1"/>
+    <rect x="0" y="86" width="448.5" height="22" class="bar-bad"/>
+    <rect x="448.5" y="86" width="58.2" height="22" class="bar"/>
+    <rect x="506.7" y="86" width="22.5" height="22" class="bar-alt"/>
+    <text x="535" y="102">$26.46 = 88%</text>
+    <rect x="0" y="132" width="12" height="12" class="bar-bad"/><text x="18" y="142">kimi-k2.7-code</text>
+    <rect x="140" y="132" width="12" height="12" class="bar"/><text x="158" y="142">glm-5.3-flash</text>
+    <rect x="280" y="132" width="12" height="12" class="bar-alt"/><text x="298" y="142">all others</text>
+    <text x="0" y="164" class="muted">bar length = share of the window's cap (600 px = 100%)</text>
+  </svg>
+  <figcaption><b>Figure 2.</b> Local spend from <code>opencode.db</code> against the inferred shared caps. The user's dashboard showed 82% and 90% at the same moment. Kimi alone used $22.43 of the week.</figcaption>
+</figure>
+<p class="col">The consequence is direct. Rotation adds no capacity, so the only lever inside OpenCode is cost per useful task, and the cheapest capable model wins. The router now reads availability from the pool and skips a model only for its own quota error. With the week at 90%, routine work is already falling through to Codex's cheap model, so the "OpenCode ran out" path is now the normal path rather than a hypothetical one.</p>
+<aside class="note">The correction was made by hx-codex rather than OpenCode, to protect what was left of the pool <span class="cite">6c328f2</span>. The fact that a local estimate matched the vendor dashboard within ~2 points also validates <code>hx usage</code> as a measurement <span class="cite">FINDINGS 16</span>.</aside>
+
+<h3><span class="n">5.3</span>Routing</h3>
+<figure class="wide">
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  A["task: kind, risk, size, attempt, last failure"] --> B{"attempt &gt; 3?"}
+  B -- yes --> S["strong model, high effort, then stop and report"]
+  B -- no --> F{"last failure?"}
+  F -- "missing context · unclear · tool" --> RE["same worker and model<br/>fix the brief, not the model"]
+  F -- "capability" --> UP["one tier up"]
+  F -- none --> K{"kind / risk"}
+  UP --> K
+  K -- trivial --> D["direct (lead does it)"]
+  K -- "review · high risk" --> CX["Codex gpt-6.1-sol, high"]
+  K -- architecture --> CL["Claude"]
+  K -- other --> POOL{"OpenCode pool below 85%?"}
+  POOL -- yes --> LAD["ladder: economy → default → strong<br/>skip models with their own quota error"]
+  POOL -- no --> FB{"Codex or Claude headroom?"}
+  FB -- "Codex" --> CXL["Codex gpt-6-luna (hx ocrun --worker codex)"]
+  FB -- "Claude" --> SON["Claude Sonnet subagent"]
+  FB -- "none" --> DEF["defer until earliest reset"]
+  LAD --> M{"iterative and warm session's model in tier?"}
+  M -- yes --> PER["persistent pane"]
+  M -- no --> OC["hx ocrun (visible window)"]
+  </pre></div>
+  <figcaption><b>Figure 3.</b> The staged router after both review rounds and the e2e fixes. Stages run in order; each stage is recorded in the decision's <code>stages</code> list and its line in <code>routing.jsonl</code>.</figcaption>
+</figure>
+<p class="col">Two rules carry most of the savings. A failure caused by missing context, an unclear brief or a broken tool never escalates the model, because a bigger model does not fix a bad input. And iterative work prefers the warm persistent session whenever its model is in the chosen tier, because re-reading cached context is cheaper than starting a fresh worker. The second rule came from the end-to-end run: ladder order had made the persistent glm session unreachable for medium work.</p>
+<aside class="note">Warm-session rule <span class="cite">7e0ea05</span>. Live escalation: minimax-m3 → kimi-k2.7-code after a capability failure, then kimi succeeded <span class="cite">b2e4d01</span>.</aside>
+
+<h2 class="col"><span class="n">6</span>Model intelligence</h2>
+<h3><span class="n">6.1</span>Benchmark</h3>
+<p class="col">Five small tasks with hidden acceptance checks (bug fix, three-file feature, misleading-traceback debug, refactor, test writing judged by seeded mutants), one run per cell, through <code>opencode run --format json</code>. Every grader was checked against the untouched repo (must fail) and a reference solution (must pass). That check later caught a grader that wrongly failed four correct refactors.</p>
+<div class="tbl wide">
+<table>
+  <thead><tr><th>model (OpenCode Go)</th><th class="num">pass</th><th class="num">median s</th><th class="num">cost, 5 tasks</th><th>notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>gpt-6-luna</code></td><td class="num">5/5</td><td class="num">43</td><td class="num">$0.023</td><td>one aborted stream, retry passed; real effort variants</td></tr>
+    <tr><td><code>mimo-v2.6-flash</code></td><td class="num">5/5</td><td class="num">142</td><td class="num">$0.028</td><td>cheap, slow</td></tr>
+    <tr><td><code>qwen3.8-flash</code></td><td class="num">5/5</td><td class="num">125</td><td class="num">$0.046</td><td></td></tr>
+    <tr><td><code>glm-5.3-flash</code></td><td class="num">5/5</td><td class="num">46</td><td class="num">$0.047</td><td>persistent worker; fastest</td></tr>
+    <tr><td><code>qwen3.7-plus</code></td><td class="num">4/5</td><td class="num">60</td><td class="num">$0.081</td><td>weak tests; strong on real fixes ($0.094 slice)</td></tr>
+    <tr><td><code>minimax-m3</code></td><td class="num">5/5</td><td class="num">51</td><td class="num">$0.106</td><td><span class="tag t-bad">excluded</span> 4 of 6 real edits empty</td></tr>
+    <tr><td><code>kimi-k2.7-code</code></td><td class="num">4/5</td><td class="num">106</td><td class="num">$0.273</td><td>escalation only</td></tr>
+    <tr><td><code>deepseek-v4.1-flash</code></td><td class="num">0/5</td><td class="num">–</td><td class="num">–</td><td><span class="tag t-bad">excluded</span> account needs Global regions</td></tr>
+  </tbody>
+  <caption>Table 1. One run per cell on small tasks: good for excluding broken models, weak for ranking close ones. <span class="cite">bench/RESULTS.md</span></caption>
+</table>
+</div>
+<figure class="col">
+  <svg viewBox="0 0 640 200" width="100%" role="img" aria-label="Benchmark cost per model">
+    <line x1="150" y1="8" x2="150" y2="178" class="axis" stroke-width="1"/>
+    <text x="0" y="22">gpt-6-luna</text><rect x="150" y="12" width="40.4" height="14" class="bar"/><text x="196" y="23">0.023</text>
+    <text x="0" y="44">mimo-v2.6-flash</text><rect x="150" y="34" width="49.2" height="14" class="bar"/><text x="205" y="45">0.028</text>
+    <text x="0" y="66">qwen3.8-flash</text><rect x="150" y="56" width="80.9" height="14" class="bar"/><text x="237" y="67">0.046</text>
+    <text x="0" y="88">glm-5.3-flash</text><rect x="150" y="78" width="82.6" height="14" class="bar"/><text x="239" y="89">0.047</text>
+    <text x="0" y="110">qwen3.7-plus</text><rect x="150" y="100" width="142.4" height="14" class="bar"/><text x="298" y="111">0.081</text>
+    <text x="0" y="132">minimax-m3</text><rect x="150" y="122" width="186.4" height="14" class="bar-alt"/><text x="342" y="133">0.106</text>
+    <text x="0" y="154">kimi-k2.7-code</text><rect x="150" y="144" width="480" height="14" class="bar-bad"/><text x="574" y="155" class="muted">0.273</text>
+    <text x="150" y="194" class="muted">USD for the five tasks · 480 px = $0.273</text>
+  </svg>
+  <figcaption><b>Figure 4.</b> Cost for the same five tasks, drawn to one scale. Kimi costs about 12× gpt-6-luna and 6× glm-5.3-flash for no better pass rate.</figcaption>
+</figure>
+
+<h3><span class="n">6.2</span>Failure modes that only appear on real work</h3>
+<p class="col">minimax-m3 passed the benchmark and then failed four of six real edits the same way. After reading about 35–40K tokens of context, it spent its fixed 32K reasoning budget and stopped with <code>finish=length</code> and zero or near-zero output. It has no variant that lowers thinking, so it was excluded. Headless runs also exited with code 0 after an API error, after an auto-rejected permission, and after a truncated stream. <code>hx ocrun</code> therefore judges a run by its event stream and requires a real final finish reason, never by the exit code.</p>
+<aside class="note"><span class="cite">FINDINGS 4 6 7 9 10</span>. A false "permission rejected" came from matching the word inside a file the worker had read; detection now looks only at failed tool calls <span class="cite">7a58c09</span>.</aside>
+
+<h3><span class="n">6.3</span>Effort</h3>
+<p class="col">Effort is set at dispatch and never by reconfiguring a live session. The measurements split the providers cleanly. Codex <code>model_reasoning_effort</code> is a real control (Luna at low effort used 155 reasoning tokens and passed). A Claude subagent's <code>effort</code> is a real control (Sonnet at low effort passed in 7 s). On OpenCode, glm-5.3-flash declares low, high and max but showed no consistent difference across three tasks, while gpt-6-luna exposes OpenAI's reasoning effort directly. The router therefore passes <code>--variant</code> only to models that declare it and otherwise expresses effort through the model tier.</p>
+<div class="tbl col">
+<table>
+  <thead><tr><th>glm-5.3-flash</th><th class="num">low: reasoning tok</th><th class="num">low: $</th><th class="num">high: reasoning tok</th><th class="num">high: $</th></tr></thead>
+  <tbody>
+    <tr><td>bugfix</td><td class="num">0</td><td class="num">0.0050</td><td class="num">7</td><td class="num">0.0043</td></tr>
+    <tr><td>debug</td><td class="num">11</td><td class="num">0.0050</td><td class="num">54</td><td class="num">0.0057</td></tr>
+    <tr><td>feature</td><td class="num">474</td><td class="num">0.0083</td><td class="num">101</td><td class="num">0.0058</td></tr>
+  </tbody>
+  <caption>Table 2. All six runs passed. The first attempt at this test was invalid: the runner wrote the variant into the prompt text instead of passing <code>--variant</code> <span class="cite">4699413</span>.</caption>
+</table>
+</div>
+
+<h2 class="col"><span class="n">7</span>Compaction logic</h2>
+<p class="col">Compaction is not automatically cheaper: it costs a summarisation call, breaks the warm cache and can lose detail. hx therefore compacts persistent workers only where all three risks are lowest, at a finished task boundary. Under pressure in the middle of a task, it relies on each tool's native auto-compaction instead.</p>
+<figure class="wide">
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  participant L as lead (hx compact)
+  participant S as leases.json
+  participant W as worker pane
+  L->>L: decide: idle, task done, utilisation ≥ 0.40 of effective limit
+  L->>S: reserve session (state compacting, nonce)
+  L->>L: validate checkpoint (authored sections, ledger rev, no unowned dirt)
+  L->>W: herdr agent prompt "/compact"
+  W-->>L: idle again
+  L->>L: same session id? fresh telemetry lower?
+  L->>W: "Read checkpoint; reply with nonce + Next action"
+  W-->>L: nonce + Next action (matched across TUI wrapping)
+  L->>S: release (or keep compact-unknown on any doubt)
+  </pre></div>
+  <figcaption><b>Figure 5.</b> Protected compaction. Any step that cannot be verified leaves the session in <code>compact-unknown</code>, which blocks dispatch until <code>hx context recover</code>. The task is never retried, so it cannot loop.</figcaption>
+</figure>
+<p class="col">The effective limit is capped at 200K tokens even for 1M-token models, because each call re-sends the whole context as cached input, so cost pressure arrives long before the native window fills. The lead is compacted by Claude Code itself. Its <code>PreCompact</code> hook lists active tasks and their next actions and tells the summary to keep exact error strings verbatim. Its <code>SessionStart(compact)</code> hook restores each active task's validated checkpoint, with the next action first.</p>
+<div class="callout col">
+  <span class="label">Live result</span>
+  The e2e worker had grown to about 310K tokens (1.55 × the effective limit). <code>hx compact</code> brought it to <b>31.6K tokens in the same session</b>, and the worker acknowledged the checkpoint with the nonce. Verification then failed for two reasons no unit test could see: <code>herdr agent read</code> returns plain text, not JSON, and OpenCode hard-wraps long replies (<code>re-</code> / <code>review</code>). The controller correctly reported <code>compact-unknown</code> instead of success. Both bugs were fixed and re-checked against the real pane text, where the old matcher returned False and the new one True.
+</div>
+<aside class="note">Controller <span class="cite">b56a9a7</span>, shared lease lock <span class="cite">b4dc26f</span>, cross-repo fix <span class="cite">7760151</span>, live fixes <span class="cite">7b73092</span>.</aside>
+
+<h2 class="col"><span class="n">8</span>Obsidian knowledge storing</h2>
+<p class="col">The brief described three memory layers. hx builds only the middle one, because the outer two already existed on this machine.</p>
+<div class="tbl wide">
+<table>
+  <thead><tr><th>layer</th><th>holds</th><th>lives in</th><th>written by</th></tr></thead>
+  <tbody>
+    <tr><td>A · durable memory</td><td>project state, decisions, lessons; immutable session notes</td><td>Obsidian vault <code>FDE Knowledge</code> (PARA: 0-Sessions … 4-Archive)</td><td>agentmem capture hooks in all three agents, reconciled into project notes; <code>mem remember</code></td></tr>
+    <tr><td>B · task checkpoints</td><td>objective, decisions, exact errors, tests, next action for one task</td><td><code>&lt;repo&gt;/.hx/checkpoints/</code>, revision-locked to the ledger</td><td>the owning agent, through <code>hx checkpoint write</code></td></tr>
+    <tr><td>C · working context</td><td>the live conversation</td><td>each agent's session</td><td>compacted by hx (workers) or Claude (lead)</td></tr>
+  </tbody>
+  <caption>Table 3. Durable decisions are promoted from B to A with <code>mem remember</code>; hx never duplicates the vault.</caption>
+</table>
+</div>
+<p class="col">agentmem treats sessions as evidence and project notes as current knowledge. Session notes are immutable. Project notes have managed blocks that a reconciliation pass rewrites, moving contradicted decisions to "Superseded" rather than erasing them. This matters for hx: the vault's own Herdr notes recorded per-model OpenCode limits until today's correction, and the reconcile rule is what keeps that history visible next to the fix. The vault currently holds 68 notes and has captured 19 sessions through the pipeline. This session's outcome was written there before this report <span class="cite">mem remember · consolidated</span>.</p>
+<aside class="note">One open capture error in the vault: an OpenCode session export failed five times. It is unrelated to hx and is recorded by <code>mem stats</code>.</aside>
+
+<h2 class="col"><span class="n">9</span>Evaluation</h2>
+<p class="col">The suite has 240 unit tests, all with faked agents and telemetry. The live checks below were run against real agents, real models and real files, and every result was verified by the lead from diffs and test output rather than from the reporting agent's word.</p>
+<div class="tbl wide">
+<table>
+  <thead><tr><th>check</th><th>result</th><th>evidence</th></tr></thead>
+  <tbody>
+    <tr><td>Feature routed to the warm session, built, reviewed by Codex, corrected once, merged</td><td><span class="tag t-m">pass</span> 33 tests</td><td>e2e/todo-cli <span class="cite">e0521e9</span></td></tr>
+    <tr><td>Task closed with a valid checkpoint; reservation released</td><td><span class="tag t-m">pass</span></td><td><code>hx task done</code> rev 5</td></tr>
+    <tr><td>Live compaction of a worker</td><td><span class="tag t-m">pass</span> 310K → 31.6K</td><td>same session id</td></tr>
+    <tr><td>Next task built by the compacted session, reusing its earlier code</td><td><span class="tag t-m">pass</span> 38 tests</td><td><code>Store.is_overdue()</code> reused</td></tr>
+    <tr><td>Lead hooks carry exact errors and next action</td><td><span class="tag t-m">pass</span> by direct invocation</td><td>this lead predates the install</td></tr>
+    <tr><td>Escalation on a capability failure</td><td><span class="tag t-m">pass</span> minimax → kimi</td><td><span class="cite">b2e4d01</span></td></tr>
+    <tr><td>Codex fallback worker in a visible window</td><td><span class="tag t-m">pass</span> gpt-6-luna, low</td><td><span class="cite">e49c297</span></td></tr>
+    <tr><td>Claude fallback (Sonnet subagent, low effort)</td><td><span class="tag t-m">pass</span> 7 s</td><td>bench bugfix</td></tr>
+    <tr><td>Codex 0.163.0 elevated sandbox vs 0.162.1</td><td><span class="tag t-m">pass</span> vs fail</td><td><span class="cite">2c8cd53</span></td></tr>
+    <tr><td>OpenCode really running out (429 seen live)</td><td><span class="tag t-u">not observed</span></td><td>unit-tested only</td></tr>
+  </tbody>
+  <caption>Table 4. Live checks. Eleven bugs surfaced only here, and the faked tests had passed every one of them (FINDINGS 4, 6, 7, 10–13 and the e2e fixes).</caption>
+</table>
+</div>
+
+<h2 class="col"><span class="n">10</span>Limits and threats to validity</h2>
+<ul class="col">
+  <li>OpenCode headroom is estimated from this machine's history. It matched the dashboard today, but use from another device would not be counted, and no vendor API exposes the remaining allowance.</li>
+  <li>Codex and Claude headroom often read <span class="tag t-u">unknown</span>: Codex refreshes only when Codex runs, and Claude only in team sessions with the status line. The router treats unknown as usable, not exhausted.</li>
+  <li>The lead is not compacted proactively; it relies on Claude's auto-compact and the hooks. Whether a queued <code>/compact</code> to the lead's own pane runs after its turn is the last open test.</li>
+  <li>Benchmark cells are single runs on small tasks.</li>
+  <li>No whole-week savings figure exists yet. That needs <code>routing.jsonl</code> from real use. The per-task numbers above are the evidence today.</li>
+</ul>
+
+<h2 class="col"><span class="n">11</span>Findings, in order of discovery</h2>
+<ol class="findings col">
+  <li>Kimi was the heavy pool: about 138K cached tokens per call.</li>
+  <li><code>/compact</code> through Herdr works, but Git Bash rewrites it into <code>C:/Program Files/Git/compact</code>.</li>
+  <li>Headless OpenCode exits 0 on rejected permissions, API errors and truncated streams.</li>
+  <li>deepseek models need an account privacy setting.</li>
+  <li>minimax-m3 exhausts a fixed 32K reasoning budget with no output on real edits.</li>
+  <li>Graders must be validated in both directions; one failed four correct answers.</li>
+  <li>A catch-all in "never fail the session" hooks hid an ImportError.</li>
+  <li>PowerShell 5.1 reads BOM-less UTF-8 as ANSI.</li>
+  <li>Unquoted YAML descriptions break skill loading.</li>
+  <li>Ladder order starved the warm persistent session.</li>
+  <li>Pane text is not JSON, and TUIs hard-wrap replies.</li>
+  <li>glm's declared effort variants made no measurable difference.</li>
+  <li>OpenCode Go is one shared pool, not per-model allowances.</li>
+  <li>Codex 0.163.0 fixes the sandbox regression; the MXC workaround is retired.</li>
+  <li>On Windows, deleting a lock file races with a reader of that file; release now retries.</li>
+</ol>
+
+<h2 class="col"><span class="n">12</span>Next steps</h2>
+<ol class="col">
+  <li>After one to two weeks of use, summarise <code>routing.jsonl</code> by model and pool and re-tune the ladders.</li>
+  <li>Make lead self-compaction proactive at task boundaries, depending on the queued-<code>/compact</code> test.</li>
+  <li>Re-benchmark on harder multi-file tasks with three runs per cell, including gpt-6-luna at low versus medium.</li>
+  <li>Log what hooks swallow; store method and model on <code>task assign</code>.</li>
+  <li>Decide whether to enable the Global-regions setting for deepseek.</li>
+</ol>
+
+<hr class="end col">
+<p class="refs col">Sources: <code>docs/ARCHITECTURE.md</code>, <code>docs/FINDINGS.md</code>, <code>docs/REPORT.md</code>, <code>bench/RESULTS.md</code>, <code>docs/audit/*</code>, git history of <code>herdr-orchestration</code> (50 commits), <code>opencode.db</code> message costs, Codex rollout <code>token_count</code> events, openai/codex issue #51634 and PR #51822.</p>
+
+</div>
