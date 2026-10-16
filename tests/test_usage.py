@@ -62,14 +62,14 @@ def _make_opencode_db(db_path: Path, now: datetime.datetime) -> None:
             (f"msg_{minutes_ago}_{model_id}", "ses_1", ts, ts, json.dumps(data)),
         )
 
-    insert("deepseek-v4.1-flash", 1.0, 30)
-    insert("deepseek-v4.1-flash", 2.0, 360)  # 6h ago
-    insert("deepseek-v4.1-flash", 4.0, 8 * 24 * 60)  # 8d ago
+    insert("glm-5.3-flash", 1.0, 30)
+    insert("glm-5.3-flash", 2.0, 360)  # 6h ago
+    insert("glm-5.3-flash", 4.0, 8 * 24 * 60)  # 8d ago
     insert("mimo-v2.6-flash", 0.5, 10)
     # Error within last 24h.
-    insert("deepseek-v4.1-flash", 0.0, 60, finish="error")
+    insert("glm-5.3-flash", 0.0, 60, finish="error")
     # User message should be ignored.
-    insert("deepseek-v4.1-flash", 99.0, 5, role="user")
+    insert("glm-5.3-flash", 99.0, 5, role="user")
     # Model outside policy ladders should be ignored.
     insert("some-other-model", 50.0, 5)
     conn.commit()
@@ -79,7 +79,7 @@ def _make_opencode_db(db_path: Path, now: datetime.datetime) -> None:
 def test_load_policy() -> None:
     p = load_policy()
     assert p["active_plan"] == "go"
-    assert "deepseek-v4.1-flash" in p["plans"]["go"]["monthly_caps"]
+    assert "glm-5.3-flash" in p["plans"]["go"]["monthly_caps"]
     assert p["thresholds"]["pool_soft_limit"] == 0.85
 
 
@@ -93,7 +93,7 @@ def test_opencode_usage(tmp_path: Path, policy: dict, now: datetime.datetime) ->
     assert result["plan"] == "go"
     assert result["sample_age_seconds"] == 10 * 60  # newest message is 10 min old
 
-    flash = result["models"]["deepseek-v4.1-flash"]
+    flash = result["models"]["glm-5.3-flash"]
     assert flash["windows"]["5h"]["spend"] == 1.0
     assert flash["windows"]["7d"]["spend"] == 3.0
     assert flash["windows"]["30d"]["spend"] == 7.0
@@ -104,8 +104,8 @@ def test_opencode_usage(tmp_path: Path, policy: dict, now: datetime.datetime) ->
     assert mimo["windows"]["5h"]["spend"] == 0.5
     assert mimo["windows"]["7d"]["spend"] == 0.5
 
-    # 5h cap for deepseek-v4.1-flash on go is 80 * 0.2 = 16
-    assert flash["windows"]["5h"]["cap"] == 16.0
+    # 5h cap for glm-5.3-flash on go is 60 * 0.2 = 12
+    assert flash["windows"]["5h"]["cap"] == 12.0
 
 
 def test_opencode_usage_missing_db(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
