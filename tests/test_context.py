@@ -45,6 +45,8 @@ def controller(tmp_path, monkeypatch):
         return {"result": {"type": "agent_prompted"}}
 
     monkeypatch.setattr(context, "_herdr", herdr)
+    # herdr agent read returns plain pane text, not JSON.
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
     return c
 
 
@@ -230,6 +232,8 @@ def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
     def timeout(*a, **kw):
         raise subprocess.TimeoutExpired("herdr", 310)
     monkeypatch.setattr(context, "_herdr", timeout)
+    # herdr agent read returns plain pane text, not JSON.
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=timeout: _h("read", name)["result"]["text"])
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
     assert "leased" in controller.decide("hx-codex")["reason"]
     assert controller.recover("hx-codex")["action"] == "keep"
@@ -260,6 +264,8 @@ def test_unverified_completion_is_unknown(controller, monkeypatch, failure):
             return {"result": {"text": "I forgot."}}
         return result
     monkeypatch.setattr(context, "_herdr", herdr)
+    # herdr agent read returns plain pane text, not JSON.
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]["state"] == "compact-unknown"
 
@@ -305,6 +311,8 @@ def test_stale_acknowledgement_without_current_nonce_rejected(controller, monkey
             return {"result": {"text": "Run acceptance."}}
         return original(*args, **kwargs)
     monkeypatch.setattr(context, "_herdr", herdr)
+    # herdr agent read returns plain pane text, not JSON.
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
 
 
@@ -396,6 +404,8 @@ def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeyp
 
     monkeypatch.setattr(led, "_load_leases", load_leases)
     monkeypatch.setattr(context, "_herdr", herdr)
+    # herdr agent read returns plain pane text, not JSON.
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
     result = controller.compact("hx-codex")
     if outcome == "success":
         assert result["action"] == "compacted"
@@ -465,3 +475,10 @@ def test_context_update_serializes_with_another_projects_lease_writer(controller
         assert "sid" not in saved["sessions"]
     else:
         assert saved["sessions"]["sid"]["state"] == "compact-unknown"
+
+
+def test_acknowledgement_survives_tui_hard_wrapping():
+    """Live run: OpenCode wrapped 'hx-claude re-' / 'review' across lines in the pane."""
+    pane = "  fc8c9369 hx-claude re-\n     review of branch feature/due-dates\n"
+    assert context._has_acknowledgement(pane, "fc8c9369 hx-claude re-review of branch feature/due-dates")
+    assert not context._has_acknowledgement(pane, "deadbeef hx-claude re-review of branch feature/due-dates")

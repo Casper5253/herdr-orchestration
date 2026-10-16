@@ -47,9 +47,23 @@ def _session(agent: dict[str, Any]) -> str:
     return (agent.get("agent_session") or {}).get("value") or ""
 
 
+def _herdr_read(name: str, lines: int = 60) -> str:
+    """`herdr agent read` prints the pane as plain text, not JSON."""
+    result = subprocess.run(
+        ["herdr", "agent", "read", name, "--source", "recent-unwrapped", "--lines", str(lines)],
+        capture_output=True, text=True, check=True, timeout=30, shell=False,
+    )
+    return result.stdout
+
+
+def _squash(text: str) -> str:
+    # TUIs hard-wrap long replies (OpenCode splits "re-" / "review"), so compare without whitespace.
+    return "".join(text.split())
+
+
 def _has_acknowledgement(value: Any, expected: str) -> bool:
     if isinstance(value, str):
-        return expected in value
+        return _squash(expected) in _squash(value)
     if isinstance(value, dict):
         return any(_has_acknowledgement(item, expected) for item in value.values())
     if isinstance(value, list):
@@ -343,7 +357,7 @@ class Controller:
             message = f"[team from {self.policy.get('team_prefix', 'hx-')}claude] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
             _herdr("prompt", name, message, "--wait", "--until", "idle", "--timeout", "300000", timeout=310)
             current = self._agent(name)
-            reply = _herdr("read", name, "--source", "recent-unwrapped", "--lines", "60")
+            reply = _herdr_read(name)
             if _session(current) != sid or current.get("agent_status") != "idle" or not _has_acknowledgement(reply, f"{token} {next_action}"):
                 raise ValueError("checkpoint next action acknowledgement not verified")
             self._finish(sid, token, None, False)
