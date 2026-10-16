@@ -41,7 +41,7 @@
     }
   },
   "codex": {
-    "economy_model": "gpt-5.6-luna",
+    "economy_model": "gpt-6-luna",
     "strong_model": "gpt-6.1-sol"
   },
   "effort_by_kind": {
@@ -76,14 +76,35 @@
   },
   "persistent_opencode_model": "glm-5.3-flash",
   "opencode_variants": {
-    "deepseek-v4.1-flash": ["high", "low", "max"],
-    "deepseek-v4-pro": ["high", "max"],
-    "glm-5.3-flash": ["high", "low", "max"],
+    "deepseek-v4.1-flash": [
+      "high",
+      "low",
+      "max"
+    ],
+    "deepseek-v4-pro": [
+      "high",
+      "max"
+    ],
+    "glm-5.3-flash": [
+      "high",
+      "low",
+      "max"
+    ],
     "kimi-k2.7-code": [],
     "mimo-v2.6-flash": [],
-    "minimax-m3": ["none", "thinking"],
-    "qwen3.7-plus": ["high", "max"],
-    "qwen3.8-flash": ["low", "medium", "xhigh"]
+    "minimax-m3": [
+      "none",
+      "thinking"
+    ],
+    "qwen3.7-plus": [
+      "high",
+      "max"
+    ],
+    "qwen3.8-flash": [
+      "low",
+      "medium",
+      "xhigh"
+    ]
   },
   "opencode_variants_note": "Declared --variant choices per model from opencode models --verbose (2026-10-16). glm-5.3-flash ignores an effort that is not one of these; route/ocrun must not send it.",
   "excluded_models": {
