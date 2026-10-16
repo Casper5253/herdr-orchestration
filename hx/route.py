@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -110,10 +111,8 @@ def _is_quota_error(last_error: dict[str, Any] | None) -> bool:
     return any(p in text for p in patterns)
 
 
-def _model_status_opencode(
-    model_id: str, oc: dict[str, Any], policy: dict[str, Any]
-) -> tuple[str, float]:
-    """Return ('available'|'exhausted'|'unknown', max utilisation 0..1)."""
+def _opencode_pool_status(oc: dict[str, Any], policy: dict[str, Any]) -> tuple[str, float]:
+    """All models share the same rolling spend windows."""
     thresholds = policy.get("thresholds", {})
     soft_limit = thresholds.get("pool_soft_limit", 0.85)
     stale_seconds = thresholds.get("stale_seconds", 3600)
@@ -124,76 +123,53 @@ def _model_status_opencode(
     if oc.get("tag") == "unknown":
         return "unknown", 0.0
 
-    state = oc.get("models", {}).get(model_id)
-    if state is None:
-        return "unknown", 0.0
-
-    last_error = state.get("last_error")
-    if _is_quota_error(last_error):
-        age = 10**9
-        if isinstance(last_error, dict):
-            age = last_error.get("age_seconds", 10**9)
-        if age < RATE_LIMIT_WINDOW_SECONDS:
-            return "exhausted", 1.0
-
-    max_util = None
+    max_util = 0.0
+    complete = True
     for win_name in WINDOWS:
-        win = state.get("windows", {}).get(win_name)
-        if win is None:
-            return "unknown", 0.0
+        win = (oc.get("pool") or {}).get("windows", {}).get(win_name) or {}
         util = win.get("utilisation")
-        if util is None:
-            return "unknown", 0.0
+        if not isinstance(util, (int, float)) or not math.isfinite(util) or util < 0:
+            complete = False
+            continue
         if util >= soft_limit:
             return "exhausted", util
-        if max_util is None or util > max_util:
-            max_util = util
+        max_util = max(max_util, util)
+    return ("available" if complete else "unknown"), max_util
 
-    return "available", max_util if max_util is not None else 0.0
+
+def _model_status_opencode(
+    model_id: str, oc: dict[str, Any], policy: dict[str, Any]
+) -> tuple[str, float]:
+    status, util = _opencode_pool_status(oc, policy)
+    if status == "exhausted":
+        return status, util
+    state = oc.get("models", {}).get(model_id) or {}
+    last_error = state.get("last_error")
+    if _is_quota_error(last_error) and last_error.get("age_seconds", 10**9) < RATE_LIMIT_WINDOW_SECONDS:
+        return "exhausted", util
+    return status, util
 
 
 def _pick_opencode(
     start_tier: str, oc: dict[str, Any], policy: dict[str, Any]
 ) -> tuple[str | None, str, float, list[str]]:
-    """Rank candidates across all reachable ladder tiers.
-
-    All available candidates (in tier order, then ladder order) are ranked
-    before any unknown candidate.
-    """
+    """Pick the first capable ladder model; model spend never grants headroom."""
     if start_tier not in TIER_ORDER:
         start_tier = TIER_ORDER[0]
     idx = TIER_ORDER.index(start_tier)
 
-    available: list[tuple[int, int, float, str]] = []
-    unknown: list[tuple[int, int, float, str]] = []
     tried: list[str] = []
 
     for tier_idx in range(idx, len(TIER_ORDER)):
         tier = TIER_ORDER[tier_idx]
         tried.append(tier)
         ladder = policy.get("ladders", {}).get(tier, [])
-        for model_idx, model_id in enumerate(ladder):
+        for model_id in ladder:
             status, util = _model_status_opencode(model_id, oc, policy)
             if status == "exhausted":
                 continue
-            candidate = (tier_idx, model_idx, util, model_id)
-            if status == "available":
-                available.append(candidate)
-            else:
-                unknown.append(candidate)
-
-    if available:
-        candidates = available
-        status = "available"
-    elif unknown:
-        candidates = unknown
-        status = "unknown"
-    else:
-        return None, "", 0.0, tried
-
-    candidates.sort()
-    _, _, util, model_id = candidates[0]
-    return model_id, status, util, tried
+            return model_id, status, util, tried
+    return None, "", 0.0, tried
 
 
 def _pool_status(pool: dict[str, Any], policy: dict[str, Any]) -> tuple[str, float]:
@@ -307,7 +283,7 @@ def _fallback_decision(
             "effort": effort,
             "method": "ocrun-codex",
             "reason": (
-                f"opencode ladder exhausted; codex fallback "
+                f"opencode shared pool exhausted or candidate models rate-limited; codex fallback "
                 f"({codex_status}, util {codex_util:.2f})"
             ),
             "stages": stages + ["fallback:codex"],
@@ -318,7 +294,7 @@ def _fallback_decision(
         "effort": effort,
         "method": "subagent",
         "reason": (
-            f"opencode ladder exhausted; claude subagent fallback "
+            f"opencode shared pool exhausted or candidate models rate-limited; claude subagent fallback "
             f"({claude_status}, util {claude_util:.2f})"
         ),
         "stages": stages + ["fallback:claude"],
@@ -344,29 +320,6 @@ def _persistent_eligible(
     if p_effort == "unknown" and chosen_effort == policy.get("default_effort", "medium"):
         return True
     return False
-
-
-def _warm_persistent_model(
-    task: dict[str, Any], tier: str, effort: str, oc: dict[str, Any], policy: dict[str, Any]
-) -> tuple[str, str, float] | None:
-    """(model, status, util) of the idle persistent session if it can take iterative work."""
-    iterative = task.get("iterative")
-    if iterative is None:
-        iterative = task.get("size") == "large"
-    persistent = task.get("persistent") or {}
-    model = persistent.get("model")
-    if not iterative or task.get("parallel") or persistent.get("status") != "idle" or not model:
-        return None
-    if model not in policy.get("ladders", {}).get(tier, []):
-        return None
-    order = ["low", "medium", "high", "max"]
-    p_effort = persistent.get("effort")
-    if p_effort in order and order.index(p_effort) < order.index(effort):
-        return None
-    status, util = _model_status_opencode(model, oc, policy)
-    if status != "available":
-        return None
-    return model, status, util
 
 
 def _decide_method(
@@ -531,12 +484,6 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
         start_tier = _tier_for_effort(effort)
         stages.append(f"tier:{start_tier}")
         model_id, status, util, tried = _pick_opencode(start_tier, oc, policy)
-        warm = _warm_persistent_model(task, start_tier, effort, oc, policy)
-        if warm is not None and model_id is not None:
-            # Iterative work prefers the warm persistent session when its model is in the
-            # chosen tier and available: reusing cached context beats ladder order.
-            stages.append("persistent:warm")
-            model_id, status, util = warm
         if model_id is None:
             for t in tried:
                 stages.append(f"tried:{t}")

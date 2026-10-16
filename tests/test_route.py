@@ -81,16 +81,16 @@ def _all_ladder_models() -> list[str]:
 
 
 def _model_state(
-    util_5h: float = 0.1,
-    util_7d: float = 0.1,
-    util_30d: float = 0.1,
+    spend_5h: float = 0.1,
+    spend_7d: float = 0.1,
+    spend_30d: float = 0.1,
     last_error: dict | None = None,
 ) -> dict:
     state: dict = {
         "windows": {
-            "5h": {"utilisation": util_5h},
-            "7d": {"utilisation": util_7d},
-            "30d": {"utilisation": util_30d},
+            "5h": {"spend": spend_5h},
+            "7d": {"spend": spend_7d},
+            "30d": {"spend": spend_30d},
         },
         "last_error": last_error,
     }
@@ -108,6 +108,9 @@ def _make_usage(
     claude_spend_pct: float | None = None,
     claude_age: int = 0,
     agents: list[dict] | None = None,
+    opencode_5h: float = 0.1,
+    opencode_7d: float = 0.1,
+    opencode_30d: float = 0.1,
 ) -> dict:
     if codex_secondary_pct is None:
         codex_secondary_pct = codex_pct / 2
@@ -122,6 +125,11 @@ def _make_usage(
             "tag": opencode_tag,
             "available": True,
             "sample_age_seconds": opencode_age,
+            "pool": {"windows": {
+                "5h": {"utilisation": opencode_5h},
+                "7d": {"utilisation": opencode_7d},
+                "30d": {"utilisation": opencode_30d},
+            }},
             "models": opencode_models or {},
         },
         "codex": {
@@ -242,12 +250,11 @@ def test_stage_pool_selection(policy: dict) -> None:
     assert high_risk["model"] == _codex_strong_model(policy)
 
 
-def test_ladder_fallback_when_first_over_soft_limit(policy: dict) -> None:
-    """Stage 4: within a ladder, skip exhausted models and pick next available."""
+def test_ladder_fallback_when_first_rate_limited(policy: dict) -> None:
     usage = _make_usage(
         opencode_models={
-            "deepseek-v4.1-flash": _model_state(util_5h=0.9, util_7d=0.9, util_30d=0.9),
-            "mimo-v2.6-flash": _model_state(util_5h=0.1, util_7d=0.1, util_30d=0.1),
+            "deepseek-v4.1-flash": _model_state(last_error={"text": "rate limit", "age_seconds": 1}),
+            "mimo-v2.6-flash": _model_state(spend_5h=0.1, spend_7d=0.1, spend_30d=0.1),
         },
     )
     result = route(_feature_task(kind="test"), usage, policy)
@@ -257,10 +264,11 @@ def test_ladder_fallback_when_first_over_soft_limit(policy: dict) -> None:
 
 
 def test_all_opencode_exhausted_fallback(policy: dict) -> None:
-    """Stage 4: when every OpenCode ladder step is exhausted, fall back to codex economy."""
+    """A full shared pool blocks every model, including models with no spend."""
     usage = _make_usage(
+        opencode_7d=0.9,
         opencode_models={
-            m: _model_state(util_5h=0.9, util_7d=0.9, util_30d=0.9)
+            m: _model_state(spend_5h=0, spend_7d=0, spend_30d=0)
             for m in _all_ladder_models()
         },
         codex_pct=20.0,
@@ -270,6 +278,31 @@ def test_all_opencode_exhausted_fallback(policy: dict) -> None:
     assert result["worker"] == "codex"
     assert result["model"] == _codex_economy_model(policy)
     assert result["method"] == "ocrun-codex"
+
+
+@pytest.mark.parametrize("window", ["5h", "7d", "30d"])
+def test_each_shared_window_at_soft_limit_blocks_all_models(policy, window):
+    usage = _all_available_usage()
+    usage["opencode"]["pool"]["windows"][window]["utilisation"] = .85
+    result = route(_feature_task(kind="routine"), usage, policy)
+    assert result["worker"] == "codex"
+    assert result["model"] == policy["codex"]["economy_model"]
+
+
+def test_model_spend_never_changes_ladder_order(policy):
+    usage = _make_usage(opencode_models={
+        "deepseek-v4.1-flash": _model_state(spend_5h=1000, spend_7d=1000, spend_30d=1000),
+        "mimo-v2.6-flash": _model_state(spend_5h=0, spend_7d=0, spend_30d=0),
+    })
+    assert route(_feature_task(kind="routine"), usage, policy)["model"] == "deepseek-v4.1-flash"
+
+
+def test_input_repair_cannot_reuse_opencode_after_shared_pool_exhaustion(policy):
+    usage = _all_available_usage()
+    usage["opencode"]["pool"]["windows"]["7d"]["utilisation"] = .9
+    previous = {"worker": "opencode", "model": "minimax-m3", "effort": "medium", "method": "ocrun"}
+    result = route(_feature_task(last_failure="tool", prev=previous), usage, policy)
+    assert result["worker"] == "codex"
 
 
 def test_capability_failure_escalates_one_step(policy: dict) -> None:
@@ -290,24 +323,23 @@ def test_capability_failure_escalates_one_step(policy: dict) -> None:
     assert result["effort"] == "high"
 
 
-def test_unknown_vs_available_ranking(policy: dict) -> None:
-    """Within a ladder, available ranks above unknown; exhausted is skipped."""
+def test_models_without_history_follow_ladder_order(policy: dict) -> None:
     usage = _make_usage(
         opencode_models={
             "mimo-v2.6-flash": _model_state(),
         },
     )
     result = route(_feature_task(kind="test"), usage, policy)
-    assert result["model"] == "mimo-v2.6-flash"
+    assert result["model"] == "deepseek-v4.1-flash"
 
     usage2 = _make_usage(
         opencode_models={
-            "deepseek-v4.1-flash": _model_state(util_5h=0.9, util_7d=0.9, util_30d=0.9),
+            "deepseek-v4.1-flash": _model_state(spend_5h=0.9, spend_7d=0.9, spend_30d=0.9),
             "mimo-v2.6-flash": _model_state(),
         },
     )
     result2 = route(_feature_task(kind="test"), usage2, policy)
-    assert result2["model"] == "mimo-v2.6-flash"
+    assert result2["model"] == "deepseek-v4.1-flash"
 
 
 def test_persistent_vs_ocrun_decision(policy: dict) -> None:
@@ -356,8 +388,9 @@ def test_persistent_vs_ocrun_decision(policy: dict) -> None:
 def test_input_repair_reuses_prior_despite_quota_change(policy: dict) -> None:
     """Regression 1: missing-context reuses prev even if quota rose, unless exhausted."""
     usage = _make_usage(
+        opencode_7d=.84,
         opencode_models={
-            "minimax-m3": _model_state(util_5h=0.84, util_7d=0.84, util_30d=0.84),
+            "minimax-m3": _model_state(spend_5h=0.84, spend_7d=0.84, spend_30d=0.84),
         }
     )
     prev = {
@@ -381,7 +414,7 @@ def test_input_repair_reselects_when_model_exhausted(policy: dict) -> None:
     """Regression 1: missing-context reselects only when prev model is exhausted."""
     usage = _make_usage(
         opencode_models={
-            "minimax-m3": _model_state(util_5h=0.9, util_7d=0.9, util_30d=0.9),
+            "minimax-m3": _model_state(last_error={"text": "rate limit", "age_seconds": 1}),
             "qwen3.7-plus": _model_state(),
         }
     )
@@ -506,30 +539,30 @@ def test_opencode_unknown_when_stale(policy: dict) -> None:
         opencode_age=3601,
     )
     result = route(_feature_task(kind="test"), usage, policy)
-    # Stale models are unknown but are still candidates (not exhausted).
+    # An unknown pool remains distinct from an exhausted pool.
     assert result["worker"] == "opencode"
     assert "unknown" in result["reason"].lower()
 
 
 def test_opencode_unknown_when_window_missing(policy: dict) -> None:
-    """Regression 4: missing/null window makes the model unknown, not 0."""
+    """Missing shared pool windows are unknown, never treated as zero."""
     usage = _make_usage(
         opencode_models={
-            "deepseek-v4.1-flash": {
-                "windows": {"5h": {"utilisation": 0.1}, "7d": {"utilisation": 0.1}}
-                # 30d missing
-            },
+            "deepseek-v4.1-flash": _model_state(),
             "mimo-v2.6-flash": _model_state(),
         }
     )
+    del usage["opencode"]["pool"]["windows"]["30d"]
     result = route(_feature_task(kind="test"), usage, policy)
-    assert result["model"] == "mimo-v2.6-flash"
+    assert result["model"] == "deepseek-v4.1-flash"
+    assert "unknown" in result["reason"]
 
 
 def test_codex_secondary_null_is_unknown(policy: dict) -> None:
     """Regression 4: codex secondary=null is treated as unknown."""
     usage = _make_usage(
-        opencode_models={m: _model_state(util_5h=0.9) for m in _all_ladder_models()},
+        opencode_7d=0.9,
+        opencode_models={m: _model_state(spend_5h=0.9) for m in _all_ladder_models()},
     )
     usage["codex"]["rate_limits"]["secondary"] = None
     result = route(_feature_task(), usage, policy)
@@ -540,7 +573,8 @@ def test_codex_secondary_null_is_unknown(policy: dict) -> None:
 def test_claude_spend_limit_considered(policy: dict) -> None:
     """Regression 4: claude rate_limits.spend_limit is included in headroom."""
     usage = _make_usage(
-        opencode_models={m: _model_state(util_5h=0.9) for m in _all_ladder_models()},
+        opencode_7d=0.9,
+        opencode_models={m: _model_state(spend_5h=0.9) for m in _all_ladder_models()},
         claude_pct=20.0,
         claude_spend_pct=90.0,
     )
@@ -552,22 +586,22 @@ def test_claude_spend_limit_considered(policy: dict) -> None:
 def test_context_window_not_quota_headroom(policy: dict) -> None:
     """Regression 4: context_window is never used as quota headroom."""
     usage = _make_usage(
-        opencode_models={m: _model_state(util_5h=0.9) for m in _all_ladder_models()},
+        opencode_7d=0.9,
+        opencode_models={m: _model_state(spend_5h=0.9) for m in _all_ladder_models()},
         claude_pct=90.0,
     )
     # Remove rate_limits so only context_window remains; claude becomes unknown.
     usage["claude"]["rate_limits"] = {}
     result = route(_feature_task(), usage, policy)
-    # codex unknown (no data by default?) actually codex has rate_limits.
-    # claude unknown -> codex wins by being available.
     assert result["worker"] == "codex"
 
 
 def test_defer_when_all_fallbacks_exhausted(policy: dict) -> None:
     """Regression 5: defer with resets_at when OpenCode + fallback pools exhausted."""
     usage = _make_usage(
+        opencode_7d=0.9,
         opencode_models={
-            m: _model_state(util_5h=0.9, util_7d=0.9, util_30d=0.9)
+            m: _model_state(spend_5h=0.9, spend_7d=0.9, spend_30d=0.9)
             for m in _all_ladder_models()
         },
         codex_pct=90.0,
@@ -582,23 +616,16 @@ def test_defer_when_all_fallbacks_exhausted(policy: dict) -> None:
     assert result["resets_at"] == "2026-10-16T20:00:00Z"
 
 
-def test_rank_available_before_unknown_across_tiers(policy: dict) -> None:
-    """Regression 6: available candidate in a higher tier beats unknown in lower tier."""
+def test_missing_model_history_does_not_escalate_to_costlier_tier(policy: dict) -> None:
     usage = _make_usage(
         opencode_models={
-            # economy first model unknown (absent), second exhausted.
-            "deepseek-v4.1-flash": None,  # will become unknown via missing state
-            "mimo-v2.6-flash": _model_state(util_5h=0.9),
-            # default first model available.
+            "deepseek-v4.1-flash": None,
+            "mimo-v2.6-flash": _model_state(spend_5h=0.9),
             "minimax-m3": _model_state(),
         }
     )
-    # feature -> medium -> default tier normally, but with capability failure -> high -> strong.
-    # Use investigate (low) so start tier is economy.
     result = route(_feature_task(kind="investigate"), usage, policy)
-    # Economy has unknown+exhausted; default has available minimax-m3.
-    # Available in default beats unknown in economy.
-    assert result["model"] == "minimax-m3"
+    assert result["model"] == "deepseek-v4.1-flash"
 
 
 def test_last_error_non_quota_does_not_suppress(policy: dict) -> None:
@@ -655,7 +682,8 @@ def test_effort_by_kind_from_policy(policy: dict) -> None:
 def test_codex_models_read_from_policy(policy: dict) -> None:
     """Regression 8: review and fallback use the models declared in policy.json."""
     usage = _make_usage(
-        opencode_models={m: _model_state(util_5h=0.9) for m in _all_ladder_models()},
+        opencode_7d=0.9,
+        opencode_models={m: _model_state(spend_5h=0.9) for m in _all_ladder_models()},
     )
     review = route(_feature_task(kind="review"), usage, policy)
     assert review["model"] == policy["codex"]["strong_model"]
@@ -953,18 +981,18 @@ def test_decision_and_outcome_share_ids(
     assert out["task_id"] == task_id
 
 
-def test_iterative_work_prefers_warm_persistent_model_in_tier() -> None:
-    """e2e finding: glm-5.3-flash persistent session is in the default ladder but was never chosen."""
+def test_iterative_work_still_uses_cheapest_capable_ladder_model() -> None:
     from hx.route import route
     policy = {"ladders": {"economy": ["glm-5.3-flash"], "default": ["qwen3.7-plus", "glm-5.3-flash"], "strong": ["kimi-k2.7-code"]},
               "thresholds": {"pool_soft_limit": 0.85, "stale_seconds": 3600}, "effort_by_kind": {"feature": "medium"}}
     win = {"5h": {"utilisation": 0.0}, "7d": {"utilisation": 0.0}, "30d": {"utilisation": 0.0}}
     usage = {"opencode": {"tag": "estimated", "sample_age_seconds": 5,
+                          "pool": {"windows": win},
                           "models": {m: {"windows": win, "last_error": None} for m in ("qwen3.7-plus", "glm-5.3-flash", "kimi-k2.7-code")}}}
     task = {"kind": "feature", "size": "large", "iterative": True,
             "persistent": {"model": "glm-5.3-flash", "effort": "high", "status": "idle"}}
     d = route(task, usage, policy)
-    assert (d["model"], d["method"]) == ("glm-5.3-flash", "persistent"), d
+    assert (d["model"], d["method"]) == ("qwen3.7-plus", "ocrun"), d
     task["persistent"]["status"] = "working"
     d = route(task, usage, policy)
     assert (d["model"], d["method"]) == ("qwen3.7-plus", "ocrun"), d

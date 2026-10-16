@@ -1,10 +1,15 @@
 {
   "team_prefix": "hx-",
   "active_plan": "go",
+  "opencode_pool": {
+    "go": {"5h": 12, "7d": 30, "30d": 60, "tag": "estimated"},
+    "go_plus": {"5h": 48, "7d": 120, "30d": 240, "tag": "estimated"},
+    "note": "2026-10-16: shared pool across all models. Go calibrated against user dashboard (82% 5h, 90% week) and local spend ($9.70/$26.46). Go Plus is an unverified 4x estimate."
+  },
   "plans": {
     "go": {
       "name": "OpenCode Go",
-      "monthly_caps": {
+      "historical_model_allowances_documentation_only": {
         "deepseek-v4.1-flash": {
           "go": 80.0,
           "go_plus": 160.0

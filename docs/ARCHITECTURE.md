@@ -12,7 +12,7 @@ Non-goals: no daemon, database, broker, dashboard or vector store. Python stdlib
 
 | Fact | Source | Consequence |
 |---|---|---|
-| OpenCode Go limits are **per model**: 5h = 20%, week = 50%, month = 100% of that model's monthly $ cap | audit/opencode.md | Rotate routine work across several cheap models; one exhausted model is not an exhausted pool |
+| OpenCode Go uses a **shared pool across models**, estimated at $12/5h, $30/week, $60/30d | User dashboard and local spend calibration, 2026-10-16 correction below | Model rotation does not restore headroom; use Codex/Claude when the pool reaches its soft limit |
 | OpenCode stores every assistant message with `modelID`, `cost`, `tokens` in `~/.local/share/opencode/opencode.db` | measured | Per-model window spend is computable locally (estimate: this machine only) |
 | `opencode run -m <model> --variant <v> --format json` | audit/opencode.md | Per-task model + effort for headless OpenCode workers |
 | Codex rollout JSONL `token_count` events carry `rate_limits` (5h and weekly `used_percent`, `resets_at`) and context tokens | audit/codex.md | Codex quota and context usage are readable without a model call |
@@ -47,7 +47,9 @@ State locations:
 
 Output: one JSON object, one entry per pool, each value tagged `measured`, `estimated` or `unknown`.
 
-- **opencode**: for each model in `policy.json` ladders, sum `cost` of assistant messages from opencode.db over the rolling 5h, 7d and 30d windows. Remaining = cap x (0.2 | 0.5 | 1.0) - spend. Tag `estimated` (local machine only; plan from `policy.json`). Read only the `message` table, opened read-only. Never touch `account`, `credential` or `control_account`. Also record the last error per model (rate limit text) from the last 24h.
+**Correction, 2026-10-16:** the earlier per-model limit assumption was wrong. The user dashboard showed 82% of 5h and 90% of week while local spend across all models was $9.70 and $26.46. Shared Go caps are estimated at $12/5h, $30/7d and $60/30d. Go Plus caps in policy are an unverified 4x estimate. The old per-model allowance table is retained only as historical documentation and is never read as a routing limit.
+
+- **opencode**: sum assistant-message `cost` across **all models**, including models outside the ladders, over rolling 5h, 7d and 30d windows. Report `pool.windows` with spend, cap, remaining and fractional utilisation from `policy.opencode_pool[active_plan]`; tag `estimated` (local machine only). Per-model spend and last error remain informational, without per-model caps. Snapshot age measures the database read; newest message age is separate. Read only the `message` table, opened read-only. Never touch `account`, `credential` or `control_account`.
 - **codex**: newest rollout JSONL under `~/.codex/sessions`; last `token_count` event: `rate_limits.primary/secondary.used_percent`, `resets_at`, sample timestamp. Tag `measured` with its age.
 - **claude**: `~/.herdr-team/state/claude-status.json` written by the status line hook. Tag `measured` with its age; `unknown` if missing or older than 1h.
 - **agents**: `herdr agent list` filtered to the team prefix: status per agent.
@@ -65,8 +67,8 @@ Rules, first match wins:
 2. `last-failure` in `missing-context | unclear | tool` -> same worker and model, effort unchanged, reason says "fix the input, not the model". Only `capability` failures escalate.
 3. `review`, `architecture`, `risk=high` -> Codex (`review`, `debug` hard) or Claude (`architecture`, prose). Effort `high`.
 4. Everything else -> OpenCode. `size=large` or iterative work -> `persistent` (hx-opencode); bounded or `--parallel` -> `ocrun` (headless, per-task model).
-5. OpenCode model: walk the ladder for the effort tier (`economy` -> `default` -> `strong`), skip models whose 5h or week window is over the soft limit or that hit a rate-limit error in the last 30 min. Escalate one ladder step per `capability` failure.
-6. If every OpenCode model on the ladder is exhausted -> Codex `ocrun`-equivalent (`codex exec` with a low-cost model) or a Claude Sonnet subagent, whichever pool has more headroom.
+5. **Shared-pool correction, 2026-10-16:** OpenCode availability comes from the shared 5h/7d/30d windows. Within an available pool, walk the effort-tier ladders in order, cheapest capable model first. Only that model's own quota/rate-limit error in the last 30 minutes skips it; model spend does not grant or remove headroom. A warm session does not override ladder order. Escalate one tier per `capability` failure.
+6. If any OpenCode shared window reaches the soft limit, or all candidate models have recent quota/rate-limit errors -> Codex economy (`gpt-6-luna`) or a Claude Sonnet subagent, whichever fallback pool has more headroom.
 7. `attempt > policy.max_attempts` (default 3) -> Claude/Codex strong model with effort `high`, then stop and report.
 
 Effort tiers (initial; refine from `routing.jsonl` outcomes):

@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import re
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -127,23 +129,12 @@ def _model_ids_in_policy(policy: dict[str, Any]) -> set[str]:
     return ids
 
 
-def _window_fractions() -> dict[str, float]:
-    return {"5h": 0.2, "7d": 0.5, "30d": 1.0}
-
-
 def _window_deltas() -> dict[str, datetime.timedelta]:
     return {
         "5h": datetime.timedelta(hours=5),
         "7d": datetime.timedelta(days=7),
         "30d": datetime.timedelta(days=30),
     }
-
-
-def _parse_message_data(data: str) -> dict[str, Any]:
-    try:
-        return json.loads(data)
-    except json.JSONDecodeError:
-        return {}
 
 
 def _is_error_message(msg: dict[str, Any]) -> str | None:
@@ -178,7 +169,7 @@ def opencode_usage(
     db_path: Path | None = None,
     now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
-    """Return OpenCode Go per-model spend over 5h/7d/30d windows.
+    """Estimate shared OpenCode spend over 5h/7d/30d windows, across all models.
 
     Reads only the ``message`` table from ``opencode.db`` opened read-only.
     """
@@ -188,123 +179,82 @@ def opencode_usage(
         now = _utcnow()
 
     plan_name = policy.get("active_plan", "go")
-    plan = policy.get("plans", {}).get(plan_name, {})
-    caps = plan.get("monthly_caps", {})
-    models = _ladder_models(policy)
-    fractions = _window_fractions()
+    caps = policy.get("opencode_pool", {}).get(plan_name, {})
     deltas = _window_deltas()
-
-    windows = {
-        name: {
-            "spend": 0.0,
-            "cap": 0.0,
-            "remaining": 0.0,
-            "fraction": fractions[name],
-            "utilisation": 0.0,
-        }
-        for name in fractions
-    }
+    windows = {name: {"spend": 0.0, "cap": caps.get(name),
+                      "remaining": None, "utilisation": None} for name in deltas}
 
     model_state: dict[str, Any] = {
         m: {
-            "windows": {name: dict(w) for name, w in windows.items()},
+            "windows": {name: {"spend": 0.0} for name in deltas},
             "last_error": None,
             "newest_ms": 0,
         }
-        for m in models
+        for m in _ladder_models(policy)
     }
 
+    def unknown(error: str) -> dict[str, Any]:
+        return {"tag": "unknown", "sample_age_seconds": None, "plan": plan_name,
+                "db_path": str(db_path), "pool": {"tag": "unknown", "windows": windows},
+                "models": model_state, "available": "unknown", "error": error}
+
     if not db_path.exists():
-        return {
-            "tag": "unknown",
-            "sample_age_seconds": None,
-            "plan": plan_name,
-            "db_path": str(db_path),
-            "models": model_state,
-            "available": "unknown",
-            "error": "opencode.db not found",
-        }
+        return unknown("opencode.db not found")
 
     cutoff_ms = int((now - max(deltas.values())).timestamp() * 1000)
-    total_rows = 0
     newest_overall_ms = 0
 
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT time_created, data FROM message WHERE time_created > ?",
-            (cutoff_ms,),
-        )
-        for row in cur:
-            total_rows += 1
-            ts_ms = row["time_created"]
-            msg = _parse_message_data(row["data"])
-            if msg.get("role") != "assistant":
-                continue
-            model_id = msg.get("modelID")
-            if model_id not in model_state:
-                continue
-            cost = float(msg.get("cost") or 0.0)
-            state = model_state[model_id]
-            if ts_ms > state["newest_ms"]:
-                state["newest_ms"] = ts_ms
-            if ts_ms > newest_overall_ms:
-                newest_overall_ms = ts_ms
-
-            # Rate-limit / error text from the last 24h.
-            error_text = _is_error_message(msg)
-            if error_text and (now.timestamp() * 1000 - ts_ms) <= 24 * 3600 * 1000:
-                state["last_error"] = {
-                    "text": error_text,
-                    "age_seconds": int((now.timestamp() * 1000 - ts_ms) / 1000),
-                }
-
-            for name, delta in deltas.items():
-                if ts_ms >= int((now - delta).timestamp() * 1000):
-                    state["windows"][name]["spend"] += cost
-        conn.close()
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+            rows = conn.execute(
+                "SELECT time_created, data FROM message WHERE time_created >= ? AND time_created <= ? ORDER BY time_created",
+                (cutoff_ms, int(now.timestamp() * 1000)),
+            )
+            for ts_ms, raw in rows:
+                msg = json.loads(raw)
+                if msg.get("role") != "assistant":
+                    continue
+                cost = float(msg.get("cost") or 0.0)
+                if not math.isfinite(cost) or cost < 0:
+                    raise ValueError("invalid assistant message cost")
+                model_id = msg.get("modelID") or "unknown-model"
+                state = model_state.setdefault(model_id, {
+                    "windows": {name: {"spend": 0.0} for name in deltas},
+                    "last_error": None, "newest_ms": 0})
+                state["newest_ms"] = max(state["newest_ms"], ts_ms)
+                newest_overall_ms = max(newest_overall_ms, ts_ms)
+                error_text = _is_error_message(msg)
+                if error_text and now.timestamp() * 1000 - ts_ms <= 24 * 3600 * 1000:
+                    state["last_error"] = {"text": error_text,
+                        "age_seconds": int((now.timestamp() * 1000 - ts_ms) / 1000)}
+                for name, delta in deltas.items():
+                    if ts_ms >= int((now - delta).timestamp() * 1000):
+                        windows[name]["spend"] += cost
+                        state["windows"][name]["spend"] += cost
     except Exception as exc:  # pragma: no cover - defensive
-        return {
-            "tag": "unknown",
-            "sample_age_seconds": None,
-            "plan": plan_name,
-            "db_path": str(db_path),
-            "models": model_state,
-            "available": "unknown",
-            "error": f"database read failed: {exc}",
-        }
+        return unknown(f"database read failed: {exc}")
 
-    for m in models:
-        state = model_state[m]
-        monthly = caps.get(m, {}).get(plan_name)
-        if monthly is None:
-            monthly = 0.0
-        for name, win in state["windows"].items():
-            win["cap"] = monthly * fractions[name]
-            win["remaining"] = max(0.0, win["cap"] - win["spend"])
-            if win["cap"] > 0:
-                win["utilisation"] = win["spend"] / win["cap"]
-            else:
-                win["utilisation"] = 0.0
-
-    sample_age_seconds = None
-    if newest_overall_ms > 0:
-        sample_age_seconds = int((now.timestamp() * 1000 - newest_overall_ms) / 1000)
+    for win in windows.values():
+        cap = win["cap"]
+        if not isinstance(cap, (float, int)) or not math.isfinite(cap) or cap <= 0:
+            return unknown("missing or invalid shared pool caps for plan " + plan_name)
+        win["remaining"] = max(0.0, cap - win["spend"])
+        win["utilisation"] = win["spend"] / cap
 
     soft_limit = policy.get("thresholds", {}).get("pool_soft_limit", 0.85)
     available = all(
         win["utilisation"] < soft_limit
-        for state in model_state.values()
-        for win in state["windows"].values()
+        for win in windows.values()
     )
 
     return {
         "tag": "estimated",
-        "sample_age_seconds": sample_age_seconds,
+        "sample_age_seconds": 0,
+        "sampled_at": now.isoformat(),
+        "newest_message_age_seconds": int((now.timestamp() * 1000 - newest_overall_ms) / 1000) if newest_overall_ms else None,
         "plan": plan_name,
         "db_path": str(db_path),
+        "pool": {"tag": "estimated", "windows": windows},
         "models": model_state,
         "available": available,
     }

@@ -70,7 +70,7 @@ def _make_opencode_db(db_path: Path, now: datetime.datetime) -> None:
     insert("glm-5.3-flash", 0.0, 60, finish="error")
     # User message should be ignored.
     insert("glm-5.3-flash", 99.0, 5, role="user")
-    # Model outside policy ladders should be ignored.
+    # Spend outside current ladders still consumes the shared subscription.
     insert("some-other-model", 50.0, 5)
     conn.commit()
     conn.close()
@@ -79,7 +79,9 @@ def _make_opencode_db(db_path: Path, now: datetime.datetime) -> None:
 def test_load_policy() -> None:
     p = load_policy()
     assert p["active_plan"] == "go"
-    assert "glm-5.3-flash" in p["plans"]["go"]["monthly_caps"]
+    assert p["opencode_pool"]["go"]["5h"] == 12
+    assert p["opencode_pool"]["go_plus"]["7d"] == 120
+    assert "monthly_caps" not in p["plans"]["go"]
     assert p["thresholds"]["pool_soft_limit"] == 0.85
 
 
@@ -91,7 +93,8 @@ def test_opencode_usage(tmp_path: Path, policy: dict, now: datetime.datetime) ->
 
     assert result["tag"] == "estimated"
     assert result["plan"] == "go"
-    assert result["sample_age_seconds"] == 10 * 60  # newest message is 10 min old
+    assert result["sample_age_seconds"] == 0
+    assert result["newest_message_age_seconds"] == 5 * 60
 
     flash = result["models"]["glm-5.3-flash"]
     assert flash["windows"]["5h"]["spend"] == 1.0
@@ -104,14 +107,66 @@ def test_opencode_usage(tmp_path: Path, policy: dict, now: datetime.datetime) ->
     assert mimo["windows"]["5h"]["spend"] == 0.5
     assert mimo["windows"]["7d"]["spend"] == 0.5
 
-    # 5h cap for glm-5.3-flash on go is 60 * 0.2 = 12
-    assert flash["windows"]["5h"]["cap"] == 12.0
+    pool = result["pool"]["windows"]
+    assert pool["5h"]["spend"] == 51.5
+    assert pool["7d"]["spend"] == 53.5
+    assert pool["30d"]["spend"] == 57.5
+    assert pool["5h"]["cap"] == 12
+    assert pool["7d"]["utilisation"] == pytest.approx(53.5 / 30)
+    assert result["available"] is False
+    assert result["models"]["some-other-model"]["windows"]["5h"]["spend"] == 50
+    assert "cap" not in flash["windows"]["5h"]
+    assert "utilisation" not in flash["windows"]["5h"]
 
 
 def test_opencode_usage_missing_db(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
     result = opencode_usage(policy, db_path=tmp_path / "missing.db", now=now)
     assert result["tag"] == "unknown"
     assert result["available"] == "unknown"
+
+
+def test_shared_pool_dashboard_calibration_includes_models_outside_ladders(tmp_path, policy, now):
+    db = tmp_path / "opencode.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE message (time_created INTEGER, data TEXT)")
+        for model, cost, ago in [("old-model", 9.70, datetime.timedelta(hours=1)),
+                                 ("excluded-model", 16.76, datetime.timedelta(days=6)),
+                                 ("old-model", 1, datetime.timedelta(days=20))]:
+            conn.execute("INSERT INTO message VALUES (?, ?)",
+                         (int((now - ago).timestamp() * 1000),
+                          json.dumps({"role": "assistant", "modelID": model, "cost": cost})))
+    result = opencode_usage(policy, db_path=db, now=now)
+    pool = result["pool"]["windows"]
+    assert pool["5h"]["utilisation"] == pytest.approx(9.70 / 12)
+    assert pool["7d"]["utilisation"] == pytest.approx(26.46 / 30)
+    assert pool["30d"]["spend"] == pytest.approx(27.46)
+    assert result["available"] is False
+    policy["active_plan"] = "go_plus"
+    plus = opencode_usage(policy, db_path=db, now=now)
+    assert plus["tag"] == plus["pool"]["tag"] == "estimated"
+    assert plus["pool"]["windows"]["5h"]["utilisation"] == pytest.approx(9.70 / 48)
+    assert plus["available"] is True
+
+
+def test_empty_database_is_a_fresh_available_pool(tmp_path, policy, now):
+    db = tmp_path / "opencode.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE message (time_created INTEGER, data TEXT)")
+    result = opencode_usage(policy, db_path=db, now=now)
+    assert result["sample_age_seconds"] == 0
+    assert result["newest_message_age_seconds"] is None
+    assert result["pool"]["windows"]["5h"]["utilisation"] == 0
+    assert result["available"] is True
+
+
+def test_legacy_documentation_table_does_not_supply_missing_pool_caps(tmp_path, policy, now):
+    db = tmp_path / "opencode.db"
+    _make_opencode_db(db, now)
+    del policy["opencode_pool"]
+    result = opencode_usage(policy, db_path=db, now=now)
+    assert result["tag"] == "unknown"
+    assert result["available"] == "unknown"
+    assert "shared pool caps" in result["error"]
 
 
 def _make_codex_rollout(path: Path) -> None:
