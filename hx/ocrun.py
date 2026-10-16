@@ -32,8 +32,10 @@ from hx import paths
 PROVIDER = "opencode-go"
 
 FINISH_ERROR_REASONS = {"error"}
+TERMINAL_FINISH_REASONS = {"stop", "end_turn"}
 PROCESS_TREE_KILL_TIMEOUT = 10.0
 PROCESS_TREE_DRAIN_TIMEOUT = 10.0
+PROCESS_TREE_POLL_TIMEOUT = 2.0
 
 QUOTA_MARKERS = (
     "rate limit",
@@ -247,12 +249,14 @@ def _kill_process_tree(proc: subprocess.Popen) -> bool:
     """Kill ``proc`` and its descendants; return True when confirmed dead."""
     if sys.platform == "win32":
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=PROCESS_TREE_KILL_TIMEOUT,
                 check=False,
             )
+            if result.returncode != 0:
+                return False
         except Exception:
             return False
     else:
@@ -277,10 +281,10 @@ def _kill_process_tree(proc: subprocess.Popen) -> bool:
             return False
 
     try:
-        proc.wait(timeout=PROCESS_TREE_KILL_TIMEOUT)
-        return True
+        proc.wait(timeout=PROCESS_TREE_POLL_TIMEOUT)
     except subprocess.TimeoutExpired:
         return False
+    return True
 
 
 def execute(
@@ -318,9 +322,16 @@ def execute(
             try:
                 out, err = proc.communicate(timeout=PROCESS_TREE_DRAIN_TIMEOUT)
             except subprocess.TimeoutExpired:
-                # Drain best-effort; the tree is already dead.
-                out = proc.stdout.read() if proc.stdout else ""
-                err = proc.stderr.read() if proc.stderr else ""
+                if proc.stdout is not None:
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+                if proc.stderr is not None:
+                    try:
+                        proc.stderr.close()
+                    except Exception:
+                        pass
         return proc.returncode, out or "", err or "", True, terminated
 
 
@@ -337,26 +348,20 @@ def _detect_failure(
             "kind": "tool",
             "reason": f"auto-rejected permission: {parsed['permission_rejected'][:280]}",
         }
-    if parsed["finish_reason"] == "length" and not parsed["finish_tokens_output"]:
-        return {
-            "kind": "capability",
-            "reason": "finish=length with zero output tokens (reasoning budget exhausted)",
-        }
     if timed_out:
         if terminated:
             return {"kind": "tool", "reason": "timeout"}
-        return {"kind": "tool", "reason": "timeout (termination unconfirmed)"}
+        return {"kind": "tool", "reason": "termination-unconfirmed"}
     if exit_code not in (None, 0):
         return {"kind": "exit", "reason": f"opencode run exited {exit_code}"}
     if parsed["has_unresolved_tool_error"]:
         return {"kind": "tool", "reason": "unresolved tool error"}
-    terminal_success = (
-        parsed["terminal_finish_reason"] is not None
-        and parsed["terminal_finish_reason"] not in FINISH_ERROR_REASONS
-    )
-    if not terminal_success or parsed["session_id"] is None:
-        return {"kind": "tool", "reason": "incomplete event stream"}
-    return None
+    terminal = parsed["terminal_finish_reason"]
+    if terminal in TERMINAL_FINISH_REASONS and parsed["session_id"] is not None:
+        return None
+    if terminal == "length":
+        return {"kind": "capability", "reason": "incomplete event stream"}
+    return {"kind": "tool", "reason": "incomplete event stream"}
 
 
 def append_outcome(routing_log: Path, entry: dict[str, Any]) -> None:
@@ -408,6 +413,9 @@ def run(
         "tool_errors": parsed["tool_errors"],
         "latency_s": round(latency, 3),
     }
+
+    if timed_out and not terminated:
+        result["retry_safe"] = False
 
     entry = {
         "kind": "outcome",

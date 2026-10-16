@@ -856,3 +856,98 @@ def test_decide_returns_decision_id(
     assert record["decision_id"] == result["decision_id"]
     assert record["task_id"] == "task_decide"
     assert record["result"]["decision_id"] == result["decision_id"]
+
+
+# ---------- regression tests for reviewer findings round 2 ----------
+
+
+def test_decide_returns_task_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    policy: dict,
+) -> None:
+    """Finding 9: decide() carries task_id in its return value."""
+    monkeypatch.setattr(route_pkg, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(route_pkg.hx_usage, "usage_snapshot", lambda policy=None, now=None: _all_available_usage())
+    monkeypatch.setattr(route_pkg.hx_usage, "load_policy", lambda: policy)
+
+    task = {"task_id": "task_tid", **_feature_task()}
+    result = decide(task)
+
+    assert result["task_id"] == "task_tid"
+
+
+def test_cli_task_id_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    policy: dict,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Finding 9: --task-id CLI flag is passed into the task and surfaced in output."""
+    monkeypatch.setattr(route_pkg, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(route_pkg.hx_usage, "usage_snapshot", lambda policy=None, now=None: _all_available_usage())
+    monkeypatch.setattr(route_pkg.hx_usage, "load_policy", lambda: policy)
+
+    code = main([
+        "--kind", "feature",
+        "--risk", "low",
+        "--size", "small",
+        "--attempt", "1",
+        "--last-failure", "none",
+        "--task-id", "cli_task_1",
+    ])
+    assert code == 0
+    out = capsys.readouterr().out.strip()
+    parsed = json.loads(out)
+    assert parsed["task_id"] == "cli_task_1"
+
+    log = tmp_path / ".hx" / "routing.jsonl"
+    record = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["task_id"] == "cli_task_1"
+
+
+def test_decision_and_outcome_share_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    policy: dict,
+) -> None:
+    """Finding 9: an ocrun outcome line and route decision line share decision_id and task_id."""
+    from hx import ocrun
+
+    monkeypatch.setattr(route_pkg, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(route_pkg.hx_usage, "usage_snapshot", lambda policy=None, now=None: _all_available_usage())
+    monkeypatch.setattr(route_pkg.hx_usage, "load_policy", lambda: policy)
+
+    task_id = "shared_task_42"
+    task = {"task_id": task_id, **_feature_task()}
+    decision = decide(task)
+    decision_id = decision["decision_id"]
+
+    session = "ses_shared000000000000000000"
+    stream = "\n".join([
+        json.dumps({"type": "step_start", "timestamp": 0, "sessionID": session, "part": {"id": "p1", "sessionID": session, "type": "step_start"}}),
+        json.dumps({"type": "step_finish", "timestamp": 0, "sessionID": session, "part": {"reason": "stop", "sessionID": session, "type": "step_finish", "tokens": {"total": 10, "input": 1, "output": 9, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0.001}}),
+    ])
+
+    def fake_execute(cmd, cwd, timeout):
+        return 0, stream, "", False, True
+
+    monkeypatch.setattr(ocrun, "execute", fake_execute)
+    routing_log = tmp_path / ".hx" / "routing.jsonl"
+    ocrun.run("x", "qwen3.8-flash", cwd=tmp_path, routing_log=routing_log, task_id=task_id, decision_id=decision_id)
+
+    lines = routing_log.read_text(encoding="utf-8").strip().splitlines()
+    records = [json.loads(line) for line in lines]
+
+    decision_records = [r for r in records if r["kind"] == "decision"]
+    outcome_records = [r for r in records if r["kind"] == "outcome"]
+
+    assert len(decision_records) >= 1
+    assert len(outcome_records) >= 1
+
+    dec = decision_records[-1]
+    out = outcome_records[-1]
+    assert dec["decision_id"] == decision_id
+    assert out["decision_id"] == decision_id
+    assert dec["task_id"] == task_id
+    assert out["task_id"] == task_id

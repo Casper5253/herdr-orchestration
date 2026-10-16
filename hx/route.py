@@ -507,13 +507,15 @@ def decide(task: dict[str, Any]) -> dict[str, Any]:
     result = route(task, snapshot, policy)
 
     decision_id = str(uuid.uuid4())
+    task_id = task.get("task_id")
     result["decision_id"] = decision_id
+    result["task_id"] = task_id
 
     ts = _now().isoformat()
     record = {
         "kind": "decision",
         "decision_id": decision_id,
-        "task_id": task.get("task_id"),
+        "task_id": task_id,
         "ts": ts,
         "task": task,
         "result": result,
@@ -538,6 +540,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prev", default=None)
     parser.add_argument("--persistent", default=None)
     parser.add_argument("--iterative", action="store_true")
+    parser.add_argument("--task-id", default=None, help="correlation id for the task")
     return parser
 
 
@@ -555,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
         "prev": prev,
         "persistent": persistent,
         "iterative": args.iterative,
+        "task_id": args.task_id,
     }
     result = decide(task)
     print(json.dumps(result))

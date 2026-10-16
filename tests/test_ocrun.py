@@ -205,7 +205,7 @@ def test_run_finish_length_zero_output_is_capability(repo: Path, routing_log: Pa
     assert result["ok"] is False
     assert result["failure"] is not None
     assert result["failure"]["kind"] == "capability"
-    assert "length" in result["failure"]["reason"]
+    assert result["failure"]["reason"] == "incomplete event stream"
 
 
 def test_run_timeout(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,7 +327,8 @@ def test_timeout_without_termination_confirmation(repo: Path, routing_log: Path,
 
     assert result["ok"] is False
     assert result["failure"]["kind"] == "tool"
-    assert "timeout" in result["failure"]["reason"].lower()
+    assert result["failure"]["reason"] == "termination-unconfirmed"
+    assert result["retry_safe"] is False
 
 
 def test_empty_output_exit_zero_is_incomplete(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -467,3 +468,126 @@ def test_completed_read_mentioning_rejection_is_not_a_permission_failure(
     monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
     result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
     assert result["ok"] is True, result["failure"]
+
+
+# ---------- regression tests for reviewer findings round 2 ----------
+
+
+def test_last_finish_tool_calls_is_incomplete_tool_failure(
+    repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 7: last step_finish reason 'tool-calls' is incomplete -> tool failure."""
+    stream = "\n".join(
+        [
+            _evt("step_start", {"id": "prt_1", "messageID": "msg_1"}),
+            _evt(
+                "tool_use",
+                {
+                    "tool": "bash",
+                    "callID": "toolu_1",
+                    "state": {"status": "completed", "input": {"command": "ls"}, "output": "a.py\n"},
+                },
+            ),
+            _evt(
+                "step_finish",
+                {
+                    "reason": "tool-calls",
+                    "messageID": "msg_1",
+                    "tokens": {"total": 500, "input": 6, "output": 100, "reasoning": 0, "cache": {"write": 0, "read": 0}},
+                    "cost": 0.001,
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_last_finish_end_turn_is_success(
+    repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 7: 'end_turn' is a valid terminal finish reason."""
+    stream = "\n".join(
+        [
+            _evt("step_start", {"id": "prt_1", "messageID": "msg_1"}),
+            _evt("text", {"text": "Done", "messageID": "msg_1"}),
+            _evt(
+                "step_finish",
+                {
+                    "reason": "end_turn",
+                    "messageID": "msg_1",
+                    "tokens": {"total": 200, "input": 6, "output": 50, "reasoning": 0, "cache": {"write": 0, "read": 0}},
+                    "cost": 0.001,
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is True
+    assert result["failure"] is None
+
+
+def test_last_finish_length_nonzero_output_is_incomplete_capability(
+    repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 7: last step_finish reason 'length' with nonzero output is still incomplete."""
+    stream = "\n".join(
+        [
+            _evt("step_start", {"id": "prt_1", "messageID": "msg_1"}),
+            _evt("text", {"text": "partial output...", "messageID": "msg_1"}),
+            _evt(
+                "step_finish",
+                {
+                    "reason": "length",
+                    "messageID": "msg_1",
+                    "tokens": {"total": 32000, "input": 0, "output": 500, "reasoning": 31500, "cache": {"write": 0, "read": 0}},
+                    "cost": 0.05,
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "capability"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_timeout_confirmed_termination_has_no_retry_safe(
+    repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 6: confirmed termination does NOT add retry_safe."""
+    monkeypatch.setattr(ocrun, "execute", _fake_execute("", -1, timed_out=True, terminated=True))
+    result = ocrun.run("big task", "qwen3.7-plus", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "timeout"
+    assert "retry_safe" not in result
+
+
+def test_ocrun_outcome_carries_decision_and_task_id(
+    repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 9: outcome line carries both decision_id and task_id."""
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, 0))
+    ocrun.run(
+        "fix it",
+        "qwen3.8-flash",
+        cwd=repo,
+        routing_log=routing_log,
+        task_id="task_abc",
+        decision_id="dec_xyz",
+    )
+
+    lines = routing_log.read_text(encoding="utf-8").strip().splitlines()
+    entry = json.loads(lines[-1])
+    assert entry["decision_id"] == "dec_xyz"
+    assert entry["task_id"] == "task_abc"
