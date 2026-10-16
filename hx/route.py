@@ -380,14 +380,28 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
     capability_failure = last_failure == "capability"
     stages.append("failure_cause")
 
-    # Input repair reuses the prior decision unless the model is exhausted.
+    # Input repair reuses the prior worker/model/effort unless the model is
+    # exhausted, but re-runs dispatch eligibility (persistent vs ocrun).
     if fix_input and prev:
         if not _prev_model_exhausted(prev, usage, policy):
+            chosen_worker = prev.get("worker")
+            chosen_model = prev.get("model")
+            chosen_effort = prev.get("effort")
+
+            if chosen_worker == "opencode":
+                method = _decide_method(task, chosen_model, chosen_effort, policy)
+            elif chosen_worker == "codex":
+                method = "ocrun-codex"
+            elif chosen_worker == "claude":
+                method = "subagent"
+            else:
+                method = prev.get("method")
+
             decision = {
-                "worker": prev.get("worker"),
-                "model": prev.get("model"),
-                "effort": prev.get("effort"),
-                "method": prev.get("method"),
+                "worker": chosen_worker,
+                "model": chosen_model,
+                "effort": chosen_effort,
+                "method": method,
                 "reason": (
                     f"retry after input failure; reuse prior decision; "
                     f"last_failure={last_failure} -> fix the input, not the model"
@@ -493,9 +507,13 @@ def decide(task: dict[str, Any]) -> dict[str, Any]:
     result = route(task, snapshot, policy)
 
     decision_id = str(uuid.uuid4())
+    result["decision_id"] = decision_id
+
     ts = _now().isoformat()
     record = {
+        "kind": "decision",
         "decision_id": decision_id,
+        "task_id": task.get("task_id"),
         "ts": ts,
         "task": task,
         "result": result,

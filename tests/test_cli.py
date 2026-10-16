@@ -186,7 +186,7 @@ def test_ocrun_subcommand_wired_with_prompt_file(
 
     routing_log = cli_repo / ".hx" / "routing.jsonl"
     last = json.loads(routing_log.read_text(encoding="utf-8").strip().splitlines()[-1])
-    assert last["kind"] == "ocrun"
+    assert last["kind"] == "outcome"
     assert last["model"] == "qwen3.8-flash"
     assert last["ok"] is True
 

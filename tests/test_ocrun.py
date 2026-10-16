@@ -123,9 +123,9 @@ LENGTH_ZERO_OUTPUT_STREAM = "\n".join(
 MALFORMED_STREAM = "\n".join([">{not json}dont parse me", json.dumps({"type": "error", "sessionID": SESSION})])
 
 
-def _fake_execute(stream: str, exit_code: int = 0, timed_out: bool = False):
+def _fake_execute(stream: str, exit_code: int = 0, timed_out: bool = False, terminated: bool = True):
     def fake(cmd, cwd, timeout):
-        return exit_code, stream, "", timed_out
+        return exit_code, stream, "", timed_out, terminated
 
     return fake
 
@@ -209,12 +209,13 @@ def test_run_finish_length_zero_output_is_capability(repo: Path, routing_log: Pa
 
 
 def test_run_timeout(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, -1, timed_out=True))
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, -1, timed_out=True, terminated=True))
     result = ocrun.run("big task", "qwen3.7-plus", cwd=repo, routing_log=routing_log)
 
     assert result["ok"] is False
     assert result["failure"] is not None
-    assert result["failure"]["kind"] == "timeout"
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "timeout"
 
 
 def test_run_nonzero_exit_without_silent_failure(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -236,13 +237,23 @@ def test_run_tolerates_malformed_lines(repo: Path, routing_log: Path, monkeypatc
 
 def test_run_appends_routing_outcome(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, 0))
-    ocrun.run("fix stats.py", "qwen3.8-flash", title="stats", cwd=repo, routing_log=routing_log)
+    ocrun.run(
+        "fix stats.py",
+        "qwen3.8-flash",
+        title="stats",
+        cwd=repo,
+        routing_log=routing_log,
+        task_id="task_1",
+        decision_id="dec_1",
+    )
 
     assert routing_log.exists()
     lines = [line for line in routing_log.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     entry = json.loads(lines[0])
-    assert entry["kind"] == "ocrun"
+    assert entry["kind"] == "outcome"
+    assert entry["task_id"] == "task_1"
+    assert entry["decision_id"] == "dec_1"
     assert entry["title"] == "stats"
     assert entry["model"] == "qwen3.8-flash"
     assert entry["ok"] is True
@@ -274,10 +285,25 @@ def test_build_command_flags(tmp_path: Path) -> None:
 
 def test_main_prints_json_and_exit_code(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, 0))
-    code = ocrun.main(["fix it", "--model", "qwen3.8-flash", "--cwd", str(repo)])
+    code = ocrun.main(
+        [
+            "fix it",
+            "--model", "qwen3.8-flash",
+            "--cwd", str(repo),
+            "--task-id", "task_main",
+            "--decision-id", "dec_main",
+        ]
+    )
     out1 = capsys.readouterr().out
     assert code == 0
     assert json.loads(out1)["ok"] is True
+
+    expected_log = repo / ".hx" / "routing.jsonl"
+    assert expected_log.exists()
+    entry = json.loads(expected_log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert entry["kind"] == "outcome"
+    assert entry["task_id"] == "task_main"
+    assert entry["decision_id"] == "dec_main"
 
     monkeypatch.setattr(ocrun, "execute", _fake_execute(QUOTA_ERROR_STREAM, 0))
     code = ocrun.main(["fix it", "--model", "deepseek-v4.1-flash", "--cwd", str(repo)])
@@ -289,3 +315,155 @@ def test_main_prints_json_and_exit_code(repo: Path, routing_log: Path, monkeypat
 def test_default_routing_log_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HX_ROUTING_LOG", str(tmp_path / "routing.jsonl"))
     assert ocrun.default_routing_log() == tmp_path / "routing.jsonl"
+
+
+# ---------- regression tests for reviewer findings ----------
+
+
+def test_timeout_without_termination_confirmation(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 6: unconfirmed termination is still a tool failure but noted."""
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, -1, timed_out=True, terminated=False))
+    result = ocrun.run("big task", "qwen3.7-plus", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert "timeout" in result["failure"]["reason"].lower()
+
+
+def test_empty_output_exit_zero_is_incomplete(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: exit 0 with empty output is an incomplete event stream."""
+    monkeypatch.setattr(ocrun, "execute", _fake_execute("", 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_garbage_output_exit_zero_is_incomplete(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: exit 0 with unparseable output is an incomplete event stream."""
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(">{not json}\n\nmore garbage", 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_truncated_output_without_step_finish_is_incomplete(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: a step_start without a final step_finish is incomplete."""
+    stream = _evt("step_start", {"id": "prt_1", "messageID": "msg_1"})
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_missing_session_id_is_incomplete(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: terminal success without a session id is incomplete."""
+    stream = json.dumps({"type": "step_finish", "part": {"reason": "stop", "tokens": {"output": 1}}})
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_error_finish_reason_is_incomplete(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: a final step_finish with reason=error is not terminal success."""
+    stream = _evt("step_finish", {"reason": "error", "messageID": "msg_1", "tokens": {"output": 1}})
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert result["failure"]["reason"] == "incomplete event stream"
+
+
+def test_unresolved_tool_error_at_end_is_tool_failure(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: tool error with no later successful step_finish -> tool failure."""
+    stream = "\n".join(
+        [
+            _evt("step_start", {"id": "prt_1", "messageID": "msg_1"}),
+            _evt(
+                "tool_use",
+                {
+                    "tool": "bash",
+                    "callID": "toolu_err",
+                    "state": {"status": "error", "error": "command failed"},
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is False
+    assert result["failure"]["kind"] == "tool"
+    assert "unresolved tool error" in result["failure"]["reason"].lower()
+
+
+def test_resolved_tool_error_with_stop_is_ok(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 7: tool error followed by a successful step_finish is not unresolved."""
+    stream = "\n".join(
+        [
+            _evt("step_start", {"id": "prt_1", "messageID": "msg_1"}),
+            _evt(
+                "tool_use",
+                {
+                    "tool": "bash",
+                    "callID": "toolu_err",
+                    "state": {"status": "error", "error": "command failed"},
+                },
+            ),
+            _evt(
+                "step_finish",
+                {
+                    "reason": "stop",
+                    "messageID": "msg_1",
+                    "tokens": {"total": 100, "input": 10, "output": 90, "reasoning": 0, "cache": {"write": 0, "read": 0}},
+                    "cost": 0.001,
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+
+    assert result["ok"] is True
+    assert result["failure"] is None
+
+
+def test_routing_log_uses_cwd_project_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Finding 9: ocrun logs to the project root of --cwd, not the caller's root."""
+    repo = tmp_path / "effective_repo"
+    repo.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(SUCCESS_STREAM, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo)
+
+    assert result["ok"] is True
+    expected_log = repo / ".hx" / "routing.jsonl"
+    assert expected_log.exists()
+    entry = json.loads(expected_log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert entry["kind"] == "outcome"
+
+
+
+def test_completed_read_mentioning_rejection_is_not_a_permission_failure(
+    repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful read whose output contains 'auto-rejected permission' must not fail the run."""
+    read = _evt(
+        "tool_use",
+        {"tool": "read", "callID": "toolu_r", "state": {"status": "completed",
+         "output": "- auto-rejected permission ask -> tool failure; external_directory"}},
+    )
+    lines = SUCCESS_STREAM.split("\n")
+    stream = "\n".join([lines[0], read] + lines[1:])
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(stream, 0))
+    result = ocrun.run("x", "qwen3.8-flash", cwd=repo, routing_log=routing_log)
+    assert result["ok"] is True, result["failure"]
