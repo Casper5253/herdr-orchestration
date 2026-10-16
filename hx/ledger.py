@@ -1,9 +1,15 @@
 """hx.ledger: atomic task ledger with file ownership and O_EXCL locking.
 
 The ledger lives in ``<repo>/.hx/ledger.json``; cross-agent leases live in
-``~/.herdr-team/state/leases.json``. Every mutation takes an O_EXCL lock and
-does an atomic read-check-mutate-replace cycle. Locks are considered stale
-after 60 seconds and are stolen by the next waiter.
+``~/.herdr-team/state/leases.json`` with two maps: ``files`` (per-file
+ownership recomputed from the open tasks) and ``sessions`` (per-agent session
+leases, written only through the public session functions). Every mutation
+takes an O_EXCL lock and does an atomic read-check-mutate-replace cycle.
+Locks are considered stale after 60 seconds and are stolen by the next waiter.
+
+Closing a task goes through :meth:`Ledger.complete_task`: the revision of the
+closing transition is computed inside the lock, the checkpoint is written with
+it, and only then is the ledger committed at that revision.
 """
 
 from __future__ import annotations
@@ -14,7 +20,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class OwnershipConflict(Exception):
@@ -23,6 +29,10 @@ class OwnershipConflict(Exception):
 
 class TaskNotFound(Exception):
     """Raised when a task id does not exist in the ledger."""
+
+
+class SessionLeaseConflict(Exception):
+    """Raised when a session lease blocks this agent from being dispatched to."""
 
 
 class LockTimeout(Exception):
@@ -154,6 +164,7 @@ class Ledger:
 
     OPEN_STATUSES = {"open", "assigned", "in_progress", "review"}
     CLOSED_STATUSES = {"done", "failed", "blocked"}
+    SESSION_LEASE_STATES = {"held", "compact-unknown"}
 
     def __init__(
         self,
@@ -186,9 +197,11 @@ class Ledger:
     def _load_leases(self) -> dict[str, Any]:
         data = _load_json(self.leases_path)
         if data is None:
-            return {"files": {}}
+            return {"files": {}, "sessions": {}}
         if "files" not in data:
-            data = {"files": {}}
+            data = {"files": {}, "sessions": {}}
+        if "sessions" not in data:
+            data["sessions"] = {}
         return data
 
     def _save(self, ledger: dict[str, Any], leases: dict[str, Any]) -> None:
@@ -196,8 +209,18 @@ class Ledger:
         _atomic_write_json(self.ledger_path, ledger)
         _atomic_write_json(self.leases_path, leases)
 
-    def _recompute_leases(self, ledger: dict[str, Any]) -> dict[str, Any]:
-        leases: dict[str, Any] = {"files": {}}
+    def _save_leases(self, leases: dict[str, Any]) -> None:
+        self.leases_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(self.leases_path, leases)
+
+    def _recompute_leases(
+        self,
+        ledger: dict[str, Any],
+        existing: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rebuild the ``files`` map from open tasks, leaving ``sessions`` alone."""
+        sessions = existing.get("sessions", {})
+        leases: dict[str, Any] = {"files": {}, "sessions": sessions}
         for task_id, task in ledger.get("tasks", {}).items():
             if task.get("status") in self.CLOSED_STATUSES:
                 continue
@@ -278,7 +301,7 @@ class Ledger:
             }
             ledger["tasks"][task_id] = task
             self._next_rev(ledger)
-            leases = self._recompute_leases(ledger)
+            leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task
 
@@ -287,6 +310,8 @@ class Ledger:
         task_id: str,
         owner: str,
         worktree: str | None = None,
+        method: str | None = None,
+        agent: str | None = None,
     ) -> dict[str, Any]:
         with LeaseLock(self.lock_path):
             ledger = self._load_ledger()
@@ -294,6 +319,22 @@ class Ledger:
             task = ledger.get("tasks", {}).get(task_id)
             if task is None:
                 raise TaskNotFound(task_id)
+            if method == "persistent" and agent:
+                # Entries are keyed by agent (dispatch leases) or by provider session id
+                # (hx.context compaction leases, which carry an "agent" field).
+                for key, entry in leases.get("sessions", {}).items():
+                    if key != agent and entry.get("agent") != agent:
+                        continue
+                    if entry.get("state") in ("compacting", "compact-unknown"):
+                        raise SessionLeaseConflict(
+                            f"Agent {agent} session is {entry['state']}; refusing dispatch"
+                        )
+                    entry_holder = entry.get("holder")
+                    if entry_holder and entry_holder != owner:
+                        raise SessionLeaseConflict(
+                            f"Agent {agent} session is held by {entry_holder}; "
+                            f"refusing dispatch"
+                        )
             if worktree is not None:
                 task["worktree"] = worktree
             canonical_files = task.get("files", [])
@@ -308,7 +349,7 @@ class Ledger:
             task["updated"] = _utcnow().isoformat()
             task["rev"] = task.get("rev", 0) + 1
             self._next_rev(ledger)
-            leases = self._recompute_leases(ledger)
+            leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task
 
@@ -317,6 +358,7 @@ class Ledger:
             raise ValueError(f"Invalid status: {status}")
         with LeaseLock(self.lock_path):
             ledger = self._load_ledger()
+            leases = self._load_leases()
             task = ledger.get("tasks", {}).get(task_id)
             if task is None:
                 raise TaskNotFound(task_id)
@@ -327,13 +369,14 @@ class Ledger:
                     task["attempts"] = task.get("attempts", 0) + 1
             task["rev"] = task.get("rev", 0) + 1
             self._next_rev(ledger)
-            leases = self._recompute_leases(ledger)
+            leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task
 
     def update_task(self, task_id: str, **fields: Any) -> dict[str, Any]:
         with LeaseLock(self.lock_path):
             ledger = self._load_ledger()
+            leases = self._load_leases()
             task = ledger.get("tasks", {}).get(task_id)
             if task is None:
                 raise TaskNotFound(task_id)
@@ -345,7 +388,112 @@ class Ledger:
             task["updated"] = _utcnow().isoformat()
             task["rev"] = task.get("rev", 0) + 1
             self._next_rev(ledger)
-            leases = self._recompute_leases(ledger)
+            leases = self._recompute_leases(ledger, leases)
+            self._save(ledger, leases)
+            return task
+
+    def acquire_session(
+        self,
+        agent: str,
+        session_id: str,
+        holder: str,
+        task_id: str | None = None,
+    ) -> bool:
+        """Acquire a session lease for ``agent`` under the ledger lock.
+
+        Returns False without changes when the agent already holds a lease in
+        state ``compact-unknown`` or when its session is held by a different
+        holder. An existing lease held by the same holder is updated in place
+        (e.g. a fresh session id after compaction).
+        """
+        with LeaseLock(self.lock_path):
+            leases = self._load_leases()
+            sessions = leases["sessions"]
+            entry = sessions.get(agent)
+            if entry is not None:
+                if entry.get("state") == "compact-unknown":
+                    return False
+                entry_holder = entry.get("holder")
+                if entry_holder and entry_holder != holder:
+                    return False
+            sessions[agent] = {
+                "agent": agent,
+                "session_id": session_id,
+                "holder": holder,
+                "state": "held",
+                "acquired": _utcnow().isoformat(),
+                "task_id": task_id,
+            }
+            self._save_leases(leases)
+        return True
+
+    def release_session(self, agent: str, holder: str) -> bool:
+        """Release the session lease for ``agent``; False when absent or held by another holder."""
+        with LeaseLock(self.lock_path):
+            leases = self._load_leases()
+            sessions = leases["sessions"]
+            entry = sessions.get(agent)
+            if entry is None:
+                return False
+            entry_holder = entry.get("holder")
+            if entry_holder and entry_holder != holder:
+                return False
+            del sessions[agent]
+            self._save_leases(leases)
+        return True
+
+    def set_session_state(self, agent: str, state: str) -> bool:
+        """Set the state (``held`` or ``compact-unknown``) of an existing session lease."""
+        if state not in self.SESSION_LEASE_STATES:
+            raise ValueError(f"Invalid session lease state: {state}")
+        with LeaseLock(self.lock_path):
+            leases = self._load_leases()
+            sessions = leases["sessions"]
+            entry = sessions.get(agent)
+            if entry is None:
+                return False
+            entry["state"] = state
+            self._save_leases(leases)
+        return True
+
+    def get_session(self, agent: str) -> dict[str, Any] | None:
+        with LeaseLock(self.lock_path):
+            leases = self._load_leases()
+            return leases["sessions"].get(agent)
+
+    def complete_task(
+        self,
+        task_id: str,
+        status: str,
+        checkpoint_writer: Callable[[dict[str, Any], int], Path],
+    ) -> dict[str, Any]:
+        """Close a task as ``done``/``failed``/``blocked`` under one lock.
+
+        The revision the closing transition produces is computed first, then
+        ``checkpoint_writer(task, new_rev)`` records the checkpoint with it,
+        and only afterwards is the ledger committed at that revision, so
+        validation passes right after the close. A crash before the commit
+        leaves the ledger intact at the old revision and the checkpoint
+        validates as stale. The writer must not call back into the ledger:
+        the lock is held and not re-entrant.
+        """
+        if status not in self.CLOSED_STATUSES:
+            raise ValueError(f"Invalid status: {status}")
+        with LeaseLock(self.lock_path):
+            ledger = self._load_ledger()
+            leases = self._load_leases()
+            task = ledger.get("tasks", {}).get(task_id)
+            if task is None:
+                raise TaskNotFound(task_id)
+            task["status"] = status
+            if status == "failed":
+                task["attempts"] = task.get("attempts", 0) + 1
+            task["updated"] = _utcnow().isoformat()
+            task["rev"] = task.get("rev", 0) + 1
+            ledger["rev"] = ledger.get("rev", 0) + 1
+            path = checkpoint_writer(task, task["rev"])
+            task["checkpoint"] = str(path)
+            leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task
 

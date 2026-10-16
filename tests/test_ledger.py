@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import os
 import subprocess
 import sys
@@ -187,6 +189,96 @@ def test_case_folded_paths(ledger: ledger_mod.Ledger) -> None:
         ledger.add_task("t2", title="Second", owner="hx-codex", files=["src/foo.py"])
 
 
+def test_sessions_preserved_across_task_mutation(ledger: ledger_mod.Ledger) -> None:
+    assert ledger.acquire_session(
+        "hx-opencode", "ses_1", holder="hx-claude", task_id=None
+    ) is True
+    assert ledger.get_session("hx-opencode")["session_id"] == "ses_1"
+
+    ledger.add_task("t1", title="First", owner="hx-opencode", files=["src/foo.py"])
+    ledger.set_status("t1", "in_progress")
+    ledger.update_task("t1", title="Renamed")
+
+    leases = ledger_mod._load_json(ledger.leases_path)
+    assert leases["sessions"]["hx-opencode"] == {
+        "agent": "hx-opencode",
+        "session_id": "ses_1",
+        "holder": "hx-claude",
+        "state": "held",
+        "acquired": leases["sessions"]["hx-opencode"]["acquired"],
+        "task_id": None,
+    }
+    assert any("foo.py" in key for key in leases["files"])
+    assert ledger.get_session("hx-codex") is None
+
+
+def test_session_acquire_conflict(ledger: ledger_mod.Ledger) -> None:
+    assert ledger.acquire_session("hx-opencode", "ses_1", holder="hx-claude") is True
+    assert ledger.acquire_session("hx-opencode", "ses_9", holder="hx-codex") is False
+    assert ledger.get_session("hx-opencode")["session_id"] == "ses_1"
+
+    assert (
+        ledger.acquire_session("hx-opencode", "ses_2", holder="hx-claude") is True
+    )
+    assert ledger.get_session("hx-opencode")["session_id"] == "ses_2"
+
+    assert ledger.release_session("hx-opencode", holder="hx-codex") is False
+    assert ledger.release_session("hx-opencode", holder="hx-claude") is True
+    assert ledger.get_session("hx-opencode") is None
+    assert (
+        ledger.acquire_session("hx-opencode", "ses_3", holder="hx-codex") is True
+    )
+
+
+def test_session_state_validation(ledger: ledger_mod.Ledger) -> None:
+    assert ledger.acquire_session("hx-opencode", "ses_1", holder="hx-opencode") is True
+    assert ledger.set_session_state("hx-opencode", "compact-unknown") is True
+    assert ledger.get_session("hx-opencode")["state"] == "compact-unknown"
+    assert ledger.set_session_state("hx-opencode", "held") is True
+    assert ledger.get_session("hx-opencode")["state"] == "held"
+    with pytest.raises(ValueError):
+        ledger.set_session_state("hx-opencode", "rebooted")
+    assert ledger.set_session_state("hx-codex", "held") is False
+
+
+def test_compact_unknown_blocks_persistent_assign(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="Task 1", owner="hx-opencode", files=["src/a.py"])
+
+    task = ledger.assign_task(
+        "t1", owner="hx-opencode", method="persistent", agent="hx-opencode"
+    )
+    assert task["status"] == "assigned"
+
+    assert ledger.acquire_session("hx-opencode", "ses_1", holder="hx-opencode") is True
+    ledger.set_session_state("hx-opencode", "compact-unknown")
+    with pytest.raises(ledger_mod.SessionLeaseConflict):
+        ledger.assign_task(
+            "t1", owner="hx-opencode", method="persistent", agent="hx-opencode"
+        )
+
+    ledger.set_session_state("hx-opencode", "held")
+    task = ledger.assign_task(
+        "t1", owner="hx-opencode", method="persistent", agent="hx-opencode"
+    )
+    assert task["status"] == "assigned"
+
+
+def test_persistent_assign_refuses_lease_held_by_other(
+    ledger: ledger_mod.Ledger,
+) -> None:
+    ledger.add_task("t1", title="Task 1", owner="hx-opencode", files=["src/a.py"])
+    assert ledger.acquire_session("hx-opencode", "ses_1", holder="hx-claude") is True
+    with pytest.raises(ledger_mod.SessionLeaseConflict):
+        ledger.assign_task(
+            "t1", owner="hx-opencode", method="persistent", agent="hx-opencode"
+        )
+    ledger.release_session("hx-opencode", holder="hx-claude")
+    task = ledger.assign_task(
+        "t1", owner="hx-opencode", method="persistent", agent="hx-opencode"
+    )
+    assert task["status"] == "assigned"
+
+
 def test_cli_task_add_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from hx import __main__ as cli
 
@@ -199,3 +291,14 @@ def test_cli_task_add_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 
     code = cli.main(["task", "add", "t2", "--title", "Second", "--owner", "hx-codex", "--files", "src/foo.py"])
     assert code == 1
+
+
+
+def test_context_lease_keyed_by_session_blocks_persistent_assign(ledger: ledger_mod.Ledger) -> None:
+    """hx.context writes sessions[<provider session id>] = {agent, token, state: compacting|compact-unknown}."""
+    ledger.add_task("t1", title="Task 1", owner="hx-opencode", files=["src/a.py"])
+    leases = json.loads(ledger.leases_path.read_text())
+    leases["sessions"]["ses_9"] = {"agent": "hx-opencode", "task_id": "t1", "token": "k", "state": "compacting"}
+    ledger.leases_path.write_text(json.dumps(leases))
+    with pytest.raises(ledger_mod.SessionLeaseConflict):
+        ledger.assign_task("t1", owner="hx-opencode", method="persistent", agent="hx-opencode")

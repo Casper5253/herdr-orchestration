@@ -49,17 +49,20 @@ def test_checkpoint_write_and_validate(repo: Path, ledger: ledger_mod.Ledger) ->
         "t1",
         ledger=ledger,
         objective="Do the thing",
+        decisions="Chose the simple approach",
+        errors="none",
         next_action="Open owned.py",
     )
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "## Objective" in text
     assert "## Next action" in text
+    assert f"ledger_rev: {ledger.get_task('t1')['rev']}" in text
     assert "owned.py" in text
     assert "other.py" not in text
 
     result = checkpoint.validate_checkpoint("t1", ledger=ledger)
-    assert result["ok"] is True
+    assert result["ok"] is True, result["errors"]
 
 
 def test_validate_missing_next_action(repo: Path, ledger: ledger_mod.Ledger) -> None:
@@ -69,9 +72,25 @@ def test_validate_missing_next_action(repo: Path, ledger: ledger_mod.Ledger) -> 
     assert any("Next action" in e for e in result["errors"])
 
 
+def test_validate_empty_agent_sections_fail(repo: Path, ledger: ledger_mod.Ledger) -> None:
+    checkpoint.write_checkpoint(
+        "t1", ledger=ledger, next_action="Next", decisions="   "
+    )
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    assert result["ok"] is False
+    assert any("Decisions" in e for e in result["errors"])
+
+    checkpoint.write_checkpoint("t1", ledger=ledger, next_action="Next")
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    assert result["ok"] is False
+    assert any("Exact errors" in e for e in result["errors"])
+
+
 def test_validate_git_mismatch(repo: Path, ledger: ledger_mod.Ledger) -> None:
     (repo / "owned.py").write_text("v1\n", encoding="utf-8")
-    checkpoint.write_checkpoint("t1", ledger=ledger, next_action="Continue")
+    checkpoint.write_checkpoint(
+        "t1", ledger=ledger, decisions="D", errors="none", next_action="Continue"
+    )
     result = checkpoint.validate_checkpoint("t1", ledger=ledger)
     assert result["ok"] is True
 
@@ -80,6 +99,18 @@ def test_validate_git_mismatch(repo: Path, ledger: ledger_mod.Ledger) -> None:
     result = checkpoint.validate_checkpoint("t1", ledger=ledger)
     assert result["ok"] is False
     assert any("git status" in e for e in result["errors"])
+
+
+def test_validate_rev_mismatch_fails(repo: Path, ledger: ledger_mod.Ledger) -> None:
+    checkpoint.write_checkpoint(
+        "t1", ledger=ledger, decisions="D", errors="none", next_action="Continue"
+    )
+    assert checkpoint.validate_checkpoint("t1", ledger=ledger)["ok"] is True
+
+    ledger.set_status("t1", "in_progress")
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    assert result["ok"] is False
+    assert any("ledger_rev" in e for e in result["errors"])
 
 
 def test_task_done_orders_checkpoint(repo: Path) -> None:
@@ -91,6 +122,8 @@ def test_task_done_orders_checkpoint(repo: Path) -> None:
         "task", "done", "t1",
         "--objective", "Do the thing",
         "--next", "Ship it",
+        "--decisions", "Chose the simple approach",
+        "--errors", "none",
     ])
     assert code == 0
 
@@ -101,6 +134,61 @@ def test_task_done_orders_checkpoint(repo: Path) -> None:
     assert cp_path.exists()
     text = cp_path.read_text(encoding="utf-8")
     assert "Ship it" in text
+
+
+def test_validate_passes_right_after_done(repo: Path) -> None:
+    led = ledger_mod.Ledger(repo_root=repo)
+    led.add_task("t1", title="Task 1", owner="hx-opencode", files=["owned.py"])
+    (repo / "owned.py").write_text("done\n", encoding="utf-8")
+
+    checkpoint.write_completion_checkpoint(
+        "t1",
+        ledger=led,
+        status="done",
+        objective="Do the thing",
+        decisions="Chose the simple approach",
+        errors="none",
+        next_action="Ship it",
+    )
+    result = checkpoint.validate_checkpoint("t1", ledger=led)
+    assert result["ok"] is True, result["errors"]
+    task = led.get_task("t1")
+    assert task["status"] == "done"
+    assert task["rev"] == 2
+
+
+def test_crash_before_commit_leaves_stale_checkpoint(repo: Path) -> None:
+    led = ledger_mod.Ledger(repo_root=repo)
+    led.add_task("t1", title="Task 1", owner="hx-opencode", files=["owned.py"])
+    (repo / "owned.py").write_text("done\n", encoding="utf-8")
+    before = led.get_task("t1")
+
+    def crash(_ledger: dict, _leases: dict) -> None:
+        raise RuntimeError("simulated crash before the ledger commit")
+
+    led._save = crash
+    try:
+        with pytest.raises(RuntimeError):
+            checkpoint.write_completion_checkpoint(
+                "t1",
+                ledger=led,
+                status="done",
+                objective="Do the thing",
+                decisions="D",
+                errors="none",
+                next_action="Ship it",
+            )
+    finally:
+        del led._save
+
+    led2 = ledger_mod.Ledger(repo_root=repo)
+    task = led2.get_task("t1")
+    assert task["status"] == before["status"]
+    assert task["rev"] == before["rev"]
+
+    result = checkpoint.validate_checkpoint("t1", ledger=led2)
+    assert result["ok"] is False
+    assert any("ledger_rev" in e for e in result["errors"])
 
 
 def test_checkpoint_only_owned_files(repo: Path, ledger: ledger_mod.Ledger) -> None:
