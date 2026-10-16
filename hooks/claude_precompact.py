@@ -18,6 +18,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Hooks run as scripts from hooks/, so make the hx package next to them importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 ACTIVE_STATUSES = {"assigned", "in_progress", "review"}
 
 
