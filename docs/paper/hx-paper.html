@@ -354,6 +354,7 @@ sequenceDiagram
 <table>
   <thead><tr><th>check</th><th>result</th><th>evidence</th></tr></thead>
   <tbody>
+    <tr><td>Messaging in all six directions between the three agents</td><td><span class="tag t-m">pass</span></td><td>direct <code>herdr agent prompt</code> each way</td></tr>
     <tr><td>Feature routed to the warm session, built, reviewed by Codex, corrected once, merged</td><td><span class="tag t-m">pass</span> 33 tests</td><td>e2e/todo-cli <span class="cite">e0521e9</span></td></tr>
     <tr><td>Task closed with a valid checkpoint; reservation released</td><td><span class="tag t-m">pass</span></td><td><code>hx task done</code> rev 5</td></tr>
     <tr><td>Live compaction of a worker</td><td><span class="tag t-m">pass</span> 310K → 31.6K</td><td>same session id</td></tr>
