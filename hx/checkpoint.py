@@ -1,9 +1,10 @@
 """hx.checkpoint: task checkpoint files with git-derived facts for owned files.
 
 A checkpoint is a Markdown file in ``<repo>/.hx/checkpoints/<task-id>.md`` with
-fixed sections. The script fills git-derived sections; the agent supplies the
-rest via flags or stdin. Validation enforces completeness and consistency with
-the working tree.
+fixed sections plus a ``ledger_rev`` line. The script fills git-derived
+sections; the agent supplies Decisions/Exact errors/Next action via flags or
+stdin. Validation enforces completeness and consistency with the working tree
+and the task's current revision.
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ SECTIONS = [
     "Next action",
     "References",
 ]
+
+AGENT_SECTIONS = ["Decisions", "Exact errors", "Next action"]
+
+_LEDGER_REV_RE = re.compile(r"^ledger_rev:\s*(\d+)\s*$", re.MULTILINE)
 
 
 def _repo_root() -> Path:
@@ -132,10 +137,13 @@ def _write_checkpoint(
     references: str,
     git_status: list[str],
     diff_stat: list[str],
+    ledger_rev: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"# Checkpoint: {task['id']}",
+        "",
+        f"ledger_rev: {ledger_rev}",
         "",
         "## Objective",
         objective,
@@ -213,7 +221,7 @@ def write_checkpoint(
     path = checkpoints_dir / f"{task_id}.md"
     # Record the checkpoint path in the ledger first so the file mtime is
     # strictly newer than the task's updated timestamp when validated.
-    ledger.update_task(task_id, checkpoint=str(path))
+    task = ledger.update_task(task_id, checkpoint=str(path))
     _write_checkpoint(
         path,
         task,
@@ -227,8 +235,71 @@ def write_checkpoint(
         references=references,
         git_status=owned_status,
         diff_stat=owned_diff_stat,
+        ledger_rev=task["rev"],
     )
     return path
+
+
+def write_completion_checkpoint(
+    task_id: str,
+    ledger: ledger_mod.Ledger | None = None,
+    *,
+    status: str = "done",
+    objective: str = "",
+    owner: str = "",
+    status_note: str = "",
+    decisions: str = "",
+    errors: str = "",
+    tests: str = "",
+    next_action: str = "",
+    references: str = "",
+    repo_root: Path | None = None,
+    checkpoints_dir: Path | None = None,
+) -> Path:
+    """Record the checkpoint for a closing transition, then commit the ledger.
+
+    Used by ``hx task done``/``failed``. The transition's revision is
+    computed inside the ledger lock, the checkpoint is written with it, and
+    the ledger is committed at that revision, so validation passes right
+    after the close. A crash before the commit leaves the ledger intact and
+    the checkpoint validates as stale.
+    """
+    if ledger is None:
+        ledger = ledger_mod.default_ledger()
+    if repo_root is None:
+        repo_root = ledger.repo_root
+    if checkpoints_dir is None:
+        checkpoints_dir = ledger.repo_root / ".hx" / "checkpoints"
+
+    def writer(task: dict[str, Any], rev: int) -> Path:
+        workdir = _task_workdir(task, repo_root)
+        owned_files = {_canonical_path(workdir / f) for f in task.get("files", [])}
+        owned_status = _filter_owned(
+            _git_status_porcelain(workdir), owned_files, workdir
+        )
+        owned_diff_stat = _filter_owned(
+            _git_diff_stat(workdir, task.get("base_commit", "")), owned_files, workdir
+        )
+        path = checkpoints_dir / f"{task_id}.md"
+        _write_checkpoint(
+            path,
+            task,
+            objective=objective,
+            owner=owner,
+            status=status_note or task.get("status", ""),
+            decisions=decisions,
+            errors=errors,
+            tests=tests,
+            next_action=next_action,
+            references=references,
+            git_status=owned_status,
+            diff_stat=owned_diff_stat,
+            ledger_rev=rev,
+        )
+        return path
+
+    ledger.complete_task(task_id, status, writer)
+    return checkpoints_dir / f"{task_id}.md"
 
 
 def _extract_section(text: str, section: str) -> str | None:
@@ -275,8 +346,20 @@ def validate_checkpoint(
         content = _extract_section(text, section)
         if content is None:
             errors.append(f"Missing section: {section}")
-        elif section == "Next action" and not content:
-            errors.append("Next action section is empty")
+        elif section in AGENT_SECTIONS and not content:
+            errors.append(f"{section} section is empty")
+
+    rev_match = _LEDGER_REV_RE.search(text)
+    if rev_match is None:
+        errors.append("Checkpoint does not record ledger_rev")
+    else:
+        recorded_rev = int(rev_match.group(1))
+        current_rev = task.get("rev", 0)
+        if recorded_rev != current_rev:
+            errors.append(
+                f"Checkpoint ledger_rev {recorded_rev} does not match "
+                f"the task's current revision {current_rev}"
+            )
 
     # Validate that the owned file list matches git status for owned files.
     workdir = _task_workdir(task, repo_root)
