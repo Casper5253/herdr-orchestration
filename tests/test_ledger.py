@@ -17,6 +17,12 @@ from hx import ledger as ledger_mod
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _owned_paths(leases: dict, ledger: ledger_mod.Ledger) -> list[str]:
+    """Flat list of file-lease paths inside this ledger's project partition."""
+    partition = leases["files"].get(ledger._project_partition_key(), {})
+    return list(partition)
+
+
 @pytest.fixture
 def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ledger_mod.Ledger:
     ledger_path = tmp_path / ".hx" / "ledger.json"
@@ -101,11 +107,12 @@ def test_status_done_removes_lease(ledger: ledger_mod.Ledger) -> None:
         files=["src/foo.py"],
     )
     leases = ledger_mod._load_json(ledger.leases_path)
-    assert "src/foo.py" in leases["files"] or any("foo.py" in k for k in leases["files"])
+    assert _owned_paths(leases, ledger)
+
 
     ledger.set_status("t1", "done")
     leases = ledger_mod._load_json(ledger.leases_path)
-    assert not any("foo.py" in k for k in leases["files"])
+    assert not _owned_paths(leases, ledger)
 
 
 def test_list_and_status(ledger: ledger_mod.Ledger) -> None:
@@ -208,7 +215,7 @@ def test_sessions_preserved_across_task_mutation(ledger: ledger_mod.Ledger) -> N
         "acquired": leases["sessions"]["hx-opencode"]["acquired"],
         "task_id": None,
     }
-    assert any("foo.py" in key for key in leases["files"])
+    assert any("foo.py" in key for key in _owned_paths(leases, ledger))
     assert ledger.get_session("hx-codex") is None
 
 
@@ -302,3 +309,154 @@ def test_context_lease_keyed_by_session_blocks_persistent_assign(ledger: ledger_
     ledger.leases_path.write_text(json.dumps(leases))
     with pytest.raises(ledger_mod.SessionLeaseConflict):
         ledger.assign_task("t1", owner="hx-opencode", method="persistent", agent="hx-opencode")
+
+
+# ---------- correction round 1: shared leases lock, pid steal, partitions -----
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
+
+
+def test_persistent_assign_requires_agent(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="hx-opencode", files=["src/a.py"])
+    with pytest.raises(ValueError):
+        ledger.assign_task("t1", owner="hx-opencode", method="persistent")
+
+
+def test_persistent_assign_atomically_reserves_session(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="hx-opencode", files=["src/a.py"])
+    task = ledger.assign_task("t1", owner="w", method="persistent", agent="hx-opencode")
+    assert task["status"] == "assigned"
+    lease = ledger.get_session("hx-opencode")
+    assert lease is not None
+    assert lease["holder"] == "w"
+    assert lease["state"] == "held"
+    assert lease["task_id"] == "t1"
+
+
+def test_lock_files_record_pid_and_are_stolen_when_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leases_lock = tmp_path / "leases.lock"
+    monkeypatch.setenv("HX_LEDGER_PATH", str(tmp_path / "ledger.json"))
+    monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / "leases.json"))
+    monkeypatch.setenv("HX_LOCK_PATH", str(tmp_path / "l.lock"))
+    led = ledger_mod.Ledger(repo_root=tmp_path)
+    assert led.leases_lock_path == leases_lock
+
+    with led._leases_lock():
+        info = json.loads(leases_lock.read_text(encoding="utf-8"))
+        assert info["pid"] == os.getpid()
+
+    leases_lock.write_text(json.dumps({"pid": 99999999, "ts": "2026-01-01"}), encoding="utf-8")
+    with led._leases_lock():
+        assert json.loads(leases_lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def test_lock_is_not_stolen_while_pid_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "l.lock"
+    lock_path.write_text(
+        json.dumps({"pid": os.getpid(), "ts": ledger_mod._utcnow().isoformat()}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ledger_mod.LockTimeout):
+        ledger_mod._acquire_lock(lock_path, stale_seconds=1.0, retries=2, delay=0.05)
+
+
+def test_mutations_take_shared_leases_lock_next_to_leases_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leases_path = tmp_path / "leases.json"
+    monkeypatch.setenv("HX_LEDGER_PATH", str(tmp_path / "ledger.json"))
+    monkeypatch.setenv("HX_LEASES_PATH", str(leases_path))
+    monkeypatch.setenv("HX_LOCK_PATH", str(tmp_path / "l.lock"))
+    led = ledger_mod.Ledger(repo_root=tmp_path)
+
+    observed: list[Path] = []
+    original_acquire = ledger_mod._acquire_lock
+
+    def recording_acquire(path: Path, stale_seconds: float = 60.0, retries: int = 100, delay: float = 0.05) -> None:
+        observed.append(path)
+        original_acquire(path, stale_seconds=stale_seconds, retries=retries, delay=delay)
+
+    monkeypatch.setattr(ledger_mod, "_acquire_lock", recording_acquire)
+    led.add_task("t1", title="T", owner="o", files=["a.py"])
+
+    assert ledger_mod.Path(tmp_path / "l.lock") in observed
+    assert ledger_mod.Path(tmp_path / "leases.lock") in observed
+    assert observed.index(tmp_path / "l.lock") < observed.index(tmp_path / "leases.lock")
+
+
+def test_file_leases_partitioned_per_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    leases = tmp_path / "leases.json"
+    monkeypatch.setenv("HX_LEASES_PATH", str(leases))
+
+    led_a = ledger_mod.Ledger(
+        ledger_path=tmp_path / "projA" / ".hx" / "ledger.json",
+        leases_path=leases,
+        lock_path=tmp_path / "projA" / ".hx" / "l.lock",
+        repo_root=tmp_path / "projA",
+    )
+    led_b = ledger_mod.Ledger(
+        ledger_path=tmp_path / "projB" / ".hx" / "ledger.json",
+        leases_path=leases,
+        lock_path=tmp_path / "projB" / ".hx" / "l.lock",
+        repo_root=tmp_path / "projB",
+    )
+
+    led_a.add_task("tA", title="A", owner="o", files=["a.py"])
+    led_b.add_task("tB", title="B", owner="o", files=["a.py"])
+
+    raw = json.loads(leases.read_text(encoding="utf-8"))
+    partition_a = raw["files"][led_a._project_partition_key()]
+    partition_b = raw["files"][led_b._project_partition_key()]
+    assert any(e["task_id"] == "tA" for e in partition_a.values())
+    assert any(e["task_id"] == "tB" for e in partition_b.values())
+
+    subsession = raw["sessions"].get("x")
+    assert subsession is None
+
+    # Recomputing project A's partition must not drop project B's leases.
+    led_a.add_task("tA2", title="A2", owner="o", files=["b.py"])
+    raw = json.loads(leases.read_text(encoding="utf-8"))
+    partition_b = raw["files"][led_b._project_partition_key()]
+    assert any(e["task_id"] == "tB" for e in partition_b.values())
+
+
+def test_worktree_claims_verified_against_git_worktree_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leases = tmp_path / "leases.json"
+    monkeypatch.setenv("HX_LEASES_PATH", str(leases))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    (repo / "owned1.py").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", str(wt), "-b", "wtbranch")
+
+    led = ledger_mod.Ledger(
+        ledger_path=tmp_path / "repo" / ".hx" / "ledger.json",
+        leases_path=leases,
+        lock_path=tmp_path / "repo" / ".hx" / "l.lock",
+        repo_root=repo,
+    )
+
+    task = led.add_task("t1", title="T", owner="o", files=["owned1.py"], worktree=str(wt))
+    assert task["worktree"] == str(wt)
+
+    with pytest.raises(ValueError):
+        led.add_task("t2", title="T2", owner="o", files=["owned2.py"], worktree=str(tmp_path / "bogus"))
+
+    with pytest.raises(ledger_mod.OwnershipConflict):
+        led.add_task("t3", title="T3", owner="o", files=["owned1.py"], worktree=str(wt))
+
+    task = led.add_task("t4", title="T4", owner="o", files=["owned1.py"])
+    assert task["worktree"] is None

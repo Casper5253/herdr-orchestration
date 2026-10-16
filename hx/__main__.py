@@ -140,6 +140,8 @@ def _task_add(args: argparse.Namespace) -> None:
 
 
 def _task_assign(args: argparse.Namespace) -> None:
+    if args.method == "persistent" and not args.agent:
+        raise ValueError("task assign --method persistent requires --agent")
     led = ledger.default_ledger()
     task = led.assign_task(
         args.id,

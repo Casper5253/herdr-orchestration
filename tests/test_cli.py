@@ -42,6 +42,7 @@ def cli_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HX_PROJECT_ROOT", str(repo))
     monkeypatch.setenv("HX_LEDGER_PATH", str(repo / ".hx" / "ledger.json"))
     monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / "leases.json"))
+    monkeypatch.setenv("HX_LEASES_LOCK_PATH", str(tmp_path / "leases.lock"))
     monkeypatch.setenv("HX_LOCK_PATH", str(repo / ".hx" / "ledger.lock"))
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
     return repo
@@ -145,6 +146,18 @@ def test_task_assign_persistent_allowed_for_free_agent(
 
     rc = cli.main(["task", "assign", "t1", "--owner", "w", "--method", "persistent", "--agent", "hx-opencode"])
     assert rc == 0
+
+
+def test_task_assign_persistent_requires_agent(
+    cli_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    assert cli.main(["task", "add", "t1", "--title", "T", "--owner", "w", "--files", "owned.py"]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(["task", "assign", "t1", "--owner", "w", "--method", "persistent"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "requires --agent" in err
 
 
 def test_route_subcommand_wired(

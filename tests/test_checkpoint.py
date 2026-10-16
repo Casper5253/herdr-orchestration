@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -32,7 +33,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HX_LEDGER_PATH", str(tmp_path / ".hx" / "ledger.json"))
     monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / ".herdr-team" / "state" / "leases.json"))
     monkeypatch.setenv("HX_LOCK_PATH", str(tmp_path / ".hx" / "ledger.lock"))
+    monkeypatch.setenv("HX_LEASES_LOCK_PATH", str(tmp_path / ".herdr-team" / "state" / "leases.lock"))
     monkeypatch.setenv("HX_CHECKPOINTS_DIR", str(tmp_path / ".hx" / "checkpoints"))
+    monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
     return tmp_path
 
 
@@ -199,3 +202,110 @@ def test_checkpoint_only_owned_files(repo: Path, ledger: ledger_mod.Ledger) -> N
     # owned.py is owned by t1; other.py is not.
     assert "owned.py" in text
     assert "other.py" not in text
+
+
+# ---------- correction round 1: authored preservation and close refusal -------
+
+
+def test_task_done_keeps_authored_checkpoint(
+    repo: Path, ledger: ledger_mod.Ledger, capsys: "pytest.CaptureFixture[str]"
+) -> None:
+    (repo / "owned.py").write_text("modified\n", encoding="utf-8")
+    assert cli.main([
+        "checkpoint", "write", "t1",
+        "--objective", "Authored objective",
+        "--decisions", "Authored decision",
+        "--errors", "Authored error",
+        "--tests", "authored test",
+        "--next", "Authored next step",
+        "--references", "authored ref",
+    ]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["task", "done", "t1"]) == 0
+    done_out = capsys.readouterr().out
+    task = json_recover(done_out, "t1")
+    text = Path(task["checkpoint"]).read_text(encoding="utf-8")
+
+    assert "Authored objective" in text
+    assert "Authored decision" in text
+    assert "Authored error" in text
+    assert "authored test" in text
+    assert "Authored next step" in text
+    assert "authored ref" in text
+    assert f"ledger_rev: {task['rev']}" in text
+
+    capsys.readouterr()
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    assert result["ok"] is True, result["errors"]
+
+
+def test_task_done_authored_content_wins_over_flag_defaults(
+    repo: Path, ledger: ledger_mod.Ledger, capsys: "pytest.CaptureFixture[str]"
+) -> None:
+    (repo / "owned.py").write_text("modified\n", encoding="utf-8")
+    checkpoint.write_checkpoint(
+        "t1",
+        ledger=ledger,
+        decisions="KEEP THIS",
+        errors="KEEP ERR",
+        next_action="KEEP NEXT",
+    )
+    assert cli.main([
+        "task", "done", "t1",
+        "--decisions", "flag decisions",
+        "--errors", "flag errors",
+        "--next", "flag next",
+    ]) == 0
+    capsys.readouterr()
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    text = Path(result["checkpoint"]).read_text(encoding="utf-8")
+    assert "KEEP THIS" in text
+    assert "KEEP ERR" in text
+    assert "KEEP NEXT" in text
+
+
+def test_task_done_refuses_when_validation_fails(
+    repo: Path, ledger: ledger_mod.Ledger
+) -> None:
+    (repo / "owned.py").write_text("done-ish\n", encoding="utf-8")
+    before = ledger.get_task("t1")
+
+    code = cli.main([
+        "task", "done", "t1",
+        "--objective", "o",
+        "--errors", "none",
+        "--next", "n",
+    ])
+    assert code != 0
+
+    after = ledger.get_task("t1")
+    assert after["status"] == before["status"]
+    assert after["rev"] == before["rev"]
+
+    # Empty Decisions means the close is invalid; the writer's trace file
+    # exists but the ledger refuses to close.
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    assert result["ok"] is False
+
+    (repo / "owned.py").write_text("done-ish2\n", encoding="utf-8")
+    code_ok = cli.main([
+        "task", "done", "t1",
+        "--objective", "o",
+        "--decisions", "d",
+        "--errors", "none",
+        "--next", "n",
+    ])
+    assert code_ok == 0
+    assert ledger.get_task("t1")["status"] == "done"
+
+
+# ---------- helpers -----------------------------------------------------------
+
+
+def json_recover(stdout: str, task_id: str) -> dict:
+    decoder = json.JSONDecoder()
+    obj, _end = decoder.raw_decode(stdout.strip())
+    assert obj["id"] == task_id
+    return obj
+
