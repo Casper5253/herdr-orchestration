@@ -45,9 +45,13 @@ PROVIDER = "opencode-go"
 VISIBLE_PROMPT_FILE = "prompt.md"
 VISIBLE_RUN_SCRIPT = "run.ps1"
 VISIBLE_DONE_FILE = "done.json"
+VISIBLE_LAST_FILE = "last.txt"
 VISIBLE_DONE_MARKER = "HX-DONE"
 POLL_INTERVAL_S = 2.0
 TITLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+CODEX_WARNING_MARKERS = ("prefer_mxc", "hook timeout")
+CODEX_MAX_ROLLOUT_FILES = 200
 
 FINISH_ERROR_REASONS = {"error"}
 TERMINAL_FINISH_REASONS = {"stop", "end_turn"}
@@ -418,6 +422,52 @@ def launch_visible(script_path: Path) -> bool:
         return False
 
 
+def write_codex_run_script(
+    run_dir: Path,
+    prompt: str,
+    model: str,
+    effort: str | None,
+    title: str,
+    cwd: Path,
+) -> dict[str, Path]:
+    """Write prompt.md and run.ps1 for a codex exec visible window.
+
+    The window -o writes the agent's last message to run_dir/last.txt so the
+    aggregation can require a non-empty final answer.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = run_dir / VISIBLE_PROMPT_FILE
+    prompt_path.write_text(prompt, encoding="utf-8")
+
+    def _ps(text: str) -> str:
+        return "'" + text.replace("'", "''") + "'"
+
+    cmd_parts = ["codex", "exec", "-p", "trusted-dev", "-m", _ps(model)]
+    if effort:
+        cmd_parts += ["-c", _ps(f"model_reasoning_effort={effort}")]
+    cmd_parts += ["-s", "workspace-write", "--skip-git-repo-check"]
+    cmd_parts += ["-C", _ps(str(cwd)), "-o", _ps(str(run_dir / VISIBLE_LAST_FILE))]
+    cmd_parts += ["(Get-Content -Raw %s)" % _ps(str(prompt_path))]
+    script = "\n".join(
+        [
+            "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
+            "clear-host",
+            "& %s" % " ".join(cmd_parts),
+            "$code = $LASTEXITCODE",
+            "@{ exit_code = $code } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % _ps(str(run_dir / VISIBLE_DONE_FILE)),
+            "Write-Host %s" % VISIBLE_DONE_MARKER,
+        ]
+    )
+    script_path = run_dir / VISIBLE_RUN_SCRIPT
+    script_path.write_text(script, encoding="utf-8")
+    return {
+        "prompt": prompt_path,
+        "script": script_path,
+        "done": run_dir / VISIBLE_DONE_FILE,
+        "last": run_dir / VISIBLE_LAST_FILE,
+    }
+
+
 def find_session_by_title(
     title: str,
     cwd: Path | None = None,
@@ -512,6 +562,180 @@ def wait_for_done(done_path: Path, timeout: float) -> bool:
             return True
         time.sleep(POLL_INTERVAL_S)
     return False
+
+
+def codex_home() -> Path:
+    env = os.environ.get("CODEX_HOME")
+    if env:
+        return Path(env)
+    return Path(os.path.expanduser("~")) / ".codex"
+
+
+def _normalise_path(text: str | None) -> str | None:
+    if not text:
+        return None
+    return os.path.normcase(Path(text).resolve() if Path(text).exists() else Path(text))
+
+
+def find_codex_rollout(
+    cwd: Path,
+    started_utc: datetime.datetime,
+    home: Path | None = None,
+) -> tuple[Path, dict[str, Any]] | tuple[None, None]:
+    """Newest codex rollout in ``~/.codex/sessions`` matching the run cwd.
+
+    A rollout counts when its ``session_meta.cwd`` equals the run cwd and its
+    meta timestamp is not earlier than the launch time; the newest by meta
+    timestamp wins. Session files are project-scoped, hence the cwd match.
+    """
+    root = (home or codex_home()) / "sessions"
+    if not root.is_dir():
+        return None, None
+    candidates: list[Path] = list(root.rglob("rollout-*.jsonl"))
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[:CODEX_MAX_ROLLOUT_FILES]
+    best: tuple[datetime.datetime, Path, dict[str, Any]] | None = None
+    want_cwd = _normalise_path(str(cwd))
+    for path in candidates:
+        meta = _read_session_meta(path)
+        if meta is None:
+            continue
+        meta_time = _meta_timestamp(meta.get("timestamp"))
+        if meta_time is None or meta_time < started_utc:
+            continue
+        if _normalise_path(meta.get("cwd")) != want_cwd:
+            continue
+        if best is None or meta_time > best[0]:
+            best = (meta_time, path, meta)
+    if best is None:
+        return None, None
+    return best[1], best[2]
+
+
+def _read_session_meta(path: Path) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            line = fh.readline()
+        meta = json.loads(line)
+    except Exception:
+        return None
+    payload = meta.get("payload")
+    return payload if isinstance(payload, dict) and meta.get("type") == "session_meta" else None
+
+
+def _meta_timestamp(text: str | None) -> datetime.datetime | None:
+    if not text:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def parse_codex_rollout(path: Path) -> dict[str, Any]:
+    """Aggregate a codex rollout for tokens, warning-free error items, tools.
+
+    tokens come from the last ``token_count`` event (info.total_token_usage,
+    the session total including reasoning); json error items that merely
+    warn (prefer_mxc preview notice, hook timeout clamp) are ignored.
+    """
+    tokens = {
+        "total": 0,
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+    }
+    result: dict[str, Any] = {
+        "session_id": None,
+        "cost": 0.0,
+        "tokens": tokens,
+        "tool_calls": 0,
+        "tool_errors": 0,
+        "error_texts": [],
+    }
+    try:
+        fh = open(path, encoding="utf-8")
+    except OSError:
+        return result
+    with fh:
+        for raw in fh:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                evt = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(evt, dict):
+                continue
+            payload = evt.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if evt.get("type") == "session_meta":
+                result["session_id"] = payload.get("session_id") or payload.get("id")
+                continue
+            if evt.get("type") == "event_msg" and payload.get("type") == "token_count":
+                usage = (payload.get("info") or {}).get("total_token_usage") or {}
+                tokens["total"] = _int_or_default(usage.get("total_tokens"), tokens["total"])
+                tokens["input"] = _int_or_default(usage.get("input_tokens"), tokens["input"])
+                tokens["output"] = _int_or_default(usage.get("output_tokens"), tokens["output"])
+                tokens["reasoning"] = _int_or_default(
+                    usage.get("reasoning_output_tokens"), tokens["reasoning"]
+                )
+                tokens["cache_read"] = _int_or_default(
+                    usage.get("cached_input_tokens"), tokens["cache_read"]
+                )
+                tokens["cache_write"] = _int_or_default(
+                    usage.get("cache_write_input_tokens"), tokens["cache_write"]
+                )
+                continue
+            if evt.get("type") != "response_item":
+                continue
+            kind = payload.get("type")
+            if kind in ("function_call", "custom_tool_call", "local_shell_call"):
+                result["tool_calls"] += 1
+                continue
+            if kind == "error":
+                text = _codex_error_text(payload)
+                lowered = (text or "").lower()
+                if any(marker in lowered for marker in CODEX_WARNING_MARKERS):
+                    continue
+                result["error_texts"].append(text)
+    return result
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    return int(value) if isinstance(value, (int, float)) else default
+
+
+def _codex_error_text(payload: dict[str, Any]) -> str:
+    for key in ("message", "text", "error"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return json.dumps(payload)[:300]
+
+
+def _detect_codex_failure(
+    exit_code: int | None,
+    last_text: str,
+    error_texts: list[str],
+    timed_out: bool,
+) -> dict[str, Any] | None:
+    if timed_out:
+        return {"kind": "tool", "reason": "termination-unconfirmed"}
+    if error_texts:
+        text = error_texts[0]
+        return {"kind": classify_error_text(text), "reason": text[:300]}
+    if exit_code not in (None, 0):
+        return {"kind": "exit", "reason": f"codex exec exited {exit_code}"}
+    if not (last_text or "").strip():
+        return {"kind": "tool", "reason": "empty last message (no last.txt)"}
+    return None
 
 
 def execute(
@@ -667,6 +891,8 @@ def _unique_run_dir(cwd: Path, title: str | None) -> Path:
 
 
 def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
+    worker = args_kw.get("worker", "opencode")
+    effort = args_kw.get("effort")
     prompt = args_kw["prompt"]
     model = args_kw["model"]
     variant = args_kw.get("variant")
@@ -679,7 +905,12 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     run_dir = _unique_run_dir(cwd, title)
     run_title = run_dir.name
-    files = write_run_script(run_dir, prompt, model, variant, run_title, cwd)
+    if worker == "codex":
+        started_utc = _utcnow()
+        files = write_codex_run_script(run_dir, prompt, model, effort, run_title, cwd)
+    else:
+        started_utc = None
+        files = write_run_script(run_dir, prompt, model, variant, run_title, cwd)
 
     if not launch_visible(files["script"]):
         result = _outcome_result(
@@ -693,6 +924,8 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
             "visible",
             run_dir,
         )
+        result["worker"] = worker
+        result["effort"] = effort
         _append_outcome_entry(
             result,
             run_dir.name,
@@ -716,6 +949,85 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
             exit_code = None
 
     timed_out = not finished
+    if worker == "codex":
+        result = _finish_codex_visible(
+            files,
+            run_dir,
+            cwd,
+            started_utc,
+            exit_code,
+            timed_out,
+            latency,
+            worker,
+        )
+    else:
+        result = _finish_opencode_visible(
+            files, run_dir, cwd, exit_code, timed_out, latency, worker, run_title
+        )
+    result["worker"] = worker
+    result["effort"] = effort
+    _append_outcome_entry(
+        result,
+        run_title,
+        model,
+        variant,
+        cwd,
+        task_id,
+        decision_id,
+        args_kw.get("routing_log"),
+    )
+    return result
+
+
+def _finish_codex_visible(
+    files: dict[str, Path],
+    run_dir: Path,
+    cwd: Path,
+    started_utc: datetime.datetime,
+    exit_code: int | None,
+    timed_out: bool,
+    latency: float,
+    worker: str,
+) -> dict[str, Any]:
+    rollout_path, meta = find_codex_rollout(cwd, started_utc)
+    parsed = parse_codex_rollout(rollout_path) if rollout_path else None
+    error_texts = (parsed or {}).get("error_texts") or []
+    if timed_out:
+        failure = {"kind": "tool", "reason": "termination-unconfirmed"}
+    else:
+        last_text = ""
+        last_file = files.get("last")
+        if last_file and last_file.exists():
+            last_text = last_file.read_text(encoding="utf-8", errors="replace")
+        if parsed is None:
+            failure = {"kind": "tool", "reason": "no codex rollout matching the run cwd"}
+        else:
+            failure = _detect_codex_failure(exit_code, last_text, error_texts, False)
+    parsed = parsed or _blank_parsed()
+    result = _outcome_result(
+        failure,
+        (parsed or {}).get("session_id"),
+        parsed,
+        latency,
+        exit_code,
+        timed_out,
+        not timed_out,
+        "visible",
+        run_dir,
+    )
+    result["worker"] = worker
+    return result
+
+
+def _finish_opencode_visible(    files: dict[str, Path],
+    run_dir: Path,
+    cwd: Path,
+    exit_code: int | None,
+    timed_out: bool,
+    latency: float,
+    worker: str,
+    run_title: str,
+) -> dict[str, Any]:
     session_id = find_session_by_title(run_title, cwd=cwd)
     if session_id is None:
         parsed = None
@@ -730,7 +1042,6 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
         failure = _detect_failure(parsed or _blank_parsed(), exit_code, timed_out, not timed_out)
         if payload is None:
             failure = failure or {"kind": "tool", "reason": f"export failed: {export_error}"}
-
     result = _outcome_result(
         failure,
         session_id,
@@ -742,16 +1053,7 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
         "visible",
         run_dir,
     )
-    _append_outcome_entry(
-        result,
-        run_title,
-        model,
-        variant,
-        cwd,
-        task_id,
-        decision_id,
-        args_kw.get("routing_log"),
-    )
+    result["worker"] = worker
     return result
 
 
@@ -788,6 +1090,8 @@ def _append_outcome_entry(
         "exit_code": result.get("exit_code"),
         "session_id": result["session_id"],
         "mode": result["mode"],
+        "worker": result.get("worker", "opencode"),
+        "effort": result.get("effort"),
     }
     append_outcome(routing_log or default_routing_log(cwd), entry)
 
@@ -810,8 +1114,10 @@ def run(
     task_id: str | None = None,
     decision_id: str | None = None,
     mode: str | None = None,
+    worker: str = "opencode",
+    effort: str | None = None,
 ) -> dict[str, Any]:
-    """Run one OpenCode worker and return the run outcome."""
+    """Run one OpenCode or Codex worker and return the run outcome."""
     if cwd is None:
         cwd = _repo_root()
     if mode == "visible":
@@ -826,8 +1132,12 @@ def run(
                 "routing_log": routing_log,
                 "task_id": task_id,
                 "decision_id": decision_id,
+                "worker": worker,
+                "effort": effort,
             }
         )
+    if worker != "opencode":
+        raise ValueError(f"worker {worker} supports visible mode only")
     started = time.monotonic()
     cmd = build_command(prompt, model, variant, cwd, title)
     execute_result = execute(cmd, cwd, timeout)
@@ -851,6 +1161,7 @@ def run(
         "tool_errors": parsed["tool_errors"],
         "latency_s": round(latency, 3),
         "mode": "headless",
+        "worker": "opencode",
     }
 
     if timed_out and not terminated:
@@ -891,7 +1202,14 @@ def main(argv: list[str] | None = None) -> int:
         help="read the prompt from this file instead of the positional prompt",
     )
     parser.add_argument("--model", required=True, help="model name or provider/model id")
-    parser.add_argument("--variant", default=None, help="provider-specific reasoning effort")
+    parser.add_argument("--variant", default=None, help="opencode provider variant (reasoning effort)")
+    parser.add_argument("--effort", default=None, help="codex reasoning effort (model_reasoning_effort override)")
+    parser.add_argument(
+        "--worker",
+        default="opencode",
+        choices=["opencode", "codex"],
+        help="which worker runs the task (codex requires visible mode)",
+    )
     parser.add_argument("--cwd", default=None, help="directory to run in")
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--title", default=None, help="title for the session")
@@ -911,6 +1229,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         parser.error("one of prompt or --prompt-file is required")
 
+    mode = resolve_mode(args.headless)
+    if args.worker == "codex" and mode == "headless":
+        parser.error("codex worker supports visible mode only (drop --headless)")
+
     result = run(
         prompt,
         args.model,
@@ -920,7 +1242,9 @@ def main(argv: list[str] | None = None) -> int:
         title=args.title,
         task_id=args.task_id,
         decision_id=args.decision_id,
-        mode=resolve_mode(args.headless),
+        mode=mode,
+        worker=args.worker,
+        effort=args.effort,
     )
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
