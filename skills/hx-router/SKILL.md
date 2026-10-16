@@ -12,17 +12,17 @@ Spend OpenCode Go first, because each OpenCode model has its own allowance (5h 2
 
 ## Loop for each piece of work
 1. **Check headroom** when a pool may be tight: `hx usage` (each value is tagged measured, estimated or unknown; unknown is not exhausted).
-2. **Route**: `hx route --kind <trivial|routine|investigate|feature|debug|refactor|test|review|architecture> [--risk high] [--size large] [--iterative] [--parallel] [--attempt N --last-failure <missing-context|unclear|tool|capability> --prev '<previous decision json>'] [--persistent '{"model":..,"effort":..,"status":..}']`. Output: worker, model, effort, method, reason. Follow it unless you have a concrete reason; if you override, say why in the brief.
+2. **Route**: `hx route --task-id <id> --kind <trivial|routine|investigate|feature|debug|refactor|test|review|architecture> [--risk high] [--size large] [--iterative] [--parallel] [--attempt N --last-failure <missing-context|unclear|tool|capability> --prev '<previous decision json>'] [--persistent '{"model":..,"effort":..,"status":..}']`. Output: worker, model, effort, method, reason, decision_id. Follow it unless you have a concrete reason; if you override, say why in the brief.
 3. **Track**: `hx task add <id> --title .. --owner <agent> --files <owned paths> [--worktree <path>]`, then `hx task assign <id> --owner <agent> [--method persistent --agent <name>]`. It refuses overlapping file ownership and agents that are mid-compaction. Parallel workers get disjoint files or their own `git worktree`.
 4. **Dispatch by method**:
    - `direct`: do it yourself (trivial; delegation costs more than the work).
    - `persistent`: herdr-team brief to the long-lived OpenCode session (iterative work, warm context).
-   - `ocrun`: `hx ocrun --model <m> [--variant <v>] --cwd <repo or worktree> --prompt-file <brief.md>`: headless OpenCode with a per-task model. Write the brief to a file; keep the worker inside the repo (it auto-rejects outside paths).
+   - `ocrun`: `hx ocrun --model <m> [--variant <v>] --cwd <repo or worktree> --prompt-file <brief.md> --task-id <id> --decision-id <from route>`: headless OpenCode with a per-task model. Write the brief to a file; keep the worker inside the repo (it auto-rejects outside paths).
    - `ocrun-codex` / `subagent`: `codex exec -m <model> -c model_reasoning_effort=<e>` or a Claude subagent with `effort`, only when OpenCode is exhausted or unsuitable.
    - `defer`: every pool is exhausted; report the earliest reset instead of burning retries.
-5. **Verify, never trust the report**: run the tests and read the diff yourself. Headless runs can exit 0 after an API error, a rejected permission or `finish=length` with no output; `hx ocrun` classifies these, so check its `ok` and `failure`.
+5. **Verify, never trust the report**: run the tests and read the diff yourself. Headless runs can exit 0 after an API error, a rejected permission or `finish=length` with no output; `hx ocrun` classifies these, so check its `ok` and `failure`, and never retry while `retry_safe` is false (the old worker may still be running). `ok` only means the run finished cleanly: still check the diff and the tests.
 6. **On failure**: classify the cause, then re-route with `--attempt`, `--last-failure` and `--prev`. At most 2 correction rounds per task, then escalate to the user.
-7. **Close**: the owner writes the checkpoint (`hx checkpoint write <id> --objective .. --decisions .. --errors <exact text or none> --tests '<cmd> -> <result>' --next ..`), then `hx task done <id>`. Cross-family review (author ≠ reviewer) for anything risky.
+7. **Close**: the owner writes the checkpoint (`hx checkpoint write <id> --objective .. --decisions .. --errors <exact text or none> --tests '<cmd> -> <result>' --next ..`), then `hx task done <id>` (refuses to close on an invalid checkpoint; releases the task's reservations). A stranded reservation: `hx task release <id>`. Cross-family review (author ≠ reviewer) for anything risky.
 
 ## Models (OpenCode Go, from the 2026-10-16 benchmark)
 - economy: `glm-5.3-flash` (fast, 5/5), then `qwen3.8-flash`, `mimo-v2.6-flash`.
