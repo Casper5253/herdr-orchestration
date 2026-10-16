@@ -81,6 +81,7 @@
     "stale_seconds": 3600
   },
   "persistent_opencode_model": "glm-5.3-flash",
+  "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.163.0/bin",
   "opencode_variants": {
     "deepseek-v4.1-flash": [
       "high",

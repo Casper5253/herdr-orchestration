@@ -266,6 +266,24 @@ def declared_variants(model: str) -> list[str]:
     return policy.get("opencode_variants", {}).get(model_name) or []
 
 
+def codex_bin_dir() -> Path | None:
+    """Pinned codex CLI directory from policy.codex_bin_dir, if it exists.
+
+    The team panes run a pinned codex (Start-HerdrTeam.ps1); a visible run
+    must use the same binary, not whichever codex is first on PATH.
+    """
+    from hx.usage import load_policy
+
+    try:
+        raw = load_policy().get("codex_bin_dir")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    path = Path(os.path.expandvars(os.path.expanduser(raw)))
+    return path if (path / "codex.exe").exists() or (path / "codex").exists() else None
+
+
 def _resolved_variant(model: str, variant: str | None) -> str | None:
     if not variant or variant not in declared_variants(model):
         return None
@@ -348,6 +366,19 @@ def visible_run_dir(cwd: Path, title: str) -> Path:
     return _repo_root(cwd) / ".hx" / "runs" / title
 
 
+def _prompt_arg(prompt_path: Path) -> str:
+    """PowerShell expression that passes a prompt file as one native argument.
+
+    Windows PowerShell 5.1 wraps an argument containing spaces in double
+    quotes but does not escape quotes inside it, so a prompt with a double
+    quote splits into several argv entries. Apply the MSVC argv rules
+    ourselves: backslashes before a quote are doubled and the quote escaped,
+    and trailing backslashes are doubled before the closing quote.
+    """
+    literal = "'" + str(prompt_path).replace("'", "''") + "'"
+    return "((Get-Content -Raw %s) -replace '(\\\\*)\"', '$1$1\\\"' -replace '(\\\\+)$', '$1$1')" % literal
+
+
 def write_run_script(
     run_dir: Path,
     prompt: str,
@@ -373,7 +404,7 @@ def write_run_script(
     if variant:
         cmd_parts += ["--variant", _ps(variant)]
     cmd_parts += ["--title", _ps(title), "--dir", _ps(str(cwd))]
-    cmd_parts += ["(Get-Content -Raw %s)" % _ps(str(prompt_path))]
+    cmd_parts.append(_prompt_arg(prompt_path))
     script = "\n".join(
         [
             "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
@@ -399,7 +430,9 @@ def launch_visible(script_path: Path) -> bool:
     space-joined list is rejected by Start-Process ("positional parameter
     cannot be found").
     """
-    parts = ["-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+    # Start-Process joins -ArgumentList with spaces and adds no quotes, so a
+    # script path with spaces must carry its own double quotes.
+    parts = ["-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", '"%s"' % script_path]
     arg_list = ",".join(
         "'" + part.replace("'", "''") + "'" for part in parts
     )
@@ -447,11 +480,13 @@ def write_codex_run_script(
         cmd_parts += ["-c", _ps(f"model_reasoning_effort={effort}")]
     cmd_parts += ["-s", "workspace-write", "--skip-git-repo-check"]
     cmd_parts += ["-C", _ps(str(cwd)), "-o", _ps(str(run_dir / VISIBLE_LAST_FILE))]
-    cmd_parts += ["(Get-Content -Raw %s)" % _ps(str(prompt_path))]
+    cmd_parts.append(_prompt_arg(prompt_path))
+    pinned = codex_bin_dir()
     script = "\n".join(
         [
             "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
             "clear-host",
+            *(["$env:PATH = %s + ';' + $env:PATH" % _ps(str(pinned))] if pinned else []),
             "& %s" % " ".join(cmd_parts),
             "$code = $LASTEXITCODE",
             "@{ exit_code = $code } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % _ps(str(run_dir / VISIBLE_DONE_FILE)),
