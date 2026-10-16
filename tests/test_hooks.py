@@ -6,15 +6,23 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+
+from hx import checkpoint, ledger
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 
 
 def _run_hook(name: str, payload: dict | None, cwd: Path, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
+    # pytest tmp_path can live inside the real repo; pin the project root so the
+    # hook resolves the ledger the test created instead of the enclosing repo.
+    cwd_source = payload.get("cwd") if payload else None
+    project_root = str(Path(cwd_source if cwd_source else cwd).resolve())
+    env["HX_PROJECT_ROOT"] = project_root
     if env_extra:
         env.update(env_extra)
     stdin = json.dumps(payload) if payload is not None else ""
@@ -27,6 +35,50 @@ def _run_hook(name: str, payload: dict | None, cwd: Path, env_extra: dict[str, s
         env=env,
         timeout=60,
     )
+
+
+def _make_led(repo_root: Path) -> ledger.Ledger:
+    return ledger.Ledger(
+        ledger_path=repo_root / ".hx" / "ledger.json",
+        leases_path=repo_root / ".hx" / "leases.json",
+        lock_path=repo_root / ".hx" / "ledger.lock",
+        repo_root=repo_root,
+    )
+
+
+def _add_assigned_task(led: ledger.Ledger, task_id: str) -> None:
+    led.add_task(
+        task_id=task_id,
+        title=f"Task {task_id}",
+        owner="test",
+        files=[],
+    )
+    led.assign_task(task_id, owner="test")
+
+
+def _write_checkpoint(
+    repo_root: Path,
+    led: ledger.Ledger,
+    task_id: str,
+    next_action: str,
+    objective: str = "",
+) -> Path:
+    path = checkpoint.write_checkpoint(
+        task_id,
+        ledger=led,
+        objective=objective or f"Objective for {task_id}",
+        owner="test",
+        status="in_progress",
+        decisions="some decision",
+        errors="none",
+        tests="",
+        next_action=next_action,
+        references="",
+    )
+    # Ensure checkpoint mtime is strictly after the task's updated timestamp.
+    future = time.time() + 1.0
+    os.utime(path, (future, future))
+    return path
 
 
 # ---------- claude_statusline.py ---------------------------------------------
@@ -101,7 +153,11 @@ def test_statusline_replaces_file_atomically_across_runs(tmp_path: Path) -> None
 # ---------- claude_precompact.py ---------------------------------------------
 
 
-def test_precompact_prints_instructions_and_active_tasks(tmp_path: Path) -> None:
+def test_precompact_prints_instructions_and_active_task_next_actions(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _write_checkpoint(tmp_path, led, "t1", "finish the parser")
+
     proc = _run_hook("claude_precompact.py", {"cwd": str(tmp_path)}, tmp_path)
 
     assert proc.returncode == 0
@@ -111,8 +167,23 @@ def test_precompact_prints_instructions_and_active_tasks(tmp_path: Path) -> None
     assert "exact error" in lowered
     assert "decisions" in lowered
     assert "next actions" in lowered
-    assert "Active tasks (hx ledger)" in out
-    assert "[]" in out
+    assert "Next action for t1: finish the parser" in out
+    assert "Active task checkpoints" in out
+
+
+def test_precompact_reports_tasks_without_valid_checkpoint(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _add_assigned_task(led, "t2")
+    _write_checkpoint(tmp_path, led, "t1", "finish the parser")
+
+    proc = _run_hook("claude_precompact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1: finish the parser" in out
+    assert "Next action for t2:" not in out
+    assert "Tasks without a valid checkpoint: t2" in out
 
 
 def test_precompact_never_fails(tmp_path: Path) -> None:
@@ -123,33 +194,137 @@ def test_precompact_never_fails(tmp_path: Path) -> None:
 # ---------- claude_session_compact.py ----------------------------------------
 
 
-def _make_checkpoints(tmp_path: Path) -> None:
-    checkpoints = tmp_path / ".hx" / "checkpoints"
-    checkpoints.mkdir(parents=True)
-    (checkpoints / "0001.md").write_text("# Checkpoint: old\n\n## Next action\nold action\n", encoding="utf-8")
-    (checkpoints / "0002.md").write_text("# Checkpoint: newest\n\n## Next action\nthe newest action\n", encoding="utf-8")
-    old_ts = (420.0, 420.0)
-    os.utime(checkpoints / "0001.md", old_ts)
-    new_ts = (840.0, 840.0)
-    os.utime(checkpoints / "0002.md", new_ts)
+def test_session_compact_prints_valid_checkpoints_for_active_tasks(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _add_assigned_task(led, "t2")
+    _write_checkpoint(tmp_path, led, "t1", "do t1 next")
+    _write_checkpoint(tmp_path, led, "t2", "do t2 next")
 
-
-def test_session_compact_prints_newest_checkpoint(tmp_path: Path) -> None:
-    _make_checkpoints(tmp_path)
     proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
 
     assert proc.returncode == 0
     out = proc.stdout
-    assert "Active tasks (hx ledger)" in out
-    assert "# Checkpoint: newest" in out
-    assert "the newest action" in out
-    assert "# Checkpoint: old" not in out
+    assert "Next action for t1: do t1 next" in out
+    assert "Next action for t2: do t2 next" in out
+    assert "## Rest of checkpoint for t1" in out
+    assert "## Rest of checkpoint for t2" in out
+
+
+def test_session_compact_ignores_non_active_tasks(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _add_assigned_task(led, "t2")
+    led.set_status("t2", "done")
+    _write_checkpoint(tmp_path, led, "t1", "do t1 next")
+    _write_checkpoint(tmp_path, led, "t2", "do t2 next")
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1: do t1 next" in out
+    assert "Next action for t2:" not in out
+
+
+def test_session_compact_ignores_open_status_tasks(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    led.add_task("t1", title="Task t1", owner="test", files=[])
+    _write_checkpoint(tmp_path, led, "t1", "do t1 next")
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1:" not in out
+    assert "checkpoint missing or stale for t1" not in out
+
+
+def test_session_compact_resolves_project_root_from_payload_cwd(tmp_path: Path) -> None:
+    subdir = tmp_path / "nested"
+    subdir.mkdir()
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _write_checkpoint(tmp_path, led, "t1", "resolved root")
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, subdir)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1: resolved root" in out
+
+
+def test_session_compact_reports_missing_checkpoints(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _add_assigned_task(led, "t2")
+    _write_checkpoint(tmp_path, led, "t1", "do t1 next")
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1: do t1 next" in out
+    assert "checkpoint missing or stale for t2" in out
+
+
+def test_session_compact_reports_stale_checkpoints(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _write_checkpoint(tmp_path, led, "t1", "do t1 next")
+    # Bump the task revision so the existing checkpoint becomes stale.
+    led.update_task("t1", notes="bump")
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1:" not in out
+    assert "checkpoint missing or stale for t1" in out
+
+
+def test_session_compact_next_action_first_and_never_truncated(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    long_next = "A" * 800
+    _write_checkpoint(tmp_path, led, "t1", long_next, objective="O" * 5000)
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    next_idx = out.index(f"Next action for t1: {long_next}")
+    body_idx = out.index("## Rest of checkpoint for t1")
+    assert next_idx < body_idx
+    assert f"Next action for t1: {long_next}" in out
+    assert len(out) < 7000
+
+
+def test_session_compact_trims_other_sections_near_6000_chars(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+    _add_assigned_task(led, "t2")
+    _write_checkpoint(tmp_path, led, "t1", "short next one", objective="O" * 4000)
+    _write_checkpoint(tmp_path, led, "t2", "short next two", objective="O" * 4000)
+
+    proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
+    assert proc.returncode == 0
+    out = proc.stdout
+    assert "Next action for t1: short next one" in out
+    assert "Next action for t2: short next two" in out
+    assert len(out) <= 6500
 
 
 def test_session_compact_no_checkpoints_found(tmp_path: Path) -> None:
+    led = _make_led(tmp_path)
+    _add_assigned_task(led, "t1")
+
     proc = _run_hook("claude_session_compact.py", {"cwd": str(tmp_path)}, tmp_path)
+
     assert proc.returncode == 0
-    assert "no checkpoint found" in proc.stdout
+    out = proc.stdout
+    assert "checkpoint missing or stale for t1" in out
 
 
 def test_session_compact_never_fails(tmp_path: Path) -> None:
