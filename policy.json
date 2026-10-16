@@ -63,7 +63,6 @@
       "mimo-v2.6-flash"
     ],
     "default": [
-      "minimax-m3",
       "qwen3.7-plus",
       "glm-5.3-flash"
     ],
@@ -78,7 +77,8 @@
   "persistent_opencode_model": "glm-5.3-flash",
   "excluded_models": {
     "deepseek-v4.1-flash": "APIError: requires Global regions (workspace privacy setting); docs/FINDINGS.md 5",
-    "deepseek-v4-pro": "same provider restriction assumed; untested"
+    "deepseek-v4-pro": "same provider restriction assumed; untested",
+    "minimax-m3": "Exhausts its fixed 32K reasoning budget with ~no output on multi-file edits after ~35K context: 4 of 6 real tasks on 2026-10-16 (docs/FINDINGS.md 7, 9). No variants to lower it."
   },
   "context_limits": {
     "glm-5.3-flash": 200000,
