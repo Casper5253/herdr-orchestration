@@ -94,7 +94,8 @@ def main() -> int:
     split_files = []
     for p in py_files:
         t = _read(p)
-        if 'in_q' in t or 'split_quoted' in t:
+        # Count files that implement splitting (a def or the quote-state loop), not files that import it.
+        if 'in_q' in t or re.search(r"^\s*def\s+\w*split\w*\(", t, re.M):
             split_files.append(p.name)
     if len(split_files) > 1:
         return _fail(f"quoted-splitting logic is duplicated in {split_files}")
