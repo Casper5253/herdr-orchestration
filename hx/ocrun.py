@@ -1,9 +1,19 @@
-"""hx.ocrun: headless OpenCode worker wrapper.
+"""hx.ocrun: OpenCode worker wrapper with two launch modes.
 
-Runs ``opencode run -m opencode-go/<model> --format json`` and aggregates the
-JSON event stream. A headless run exits 0 even when the model silently failed
+``headless`` keeps the original background behaviour: it runs
+``opencode run -m opencode-go/<model> --format json`` and aggregates the JSON
+event stream. A headless run exits 0 even when the model silently failed
 (docs/FINDINGS.md items 4, 6, 7), so ocrun never trusts the exit code.
-Detected silent failures and their classification:
+
+``visible`` (the default when HERDR_ENV=1) shows every run in its own
+console window: it writes ``<repo>/.hx/runs/<title>/{prompt.md, run.ps1,
+done.json}`` and opens the script via ``powershell -Command Start-Process
+powershell -ArgumentList -NoExit,...,-File,<run.ps1>``. The window stays
+open so the user can read it; ``done.json`` marks completion. Results come
+from ``opencode export <sessionID>`` and are classified with the same
+code path as headless runs.
+
+Detected silent failures and their classification (shared by both modes):
 
 - ``{"type":"error"}`` event in the stream -> ``quota`` when the text matches a
   rate limit / 429 / quota / "Global regions" marker, else ``capability``.
@@ -20,6 +30,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -30,6 +41,13 @@ from typing import Any
 from hx import paths
 
 PROVIDER = "opencode-go"
+
+VISIBLE_PROMPT_FILE = "prompt.md"
+VISIBLE_RUN_SCRIPT = "run.ps1"
+VISIBLE_DONE_FILE = "done.json"
+VISIBLE_DONE_MARKER = "HX-DONE"
+POLL_INTERVAL_S = 2.0
+TITLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 FINISH_ERROR_REASONS = {"error"}
 TERMINAL_FINISH_REASONS = {"stop", "end_turn"}
@@ -287,6 +305,189 @@ def _kill_process_tree(proc: subprocess.Popen) -> bool:
     return True
 
 
+def _sanitize_title(title: str) -> str | None:
+    """Keep only a Windows-safe run-directory slug, or None when unusable."""
+    if not title:
+        return None
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title.strip())
+    slug = re.sub(r"-{2,}", "-", slug).strip(".-_")
+    if not slug or not TITLE_RE.match(slug):
+        return None
+    return slug
+
+
+def visible_run_dir(cwd: Path, title: str) -> Path:
+    return _repo_root(cwd) / ".hx" / "runs" / title
+
+
+def write_run_script(
+    run_dir: Path,
+    prompt: str,
+    model: str,
+    variant: str | None,
+    title: str,
+    cwd: Path,
+) -> dict[str, Path]:
+    """Write prompt.md and run.ps1 under ``<repo>/.hx/runs/<title>/``."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = run_dir / VISIBLE_PROMPT_FILE
+    prompt_path.write_text(prompt, encoding="utf-8")
+
+    model_id = model if "/" in model else f"{PROVIDER}/{model}"
+    # Single-quoted PowerShell literals double embedded single quotes,
+    # so every field stays one literal token.
+    def _ps(text: str) -> str:
+        return "'" + text.replace("'", "''") + "'"
+
+    cmd_parts = ["opencode", "run", "-m", _ps(model_id)]
+    if variant:
+        cmd_parts += ["--variant", _ps(variant)]
+    cmd_parts += ["--title", _ps(title), "--dir", _ps(str(cwd))]
+    cmd_parts += ["(Get-Content -Raw %s)" % _ps(str(prompt_path))]
+    script = "\n".join(
+        [
+            "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
+            "clear-host",
+            "& %s" % " ".join(cmd_parts),
+            "$code = $LASTEXITCODE",
+            "@{ exit_code = $code } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % _ps(str(run_dir / VISIBLE_DONE_FILE)),
+            "Write-Host %s" % VISIBLE_DONE_MARKER,
+        ]
+    )
+    script_path = run_dir / VISIBLE_RUN_SCRIPT
+    script_path.write_text(script, encoding="utf-8")
+    return {"prompt": prompt_path, "script": script_path, "done": run_dir / VISIBLE_DONE_FILE}
+
+
+def launch_visible(script_path: Path) -> bool:
+    """Open the run script in a new visible PowerShell window.
+
+    Uses a fixed argv (never a shell) so no quoting is hand-rolled. The
+    arguments are passed as comma-separated single-quoted PowerShell literals:
+    powershell.exe -Command re-parses the command line, where a bare
+    comma list errors out ("missing argument in parameter list") and a
+    space-joined list is rejected by Start-Process ("positional parameter
+    cannot be found").
+    """
+    parts = ["-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+    arg_list = ",".join(
+        "'" + part.replace("'", "''") + "'" for part in parts
+    )
+    try:
+        proc = subprocess.Popen(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Start-Process powershell -ArgumentList " + arg_list,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        proc.wait(timeout=30)
+        return True
+    except Exception:
+        return False
+
+
+def find_session_by_title(
+    title: str,
+    cwd: Path | None = None,
+    settle_seconds: float = 30.0,
+) -> str | None:
+    """Newest opencode session whose title matches exactly (argv, no shell).
+
+    The listing is project-scoped (per git root), so it must be queried from
+    the run's cwd. Results may lag the run's exit a moment, hence the settle
+    retry loop.
+    """
+    deadline = time.monotonic() + settle_seconds
+    while True:
+        try:
+            result = subprocess.run(
+                ["opencode", "session", "list", "--format", "json", "-n", "50"],
+                capture_output=True,
+                timeout=60,
+                cwd=None if cwd is None else str(cwd),
+            )
+        except Exception:
+            return None
+        try:
+            sessions = json.loads(result.stdout.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            return None
+        if isinstance(sessions, list):
+            for item in sessions:
+                if isinstance(item, dict) and item.get("title") == title and item.get("id"):
+                    return item["id"]
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(POLL_INTERVAL_S)
+
+
+def export_session_text(session_id: str | None) -> tuple[str | None, str | None]:
+    """Export a session as JSON text; stdout has the payload, stderr a banner."""
+    if not session_id:
+        return None, None
+    try:
+        result = subprocess.run(
+            ["opencode", "export", session_id],
+            capture_output=True,
+            timeout=300,
+        )
+        return result.stdout.decode("utf-8", errors="replace"), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def parse_export(payload: str) -> dict[str, Any]:
+    """Aggregate an ``opencode export`` document with parse_events.
+
+    Export is {"info", "messages": [{"info", "parts": [...]}]}; parts carry the
+    same shapes as the JSON stream events (tool parts nest under "state"), so
+    the shared aggregator just needs the flattened part list with ``step-
+    finish`` renamed to ``step_finish``.
+    """
+    return parse_events(_export_stream(payload))
+
+
+def _export_stream(payload: str) -> str:
+    try:
+        document = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(document, dict):
+        return ""
+    lines: list[str] = []
+    for message in document.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        for part in message.get("parts") or []:
+            if isinstance(part, dict):
+                kind = part.get("type")
+                if kind == "step-finish":
+                    kind = "step_finish"
+                evt: dict[str, Any] = {
+                    "type": kind,
+                    "sessionID": part.get("sessionID"),
+                    "part": part,
+                }
+                lines.append(json.dumps(evt))
+    return "\n".join(lines)
+
+
+def wait_for_done(done_path: Path, timeout: float) -> bool:
+    """Poll for done.json until the timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if done_path.exists():
+            return True
+        time.sleep(POLL_INTERVAL_S)
+    return False
+
+
 def execute(
     cmd: list[str],
     cwd: Path,
@@ -376,6 +577,202 @@ def append_outcome(routing_log: Path, entry: dict[str, Any]) -> None:
         pass
 
 
+def _outcome_result(
+    failure: dict[str, Any] | None,
+    session_id: str | None,
+    parsed: dict[str, Any] | None,
+    latency: float,
+    exit_code: int | None,
+    timed_out: bool,
+    terminated: bool,
+    mode: str,
+    run_dir: Path | None,
+) -> dict[str, Any]:
+    parsed = parsed or {
+        "session_id": None,
+        "cost": 0.0,
+        "tokens": {
+            "total": 0,
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        },
+        "tool_calls": 0,
+        "tool_errors": 0,
+    }
+    result: dict[str, Any] = {
+        "ok": failure is None,
+        "failure": failure,
+        "session_id": session_id,
+        "cost": round(parsed["cost"], 6),
+        "tokens": parsed["tokens"],
+        "tool_calls": parsed["tool_calls"],
+        "tool_errors": parsed["tool_errors"],
+        "latency_s": round(latency, 3),
+        "mode": mode,
+    }
+    if exit_code is not None:
+        result["exit_code"] = exit_code
+    if run_dir is not None:
+        result["run_dir"] = str(run_dir)
+    if timed_out and not terminated:
+        result["retry_safe"] = False
+    return result
+
+
+def _unique_run_dir(cwd: Path, title: str | None) -> Path:
+    if cwd is None:
+        cwd = _repo_root()
+    else:
+        cwd = Path(cwd).resolve()
+    base = _repo_root(cwd)
+    timestamp = _utcnow().strftime("%Y%m%d-%H%M%S")
+    slug = title if title is not None else f"hx-{timestamp}"
+    if title is not None and _sanitize_title(title) is None:
+        raise ValueError(f"invalid title: {title}")
+    candidate = base / ".hx" / "runs" / slug
+    index = 1
+    while candidate.exists() and index < 100:
+        index += 1
+        candidate = base / ".hx" / "runs" / f"{slug}-{index}"
+    return candidate
+
+
+def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
+    prompt = args_kw["prompt"]
+    model = args_kw["model"]
+    variant = args_kw.get("variant")
+    cwd: Path = Path(args_kw["cwd"]).resolve()
+    timeout = args_kw.get("timeout", 1800.0)
+    title = args_kw.get("title")
+    task_id = args_kw.get("task_id")
+    decision_id = args_kw.get("decision_id")
+
+    started = time.monotonic()
+    run_dir = _unique_run_dir(cwd, title)
+    run_title = run_dir.name
+    files = write_run_script(run_dir, prompt, model, variant, run_title, cwd)
+
+    if not launch_visible(files["script"]):
+        result = _outcome_result(
+            {"kind": "tool", "reason": "failed to launch visible window"},
+            None,
+            None,
+            time.monotonic() - started,
+            None,
+            False,
+            True,
+            "visible",
+            run_dir,
+        )
+        _append_outcome_entry(
+            result,
+            run_dir.name,
+            model,
+            variant,
+            cwd,
+            task_id,
+            decision_id,
+            args_kw.get("routing_log"),
+        )
+        return result
+
+    finished = wait_for_done(files["done"], timeout)
+    latency = time.monotonic() - started
+    exit_code: int | None = None
+    if finished:
+        try:
+            done = json.loads(files["done"].read_text(encoding="utf-8-sig"))
+            exit_code = int(done["exit_code"])
+        except Exception:
+            exit_code = None
+
+    timed_out = not finished
+    session_id = find_session_by_title(run_title, cwd=cwd)
+    if session_id is None:
+        parsed = None
+        if timed_out:
+            failure = {"kind": "tool", "reason": "termination-unconfirmed"}
+        else:
+            failure = {"kind": "tool", "reason": f"no session named {run_title}"}
+    else:
+        payload, export_error = export_session_text(session_id)
+        if payload:
+            parsed = parse_export(payload)
+        failure = _detect_failure(parsed or _blank_parsed(), exit_code, timed_out, not timed_out)
+        if payload is None:
+            failure = failure or {"kind": "tool", "reason": f"export failed: {export_error}"}
+
+    result = _outcome_result(
+        failure,
+        session_id,
+        parsed,
+        latency,
+        exit_code,
+        timed_out,
+        not timed_out,
+        "visible",
+        run_dir,
+    )
+    _append_outcome_entry(
+        result,
+        run_title,
+        model,
+        variant,
+        cwd,
+        task_id,
+        decision_id,
+        args_kw.get("routing_log"),
+    )
+    return result
+
+
+def _blank_parsed() -> dict[str, Any]:
+    return parse_events("")
+
+
+def _append_outcome_entry(
+    result: dict[str, Any],
+    title: str | None,
+    model: str,
+    variant: str | None,
+    cwd: Path,
+    task_id: str | None,
+    decision_id: str | None,
+    routing_log: Path | None = None,
+) -> None:
+    entry = {
+        "kind": "outcome",
+        "decision_id": decision_id,
+        "task_id": task_id,
+        "ts": _utcnow().isoformat(),
+        "title": title,
+        "model": model,
+        "variant": variant,
+        "cwd": str(cwd),
+        "ok": result["ok"],
+        "failure": result["failure"],
+        "cost": result["cost"],
+        "tokens": result["tokens"],
+        "tool_calls": result["tool_calls"],
+        "tool_errors": result["tool_errors"],
+        "latency_s": result["latency_s"],
+        "exit_code": result.get("exit_code"),
+        "session_id": result["session_id"],
+        "mode": result["mode"],
+    }
+    append_outcome(routing_log or default_routing_log(cwd), entry)
+
+
+def resolve_mode(headless: bool) -> str:
+    """CLI-level mode choice: visible by default when HERDR_ENV=1."""
+    if headless:
+        return "headless"
+    return "visible" if os.environ.get("HERDR_ENV") == "1" else "headless"
+
+
 def run(
     prompt: str,
     model: str,
@@ -386,10 +783,25 @@ def run(
     routing_log: Path | None = None,
     task_id: str | None = None,
     decision_id: str | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    """Run one headless OpenCode worker and return the run outcome."""
+    """Run one OpenCode worker and return the run outcome."""
     if cwd is None:
         cwd = _repo_root()
+    if mode == "visible":
+        return run_visible(
+            {
+                "prompt": prompt,
+                "model": model,
+                "variant": variant,
+                "cwd": cwd,
+                "timeout": timeout,
+                "title": title,
+                "routing_log": routing_log,
+                "task_id": task_id,
+                "decision_id": decision_id,
+            }
+        )
     started = time.monotonic()
     cmd = build_command(prompt, model, variant, cwd, title)
     execute_result = execute(cmd, cwd, timeout)
@@ -412,6 +824,7 @@ def run(
         "tool_calls": parsed["tool_calls"],
         "tool_errors": parsed["tool_errors"],
         "latency_s": round(latency, 3),
+        "mode": "headless",
     }
 
     if timed_out and not terminated:
@@ -458,6 +871,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", default=None, help="title for the session")
     parser.add_argument("--task-id", default=None, help="correlation id for the task")
     parser.add_argument("--decision-id", default=None, help="correlation id from route.decide")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="run in background --format json mode even when HERDR_ENV=1 (visible mode is the default there)",
+    )
     args = parser.parse_args(argv)
 
     if args.prompt_file:
@@ -476,6 +894,7 @@ def main(argv: list[str] | None = None) -> int:
         title=args.title,
         task_id=args.task_id,
         decision_id=args.decision_id,
+        mode=resolve_mode(args.headless),
     )
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
