@@ -23,6 +23,9 @@ Copy-Item $profile_ "$profile_.bak-$stamp"
 $text = [IO.File]::ReadAllText($profile_, [Text.Encoding]::UTF8)
 $text = $text.Replace('You are dev-codex in a trusted Herdr dev team (dev-claude, dev-codex, dev-opencode).',
     'You are the Codex member of a trusted Herdr dev team: <team>-claude (lead), <team>-codex (you) and <team>-opencode, where <team> is dev or hx. Your own name is the herdr agent list entry whose pane_id equals HERDR_PANE_ID; address only teammates with your own prefix.')
+# Codex 0.163.0 fixed the elevated sandbox (#51634); drop the MXC workaround from the team profile.
+$text = $text.Replace("[windows]`r`nsandbox = `"mxc`"`r`n", "").Replace("[windows]`nsandbox = `"mxc`"`n", "")
+$text = $text.Replace("[features]`r`nprefer_mxc = true`r`n", "").Replace("[features]`nprefer_mxc = true`n", "")
 $repoKey = "[projects.'" + $PSScriptRoot.ToLower() + "']"
 if (-not $text.Contains($repoKey)) { $text += "`r`n$repoKey`r`ntrust_level = `"trusted`"`r`n" }
 [IO.File]::WriteAllText($profile_, $text, (New-Object Text.UTF8Encoding $false))

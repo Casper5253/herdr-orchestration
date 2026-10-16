@@ -20,7 +20,12 @@ if ($LeadPane) {
     $ws = Invoke-Herdr workspace create --cwd $Project --label ("team-" + (Split-Path $Project -Leaf)) --focus
     $lead = $ws.result.root_pane.pane_id
 }
-$right = (Invoke-Herdr pane split $lead --direction right --cwd $Project --no-focus).result.pane.pane_id
+# Team Codex runs the pinned CLI (0.163.0 fixes the elevated-sandbox regression, openai/codex #51634 via PR #51822),
+# first on PATH for this pane only; the desktop app's own codex is left alone.
+$codexBin = Join-Path $env:USERPROFILE 'Documents\Codex\CLI\codex\0.163.0\bin'
+$codexEnv = @()
+if (Test-Path (Join-Path $codexBin 'codex.exe')) { $codexEnv = @('--env', "PATH=$codexBin;$env:PATH") }
+$right = (Invoke-Herdr pane split $lead --direction right --cwd $Project --no-focus @codexEnv).result.pane.pane_id
 if (-not $NoOpenCode) {
     $below = (Invoke-Herdr pane split $right --direction down --cwd $Project --env "OPENCODE_CONFIG=$dir\opencode-trusted-dev.jsonc" --no-focus).result.pane.pane_id
 }
