@@ -1,6 +1,6 @@
 ---
 name: hx-router
-description: Lead playbook for routing work across the Herdr team with the hx CLI: pick worker, model, effort and route; check subscription headroom; track tasks; checkpoint and compact sessions. Use when leading a Herdr team (dev-* or hx-*) on any non-trivial task, before delegating, when a worker fails, or when a session's context grows.
+description: "Lead playbook for routing work across the Herdr team with the hx CLI: pick worker, model, effort and route; check subscription headroom; track tasks; checkpoint and compact sessions. Use when leading a Herdr team (dev-* or hx-*) on any non-trivial task, before delegating, when a worker fails, or when a session's context grows."
 ---
 
 # hx router (lead playbook)

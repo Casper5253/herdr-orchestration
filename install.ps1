@@ -20,7 +20,7 @@ Install-File (Join-Path $src 'herdr-team.rules') (Join-Path $home_ '.codex\rules
 # Codex profile: make the identity line team-neutral and trust this repo. Other content (trust entries) is kept.
 $profile_ = Join-Path $home_ '.codex\trusted-dev.config.toml'
 Copy-Item $profile_ "$profile_.bak-$stamp"
-$text = Get-Content -Raw $profile_
+$text = [IO.File]::ReadAllText($profile_, [Text.Encoding]::UTF8)
 $text = $text.Replace('You are dev-codex in a trusted Herdr dev team (dev-claude, dev-codex, dev-opencode).',
     'You are the Codex member of a trusted Herdr dev team: <team>-claude (lead), <team>-codex (you) and <team>-opencode, where <team> is dev or hx. Your own name is the herdr agent list entry whose pane_id equals HERDR_PANE_ID; address only teammates with your own prefix.')
 $repoKey = "[projects.'" + $PSScriptRoot.ToLower() + "']"
@@ -61,7 +61,7 @@ $claudeMd = Join-Path $home_ '.claude\CLAUDE.md'
 $line = '- Routing, quota checks, task tracking and compaction for the team run through the `hx` CLI: follow the `hx-router` skill when leading.'
 if (-not (Select-String -Path $claudeMd -SimpleMatch $line -Quiet)) {
     Copy-Item $claudeMd "$claudeMd.bak-$stamp"
-    $text = Get-Content -Raw $claudeMd
+    $text = [IO.File]::ReadAllText($claudeMd, [Text.Encoding]::UTF8)
     $text = $text.Replace("- Prefer working solo for independent, bounded tasks;", "$line`n- Prefer working solo for independent, bounded tasks;")
     [IO.File]::WriteAllText($claudeMd, $text, (New-Object Text.UTF8Encoding $false))
     Write-Host "updated $claudeMd"
