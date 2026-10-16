@@ -44,9 +44,16 @@ if ($LASTEXITCODE -ne 0) { throw 'pstack sync --check failed' }
 $bin = Join-Path $home_ '.local\bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
 $repo = $PSScriptRoot
-[IO.File]::WriteAllText((Join-Path $bin 'hx.cmd'), "@echo off`r`nset `"PYTHONPATH=$repo;%PYTHONPATH%`"`r`npython -m hx %*`r`n")
+function Install-Text($to, $content) {
+    # Same backup rule as Install-File; write to a temp file first so a failed write never leaves a half wrapper.
+    $tmp = "$to.tmp-$stamp"
+    [IO.File]::WriteAllText($tmp, $content, (New-Object Text.UTF8Encoding $false))
+    if (Test-Path $to) { Copy-Item $to "$to.bak-$stamp" }
+    Move-Item -Force $tmp $to
+}
+Install-Text (Join-Path $bin 'hx.cmd') "@echo off`r`nsetlocal`r`nset `"PYTHONPATH=$repo;%PYTHONPATH%`"`r`npython -m hx %*`r`n"
 $repoPosix = $repo.Replace('\', '/')
-[IO.File]::WriteAllText((Join-Path $bin 'hx'), "#!/bin/sh`nPYTHONPATH=`"$repoPosix`${PYTHONPATH:+;`$PYTHONPATH}`" exec python -m hx `"`$@`"`n")
+Install-Text (Join-Path $bin 'hx') "#!/bin/sh`nPYTHONPATH=`"$repoPosix`${PYTHONPATH:+;`$PYTHONPATH}`" exec python -m hx `"`$@`"`n"
 Write-Host "installed $bin\hx(.cmd)"
 
 # One pointer line in the global Claude instructions, added once.
