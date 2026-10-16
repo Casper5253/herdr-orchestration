@@ -245,6 +245,29 @@ def parse_events(stream: str) -> dict[str, Any]:
     return aggregated
 
 
+def declared_variants(model: str) -> list[str]:
+    """Variants the model declares, from policy.opencode_variants.
+
+    Measured with ``opencode models --verbose``; empty when it declares none
+    (a --variant for an undeclared effort is silently ignored by these
+    models, docs/FINDINGS.md / bench/RESULTS.md effort table).
+    """
+    from hx.usage import load_policy
+
+    try:
+        policy = load_policy()
+    except Exception:
+        return []
+    model_name = model.split("/")[-1]
+    return policy.get("opencode_variants", {}).get(model_name) or []
+
+
+def _resolved_variant(model: str, variant: str | None) -> str | None:
+    if not variant or variant not in declared_variants(model):
+        return None
+    return variant
+
+
 def build_command(
     prompt: str,
     model: str,
@@ -254,6 +277,7 @@ def build_command(
 ) -> list[str]:
     model_id = model if "/" in model else f"{PROVIDER}/{model}"
     cmd = ["opencode", "run", "-m", model_id]
+    variant = _resolved_variant(model, variant)
     if variant:
         cmd += ["--variant", variant]
     cmd += ["--format", "json", "--dir", str(cwd)]
@@ -336,6 +360,8 @@ def write_run_script(
     model_id = model if "/" in model else f"{PROVIDER}/{model}"
     # Single-quoted PowerShell literals double embedded single quotes,
     # so every field stays one literal token.
+    variant = _resolved_variant(model, variant)
+
     def _ps(text: str) -> str:
         return "'" + text.replace("'", "''") + "'"
 

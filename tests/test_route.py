@@ -968,3 +968,87 @@ def test_iterative_work_prefers_warm_persistent_model_in_tier() -> None:
     task["persistent"]["status"] = "working"
     d = route(task, usage, policy)
     assert (d["model"], d["method"]) == ("qwen3.7-plus", "ocrun"), d
+
+
+# ---------- opencode variants ----------
+
+
+MEASURED_VARIANTS = {
+    "deepseek-v4.1-flash": ["high", "low", "max"],
+    "deepseek-v4-pro": ["high", "max"],
+    "glm-5.3-flash": ["high", "low", "max"],
+    "kimi-k2.7-code": [],
+    "mimo-v2.6-flash": [],
+    "minimax-m3": ["none", "thinking"],
+    "qwen3.7-plus": ["high", "max"],
+    "qwen3.8-flash": ["low", "medium", "xhigh"],
+}
+
+
+def _policy_with_variants(policy: dict) -> dict:
+    extended = dict(policy)
+    extended["opencode_variants"] = MEASURED_VARIANTS
+    return extended
+
+
+def test_variant_is_effort_when_model_declares_it(policy: dict) -> None:
+    usage = _all_available_usage()
+    result = route(_feature_task(kind="test"), usage, _policy_with_variants(policy))
+    assert (result["worker"], result["model"]) == ("opencode", "deepseek-v4.1-flash")
+    assert result["effort"] == "low"
+    assert result["variant"] == "low"
+    assert "expressed by tier only" not in result["reason"]
+
+
+def test_variant_null_and_reason_says_tier_only_when_effort_undeclared(policy: dict) -> None:
+    usage = _all_available_usage()
+    result = route(_feature_task(), usage, _policy_with_variants(policy))
+    assert result["worker"] == "opencode"
+    assert result["model"] == "minimax-m3"
+    assert result["effort"] == "medium"
+    assert result["variant"] is None
+    assert "effort medium expressed by tier only" in result["reason"]
+
+
+def test_worker_never_opencode_models_get_no_variant_key_noise(policy: dict) -> None:
+    usage = _all_available_usage()
+    codex = route(_feature_task(kind="review"), usage, _policy_with_variants(policy))
+    assert codex["worker"] == "codex"
+    assert codex.get("variant") is None
+
+
+def test_fix_input_reuse_variant(policy: dict) -> None:
+    usage = _all_available_usage()
+    prev = {
+        "worker": "opencode",
+        "model": "qwen3.8-flash",
+        "effort": "medium",
+        "tier": "economy",
+        "method": "ocrun",
+        "capability_failures": 0,
+    }
+    declared = route(
+        _feature_task(last_failure="tool", prev=prev),
+        usage,
+        _policy_with_variants(policy),
+    )
+    assert declared["model"] == "qwen3.8-flash"
+    assert declared["variant"] == "medium"
+    assert "expressed by tier only" not in declared["reason"]
+
+    prev["model"] = "glm-5.3-flash"
+    undeclared = route(
+        _feature_task(last_failure="tool", prev=prev),
+        usage,
+        _policy_with_variants(policy),
+    )
+    assert undeclared["model"] == "glm-5.3-flash"
+    assert undeclared["variant"] is None
+    assert "effort medium expressed by tier only" in undeclared["reason"]
+
+
+def test_missing_variants_section_is_null_variant(policy: dict) -> None:
+    usage = _all_available_usage()
+    result = route(_feature_task(), usage, policy)
+    assert result["variant"] is None
+    assert "expressed by tier only" in result["reason"]

@@ -270,7 +270,8 @@ def test_run_quietly_keeps_going_when_routing_log_unwritable(repo: Path, tmp_pat
     assert result["ok"] is True
 
 
-def test_build_command_flags(tmp_path: Path) -> None:
+def test_build_command_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ocrun, "declared_variants", lambda model: ["high", "max"])
     cmd = ocrun.build_command("p", "qq", None, tmp_path, None)
     assert cmd[:4] == ["opencode", "run", "-m", "opencode-go/qq"]
     assert cmd[-1] == "p"
@@ -281,6 +282,33 @@ def test_build_command_flags(tmp_path: Path) -> None:
     assert "--variant" in cmd2
     assert "high" in cmd2
     assert "--title" in cmd2
+
+
+def test_build_command_drops_variant_model_declares_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ocrun, "declared_variants", lambda model: [])
+    cmd = ocrun.build_command("p", "qq", "high", tmp_path, None)
+    assert "--variant" not in cmd
+
+
+def test_build_command_drops_variant_not_in_declared_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ocrun, "declared_variants", lambda model: ["low", "medium", "xhigh"])
+    cmd = ocrun.build_command("p", "qq", "high", tmp_path, None)
+    assert "--variant" not in cmd
+    kept = ocrun.build_command("p", "qq", "xhigh", tmp_path, None)
+    assert kept[kept.index("--variant") + 1] == "xhigh"
+
+
+def test_declared_variants_reads_policy_variants(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "hx.usage.load_policy",
+        lambda: {"opencode_variants": {"glm-5.3-flash": ["high", "low", "max"]}},
+    )
+    assert ocrun.declared_variants("glm-5.3-flash") == ["high", "low", "max"]
+    assert ocrun.declared_variants("deprecated-model") == []
 
 
 def test_main_prints_json_and_exit_code(repo: Path, routing_log: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
@@ -591,3 +619,16 @@ def test_ocrun_outcome_carries_decision_and_task_id(
     entry = json.loads(lines[-1])
     assert entry["decision_id"] == "dec_xyz"
     assert entry["task_id"] == "task_abc"
+
+
+def test_write_run_script_variant_only_when_declared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "runs" / "vis-v"
+    monkeypatch.setattr(ocrun, "declared_variants", lambda model: [])
+
+    ocrun.write_run_script(run_dir, "p", "glm-5.3-flash", "medium", "vis-v", tmp_path)
+    assert "--variant" not in (run_dir / "run.ps1").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(ocrun, "declared_variants", lambda model: ["medium"])
+    ocrun.write_run_script(run_dir, "p", "glm-5.3-flash", "medium", "vis-v", tmp_path)
+    script = (run_dir / "run.ps1").read_text(encoding="utf-8")
+    assert "--variant 'medium'" in script

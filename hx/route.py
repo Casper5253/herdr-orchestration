@@ -77,6 +77,30 @@ def _tier_for_effort(effort: str) -> str:
     return EFFORT_TO_TIER.get(effort, "default")
 
 
+def _variant_for_opencode(model: str | None, effort: str | None, policy: dict[str, Any]) -> str | None:
+    """Per-model --variant: the effort, but only when this model declares it.
+
+    ``policy.opencode_variants`` (measured with ``opencode models --verbose``)
+    maps model -> declared variants. Efforts the model does not declare are
+    expressed through the tier/ladder choice only, so the variant is null.
+    """
+    if not model or not effort:
+        return None
+    declared = policy.get("opencode_variants", {}).get(model) or []
+    return effort if effort in declared else None
+
+
+def _task_variant(vehicle: dict[str, Any], policy: dict[str, Any]) -> tuple[str | None, str]:
+    """(variant, reason suffix) for an opencode decision from effort."""
+    model = vehicle.get("model")
+    effort = vehicle.get("effort")
+    variant = _variant_for_opencode(model, effort, policy)
+    suffix = ""
+    if variant is None and effort:
+        suffix = f"; effort {effort} expressed by tier only"
+    return variant, suffix
+
+
 def _is_quota_error(last_error: dict[str, Any] | None) -> bool:
     if not last_error:
         return False
@@ -423,14 +447,23 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
             else:
                 method = prev.get("method")
 
+            variant, tier_reason = (None, "")
+            if chosen_worker == "opencode":
+                variant, tier_reason = _task_variant(
+                    {"model": chosen_model, "effort": chosen_effort}, policy
+                )
+            else:
+                variant, tier_reason = None, ""
             decision = {
                 "worker": chosen_worker,
                 "model": chosen_model,
                 "effort": chosen_effort,
+                "variant": variant,
                 "method": method,
                 "reason": (
                     f"retry after input failure; reuse prior decision; "
                     f"last_failure={last_failure} -> fix the input, not the model"
+                    + tier_reason
                 ),
                 "stages": stages + ["failure_cause:fix_input"],
             }
@@ -511,14 +544,18 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
         else:
             stages.append(f"model:{model_id}")
             method = _decide_method(task, model_id, effort, policy)
+            variant, tier_reason = _task_variant(
+                {"model": model_id, "effort": effort}, policy
+            )
             decision = {
                 "worker": "opencode",
                 "model": model_id,
                 "effort": effort,
+                "variant": variant,
                 "method": method,
                 "reason": (
                     f"opencode ladder ({start_tier}) -> {model_id} "
-                    f"({status}, max util {util:.2f})"
+                    f"({status}, max util {util:.2f})" + tier_reason
                 ),
                 "stages": stages,
             }
