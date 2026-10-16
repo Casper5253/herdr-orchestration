@@ -154,7 +154,7 @@ def opencode_usage(
             "plan": plan_name,
             "db_path": str(db_path),
             "models": model_state,
-            "available": False,
+            "available": "unknown",
             "error": "opencode.db not found",
         }
 
@@ -205,7 +205,7 @@ def opencode_usage(
             "plan": plan_name,
             "db_path": str(db_path),
             "models": model_state,
-            "available": False,
+            "available": "unknown",
             "error": f"database read failed: {exc}",
         }
 
@@ -281,7 +281,7 @@ def codex_usage(
             "sessions_dir": str(sessions_dir),
             "rate_limits": None,
             "context": None,
-            "available": False,
+            "available": "unknown",
             "error": "Codex sessions directory not found",
         }
 
@@ -293,7 +293,7 @@ def codex_usage(
             "sessions_dir": str(sessions_dir),
             "rate_limits": None,
             "context": None,
-            "available": False,
+            "available": "unknown",
             "error": "No Codex rollout JSONL found",
         }
 
@@ -325,7 +325,7 @@ def codex_usage(
             "rollout": str(rollout),
             "rate_limits": None,
             "context": None,
-            "available": False,
+            "available": "unknown",
             "error": f"Failed to read rollout: {exc}",
         }
 
@@ -336,7 +336,7 @@ def codex_usage(
             "rollout": str(rollout),
             "rate_limits": None,
             "context": None,
-            "available": False,
+            "available": "unknown",
             "error": "No token_count event found",
         }
 
@@ -385,7 +385,7 @@ def claude_usage(
             "status_path": str(status_path),
             "context_window": None,
             "rate_limits": None,
-            "available": False,
+            "available": "unknown",
             "error": "Claude status file not found",
         }
 
@@ -402,7 +402,7 @@ def claude_usage(
             "status_path": str(status_path),
             "context_window": None,
             "rate_limits": None,
-            "available": False,
+            "available": "unknown",
             "error": f"Failed to read status file: {exc}",
         }
 
@@ -414,7 +414,7 @@ def claude_usage(
             "status_path": str(status_path),
             "context_window": status.get("context_window"),
             "rate_limits": status.get("rate_limits"),
-            "available": False,
+            "available": "unknown",
             "error": "Claude status file is older than 1 hour",
         }
 
@@ -464,7 +464,7 @@ def agents_usage(
             "sample_age_seconds": None,
             "prefix": prefix,
             "agents": [],
-            "available": False,
+            "available": "unknown",
             "error": f"herdr agent list failed: {exc}",
         }
 
@@ -484,6 +484,7 @@ def agents_usage(
                 "status": a.get("agent_status"),
                 "cwd": a.get("cwd"),
                 "focused": a.get("focused"),
+                "agent_session": (a.get("agent_session") or {}).get("value"),
             }
             for a in team
         ],

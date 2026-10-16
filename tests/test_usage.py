@@ -111,7 +111,7 @@ def test_opencode_usage(tmp_path: Path, policy: dict, now: datetime.datetime) ->
 def test_opencode_usage_missing_db(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
     result = opencode_usage(policy, db_path=tmp_path / "missing.db", now=now)
     assert result["tag"] == "unknown"
-    assert not result["available"]
+    assert result["available"] == "unknown"
 
 
 def _make_codex_rollout(path: Path) -> None:
@@ -156,7 +156,7 @@ def test_codex_usage(tmp_path: Path, policy: dict, now: datetime.datetime) -> No
 def test_codex_usage_missing_dir(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
     result = codex_usage(policy, sessions_dir=tmp_path / "nope", now=now)
     assert result["tag"] == "unknown"
-    assert not result["available"]
+    assert result["available"] == "unknown"
 
 
 def test_claude_usage_measured(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
@@ -192,8 +192,8 @@ def test_agents_usage(monkeypatch: pytest.MonkeyPatch, policy: dict, now: dateti
         return {
             "result": {
                 "agents": [
-                    {"name": "hx-claude", "agent_status": "idle", "cwd": "/a", "focused": True},
-                    {"name": "hx-codex", "agent_status": "idle", "cwd": "/b", "focused": False},
+                    {"name": "hx-claude", "agent_status": "idle", "cwd": "/a", "focused": True, "agent_session": {"value": "ses-claude"}},
+                    {"name": "hx-codex", "agent_status": "idle", "cwd": "/b", "focused": False, "agent_session": {"value": "ses-codex"}},
                     {"name": "dev-opencode", "agent_status": "working", "cwd": "/c"},
                 ]
             }
@@ -204,6 +204,8 @@ def test_agents_usage(monkeypatch: pytest.MonkeyPatch, policy: dict, now: dateti
     assert result["tag"] == "measured"
     assert len(result["agents"]) == 2
     assert result["available"] is True
+    assert result["agents"][0]["agent_session"] == "ses-claude"
+    assert result["agents"][1]["agent_session"] == "ses-codex"
 
 
 def test_agents_usage_blocked(monkeypatch: pytest.MonkeyPatch, policy: dict, now: datetime.datetime) -> None:
@@ -222,7 +224,7 @@ def test_agents_usage_subprocess_failure(monkeypatch: pytest.MonkeyPatch, policy
     monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
     result = agents_usage(policy, prefix="hx-", now=now)
     assert result["tag"] == "unknown"
-    assert not result["available"]
+    assert result["available"] == "unknown"
 
 
 def test_usage_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, now: datetime.datetime) -> None:
