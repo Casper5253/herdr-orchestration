@@ -5,23 +5,79 @@
     "go": {
       "name": "OpenCode Go",
       "monthly_caps": {
-        "deepseek-v4.1-flash": { "go": 80.0, "go_plus": 160.0 },
-        "mimo-v2.6-flash": { "go": 60.0, "go_plus": 120.0 },
-        "qwen3.8-flash": { "go": 30.0, "go_plus": 90.0 },
-        "glm-5.3-flash": { "go": 60.0, "go_plus": 180.0 },
-        "minimax-m3": { "go": 60.0, "go_plus": 180.0 },
-        "qwen3.7-plus": { "go": 60.0, "go_plus": 180.0 },
-        "kimi-k2.7-code": { "go": 60.0, "go_plus": 180.0 },
-        "deepseek-v4-pro": { "go": 15.0, "go_plus": 60.0 }
+        "deepseek-v4.1-flash": {
+          "go": 80.0,
+          "go_plus": 160.0
+        },
+        "mimo-v2.6-flash": {
+          "go": 60.0,
+          "go_plus": 120.0
+        },
+        "qwen3.8-flash": {
+          "go": 30.0,
+          "go_plus": 90.0
+        },
+        "glm-5.3-flash": {
+          "go": 60.0,
+          "go_plus": 180.0
+        },
+        "minimax-m3": {
+          "go": 60.0,
+          "go_plus": 180.0
+        },
+        "qwen3.7-plus": {
+          "go": 60.0,
+          "go_plus": 180.0
+        },
+        "kimi-k2.7-code": {
+          "go": 60.0,
+          "go_plus": 180.0
+        },
+        "deepseek-v4-pro": {
+          "go": 15.0,
+          "go_plus": 60.0
+        }
       }
     }
   },
+  "codex": {
+    "economy_model": "gpt-5.6-luna",
+    "strong_model": "gpt-6.1-sol"
+  },
+  "effort_by_kind": {
+    "trivial": "low",
+    "routine": "low",
+    "test": "low",
+    "investigate": "low",
+    "feature": "medium",
+    "debug": "medium",
+    "refactor": "medium",
+    "review": "high",
+    "architecture": "high"
+  },
+  "default_effort": "medium",
   "ladders": {
-    "economy": ["deepseek-v4.1-flash", "mimo-v2.6-flash", "qwen3.8-flash", "glm-5.3-flash"],
-    "default": ["minimax-m3", "qwen3.7-plus"],
-    "strong": ["kimi-k2.7-code", "deepseek-v4-pro"]
+    "economy": [
+      "glm-5.3-flash",
+      "qwen3.8-flash",
+      "mimo-v2.6-flash"
+    ],
+    "default": [
+      "minimax-m3",
+      "qwen3.7-plus",
+      "glm-5.3-flash"
+    ],
+    "strong": [
+      "kimi-k2.7-code"
+    ]
   },
   "thresholds": {
-    "pool_soft_limit": 0.85
+    "pool_soft_limit": 0.85,
+    "stale_seconds": 3600
+  },
+  "persistent_opencode_model": "glm-5.3-flash",
+  "excluded_models": {
+    "deepseek-v4.1-flash": "APIError: requires Global regions (workspace privacy setting); docs/FINDINGS.md 5",
+    "deepseek-v4-pro": "same provider restriction assumed; untested"
   }
 }
