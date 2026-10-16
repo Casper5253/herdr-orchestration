@@ -119,6 +119,21 @@ The lead (Claude) is not compacted by hx: Claude's own auto-compact runs, the `P
 
 `.hx/routing.jsonl`: one line per routing decision and one per outcome: task id, worker, model, effort, method, reason, duration, tokens/cost when known (ocrun and codex exec report them), attempts, result. `hx report` summarises by pool and model: tasks, success rate, cost, and the Claude/Codex work avoided. No dashboard.
 
+## Review round 1 (hx-codex, f61a26b): binding amendments
+
+These override the sections above where they conflict.
+
+1. **Router is staged, not first-match.** Order: (a) attempt cap (`attempt > max_attempts` -> strong model, then stop); (b) failure cause (`missing-context|unclear|tool` -> same worker/model, fix the input); (c) pool selection (trivial/direct, review/architecture/high risk, else OpenCode); (d) model on the ladder with fallback across ladder steps and pools.
+2. **Leases.** One lease per agent session in `~/.herdr-team/state/leases.json` (under the same lock as the ledger). Dispatch to a persistent agent and compaction both acquire it; compaction re-checks session ID and idle immediately before sending `/compact`.
+3. **Checkpoints are agent-authored.** Decisions, Exact errors and Next action come from the owning agent (`hx checkpoint write --from-file`); the script only adds git facts. Validate requires the agent sections non-empty and `ledger_rev` equal to the task's current revision. Native auto-compaction is labelled *unprotected safety net*; hx-run compaction is *protected*.
+4. **Protected compaction only at boundaries in v1.** `hx compact` runs only when the agent's task is `done|failed`, its owned changes are committed (or listed in the checkpoint), and the lease is held. Completion requires the same session ID plus a post-request telemetry sample showing lower context. On timeout the lease stays in state `compact-unknown`; no dispatch to that agent until it is idle and fresh telemetry is seen. Pressure-only compaction mid-task is left to native auto-compaction.
+5. **Ledger concurrency.** One lock (`.hx/ledger.lock`, O_EXCL create, stale after 60s) is held across read-check-mutate-replace. Ledger has a monotonically increasing `rev`. Routing log lines carry `decision_id`; outcomes reference it. Order on completion: checkpoint first, then ledger status, so a crash leaves a recoverable checkpoint.
+6. **Telemetry binds to session IDs**, not newest file: `herdr agent get` returns `agent_session.value` (Codex rollout id, OpenCode `ses_...`). Claude status line writes `claude-status-<session_id>.json`; the lead's session id is recorded in the ledger at start.
+7. **Ownership uses canonical paths** (resolved, case-folded on Windows). `--worktree` records the worktree root and is verified with `git worktree list`; overlap checks still apply within one worktree.
+8. **Availability is tri-state**: `available | exhausted | unknown`. All windows (5h, week, month) are checked after normalising to fractions. Unknown or stale (>1h) pools rank below available ones but are not treated as exhausted. Busy or blocked persistent agents are not eligible for `persistent` dispatch.
+9. **Persistent sessions report their real model.** The router reads hx-opencode's actual model (latest message `modelID`). If the chosen model or effort differs, the route becomes `ocrun`. Effort-to-variant mapping is per model in `policy.json`, verified by the benchmark; unmapped -> no `--variant`.
+10. **Task base.** Ledger stores `base_commit`, `worktree`, and `rev` per task. Checkpoint validation only compares the task's owned files against `base_commit..HEAD` plus working-tree changes to those files.
+
 ## Validation plan
 
 Unit tests per module with fixture DBs/JSONL. Live checks: V-1 `/compact` via herdr prompt on each TUI; communication matrix; the end-to-end feature run in a scratch repo. See `docs/VALIDATION.md` (written during phase G).
