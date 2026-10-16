@@ -1,11 +1,11 @@
 ---
 name: herdr-team
-description: Collaboration contract for the trusted Herdr dev team (dev-claude, dev-codex, dev-opencode). Use when a message starts with [team], or when you delegate to, review for, or report to another dev-* agent through Herdr.
+description: Collaboration contract for a trusted Herdr dev team (<team>-claude, <team>-codex, <team>-opencode; team is dev or hx). Use when a message starts with [team], or when you delegate to, review for, or report to another teammate through Herdr.
 ---
 
 # Herdr dev team
 
-Active only when `HERDR_ENV=1` and `herdr agent list` shows `dev-*` agents. Your name is the `name` of the entry whose `pane_id` equals `$HERDR_PANE_ID`.
+Active only when `HERDR_ENV=1` and `herdr agent list` shows team agents (`dev-*` or `hx-*`). Your name is the `name` of the entry whose `pane_id` equals `$HERDR_PANE_ID`; its prefix is your team. Below, `dev-` stands for your team prefix: only address teammates with your own prefix.
 
 ## Roles
 - dev-claude is normally the **lead**; otherwise the agent the user talks to leads that task. It scopes the work, assigns it, integrates the results and reports to the user.
@@ -37,3 +37,6 @@ Every agent has the pstack skills. The lead may name one in `SKILLS:` (e.g. `pot
 - Parallel implementers get disjoint files, or separate worktrees (`git worktree add ../<repo>-<task> -b <task>`).
 - No approval needed: editing project code, running tests/linters/builds, refactors, read-only review, local commits on a task branch.
 - Escalate to the user through the lead, and stop until answered: anything outside the repo, credentials or `.env`, network or external services, installs, push/deploy, deleting data or history (`reset --hard`, force-push, bulk `rm`), paid services.
+
+## Routing, usage and context (hx)
+The lead routes, checks quota and manages context with the `hx` CLI; follow the `hx-router` skill. Workers: when a brief names a task id, write its checkpoint before reporting done (`python -m hx checkpoint write <id> ...`), and after a `/compact` resume from the checkpoint the lead names.
