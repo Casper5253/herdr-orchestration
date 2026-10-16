@@ -362,7 +362,7 @@ herdr agent prompt hx-codex <span class="s">'[team from hx-claude] Review T1. Ru
   <div class="col"><h2>One skill, three agents</h2></div>
   <div class="col prose">
     <p>All of this behaviour has to live somewhere the agents will read it. Each agent supports <em>skills</em>: a folder holding a Markdown file of instructions, which the agent loads when a task matches the skill's description. The catch is that each vendor looks for skills in its own folder, so a skill written for Claude is invisible to Codex.</p>
-    <p>We didn't have to solve this ourselves. pstack, a skill collection by Lauren Tan, already keeps every skill in one source folder and ships a sync script that copies each one to every agent's location, then checks the copies match. We added the team's two skills, the collaboration rules and the router playbook, to that folder, and pstack's sync delivers them alongside its own.</p>
+    <p>We didn't have to solve this ourselves. <a href="https://github.com/cursor/plugins/tree/main/pstack">pstack</a>, a skill collection by Lauren Tan, already keeps every skill in one source folder and ships a sync script that copies each one to every agent's location, then checks the copies match. We added the team's two skills, the collaboration rules and the router playbook, to that folder, and pstack's sync delivers them alongside its own.</p>
   </div>
   <figure>
     <div class="svgwrap"><svg id="fan" viewBox="0 0 960 232" role="img" aria-label="One skills folder synced to three agents."></svg></div>

@@ -13,7 +13,7 @@
 
 ## Related
 - [agent-memory](https://github.com/Casper5253/agent-memory): the shared Obsidian memory (session capture, project notes, `mem search`) described in the article.
-- Skills reach all three agents through pstack by Lauren Tan, which is not part of this repo. `install.ps1` copies the two skills above into a local pstack install and runs its sync.
+- Skills reach all three agents through [pstack](https://github.com/cursor/plugins/tree/main/pstack) by Lauren Tan, which is not part of this repo. `install.ps1` copies the two skills above into a local pstack install and runs its sync.
 
 ## Use
 Windows, Python 3.11+, Herdr 0.9, and the three agent CLIs.
