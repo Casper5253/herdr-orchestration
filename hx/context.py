@@ -150,6 +150,62 @@ class Controller:
             raise ValueError("task is not the most recent boundary for agent")
         return task
 
+    def _dirty_paths(self, workdir: Path) -> set[str]:
+        rc, dirty, error = checkpoint._run_git(
+            ["status", "--porcelain", "-z", "--untracked-files=all"], workdir)
+        if rc:
+            raise ValueError("cannot verify worktree: " + error)
+        paths: set[str] = set()
+        entries = iter(dirty.split("\0"))
+        for entry in entries:
+            if not entry:
+                continue
+            if len(entry) < 4:
+                raise ValueError("cannot verify malformed worktree status")
+            paths.add(ledger._canonical_path(workdir / entry[3:]))
+            if "R" in entry[:2] or "C" in entry[:2]:
+                original = next(entries, "")
+                if not original:
+                    raise ValueError("cannot verify incomplete worktree rename")
+                paths.add(ledger._canonical_path(workdir / original))
+        return paths
+
+    def _check_worktrees(self, agent: dict[str, Any], task: dict[str, Any]) -> None:
+        workdir = Path(task.get("worktree") or self.ledger.repo_root)
+        owned = {ledger._canonical_path(path) for path in task.get("files", [])}
+        if self._dirty_paths(workdir) - owned:
+            raise ValueError("worktree contains edits outside checkpoint task ownership")
+        if not agent.get("cwd"):
+            raise ValueError("cannot verify agent repository without pane cwd")
+        pane_cwd = Path(agent["cwd"])
+        if ledger._canonical_path(pane_cwd) == ledger._canonical_path(workdir):
+            return
+        rc, root, error = checkpoint._run_git(["rev-parse", "--show-toplevel"], pane_cwd)
+        if rc or not root.strip():
+            raise ValueError("cannot verify agent repository: " + error)
+        pane_root = Path(root.strip())
+        if ledger._canonical_path(pane_root) == ledger._canonical_path(workdir):
+            return
+        pane_dirty = self._dirty_paths(pane_root)
+        if not pane_dirty:
+            return
+        pane_ledger_path = pane_root / ".hx" / "ledger.json"
+        if pane_ledger_path.exists():
+            pane_ledger = ledger.Ledger(
+                repo_root=pane_root, ledger_path=pane_ledger_path,
+                lock_path=pane_root / ".hx" / "ledger.lock",
+                leases_path=self.ledger.leases_path)
+            open_owned = {
+                ledger._canonical_path(path)
+                for active in pane_ledger.list_tasks()
+                if active.get("owner") == task["owner"]
+                and active.get("status") in ledger.Ledger.OPEN_STATUSES
+                for path in active.get("files", [])
+            }
+            if pane_dirty & open_owned:
+                raise ValueError("agent has dirty files owned by an open task in pane repository")
+        raise ValueError("pane repository contains uncheckpointed edits")
+
     def decide(self, name: str, task_id: str | None = None, related: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {"action": "keep", "agent": name}
         try:
@@ -163,8 +219,7 @@ class Controller:
                 raise ValueError("agent is not idle")
             task = self._task(name, task_id)
             result["task_id"] = task["id"]
-            if ledger._canonical_path(agent.get("cwd", "")) != ledger._canonical_path(task.get("worktree") or self.ledger.repo_root):
-                raise ValueError("agent worktree differs from task")
+            self._check_worktrees(agent, task)
             if not _fresh(sample, sid, _now()):
                 raise ValueError("session telemetry unknown or stale")
             with self.ledger._leases_lock():
@@ -249,23 +304,10 @@ class Controller:
             for section in ("Decisions", "Exact errors", "Next action"):
                 if not checkpoint._extract_section(text, section):
                     raise ValueError(f"agent-authored checkpoint section empty: {section}")
-            workdir = Path(task.get("worktree") or self.ledger.repo_root)
-            rc, dirty, error = checkpoint._run_git(["status", "--porcelain", "-z", "--untracked-files=all"], workdir)
-            if rc:
-                raise ValueError("cannot verify worktree: " + error)
-            entries = iter(dirty.split("\0"))
-            owned = set(task.get("files", []))
-            for entry in entries:
-                if not entry:
-                    continue
-                paths = [entry[3:]]
-                if "R" in entry[:2] or "C" in entry[:2]:
-                    paths.append(next(entries, ""))
-                if any(ledger._canonical_path(workdir / p) not in owned for p in paths):
-                    raise ValueError("worktree contains edits outside checkpoint task ownership")
             current = self._agent(name)
             if _session(current) != sid or current.get("agent_status") != "idle":
                 raise ValueError("session changed or agent became busy before send")
+            self._check_worktrees(current, task)
             current_task = self.ledger.get_task(task_id)
             if current_task["rev"] != task["rev"]:
                 raise ValueError("task changed during checkpoint validation")

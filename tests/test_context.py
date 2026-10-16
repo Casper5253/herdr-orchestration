@@ -62,7 +62,7 @@ def test_success_reserves_verifies_restores_and_releases(controller):
     ({"agent_status": "working"}, "not idle"),
     ({"agent_status": "blocked"}, "not idle"),
     ({"agent": "claude"}, "native auto"),
-    ({"cwd": "elsewhere"}, "worktree"),
+    ({"cwd": "elsewhere"}, "repository"),
 ])
 def test_decision_rejects_unsafe_agent(controller, change, reason):
     controller.agent.update(change)
@@ -109,6 +109,113 @@ def test_empty_authored_checkpoint_rejected(controller):
 def test_unowned_edits_rejected(controller, monkeypatch):
     monkeypatch.setattr(checkpoint, "_run_git", lambda *a: (0, " M other.py\0", ""))
     assert "ownership" in controller.compact("hx-codex")["reason"]
+    assert not controller.calls
+
+
+@pytest.fixture
+def cross_repo(controller, monkeypatch):
+    pane_root = controller.ledger.repo_root / "pane-repo"
+    pane_root.mkdir()
+    controller.agent["cwd"] = str(pane_root / "subdir")
+    statuses = {}
+    calls = []
+
+    def git(args, cwd):
+        cwd = cwd.resolve()
+        calls.append((args, cwd))
+        if args == ["rev-parse", "--show-toplevel"]:
+            return 0, str(pane_root), ""
+        return 0, statuses.get(cwd, ""), ""
+
+    monkeypatch.setattr(checkpoint, "_run_git", git)
+    return controller, pane_root, statuses, calls
+
+
+@pytest.mark.parametrize("recorded_worktree", [False, True])
+def test_clean_separate_pane_repository_is_compactable(cross_repo, recorded_worktree):
+    controller, pane_root, statuses, calls = cross_repo
+    task_root = controller.ledger.repo_root
+    if recorded_worktree:
+        task_root = task_root / "task-worktree"
+        task_root.mkdir()
+        controller.ledger.update_task("t", worktree=str(task_root),
+                                      files=[ledger._canonical_path(task_root / "owned.py")])
+    assert controller.decide("hx-codex")["action"] == "compact"
+    assert controller.compact("hx-codex")["action"] == "compacted"
+    checked_roots = {cwd for args, cwd in calls if args[0] == "status"}
+    assert checked_roots == {task_root, pane_root}
+
+
+def test_same_repository_pane_subdirectory_is_allowed(controller, monkeypatch):
+    root = controller.ledger.repo_root
+    controller.agent["cwd"] = str(root / "subdir")
+    calls = []
+
+    def git(args, cwd):
+        calls.append((args, cwd))
+        return (0, str(root), "") if args[0] == "rev-parse" else (0, "", "")
+
+    monkeypatch.setattr(checkpoint, "_run_git", git)
+    assert controller.decide("hx-codex")["action"] == "compact"
+    assert [cwd for args, cwd in calls if args[0] == "status"] == [root]
+
+
+def test_dirty_open_task_in_pane_repository_blocks_compaction(cross_repo):
+    controller, pane_root, statuses, calls = cross_repo
+    pane_ledger = ledger.Ledger(repo_root=pane_root,
+                                ledger_path=pane_root / ".hx" / "ledger.json",
+                                lock_path=pane_root / ".hx" / "ledger.lock",
+                                leases_path=controller.ledger.leases_path)
+    pane_ledger.add_task("unfinished", "Other work", "hx-codex", ["unfinished.py"], base_commit="base")
+    pane_ledger.set_status("unfinished", "in_progress")
+    statuses[pane_root] = " M unfinished.py\0"
+    result = controller.compact("hx-codex")
+    assert result["action"] == "keep"
+    assert "owned by an open task in pane repository" in result["reason"]
+    assert not controller.calls
+
+
+@pytest.mark.parametrize("dirty_tree", ["task", "pane"])
+def test_cross_repo_unknown_dirt_blocks_compaction(cross_repo, dirty_tree):
+    controller, pane_root, statuses, calls = cross_repo
+    root = controller.ledger.repo_root if dirty_tree == "task" else pane_root
+    statuses[root] = "?? unrecorded.py\0"
+    result = controller.compact("hx-codex")
+    assert result["action"] == "keep"
+    assert "ownership" in result["reason"] if dirty_tree == "task" else "uncheckpointed" in result["reason"]
+    assert not controller.calls
+
+
+def test_cross_repo_dirt_is_rechecked_before_sending(cross_repo, monkeypatch):
+    controller, pane_root, statuses, calls = cross_repo
+    assert controller.decide("hx-codex")["action"] == "compact"
+    original_validate = checkpoint.validate_checkpoint
+
+    def validate(*args, **kwargs):
+        statuses[pane_root] = " M newly-dirty.py\0"
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(checkpoint, "validate_checkpoint", validate)
+    result = controller.compact("hx-codex")
+    assert result["action"] == "keep"
+    assert "uncheckpointed" in result["reason"]
+    assert not controller.calls
+
+
+@pytest.mark.parametrize("failure", ["root", "status"])
+def test_cross_repo_git_failure_is_not_treated_as_clean(cross_repo, monkeypatch, failure):
+    controller, pane_root, statuses, calls = cross_repo
+    original_git = checkpoint._run_git
+
+    def git(args, cwd):
+        if (failure == "root" and args[0] == "rev-parse") or (failure == "status" and cwd == pane_root):
+            return 1, "", "git unavailable"
+        return original_git(args, cwd)
+
+    monkeypatch.setattr(checkpoint, "_run_git", git)
+    result = controller.compact("hx-codex")
+    assert result["action"] == "keep"
+    assert "git unavailable" in result["reason"]
     assert not controller.calls
 
 
