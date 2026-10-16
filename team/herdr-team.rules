@@ -5,8 +5,9 @@ prefix_rule(pattern=["herdr", "pane", ["list", "read", "current", "layout", "get
 prefix_rule(pattern=["herdr", ["workspace", "tab"], "list"], decision="allow")
 prefix_rule(pattern=["herdr", "status"], decision="allow")
 prefix_rule(pattern=["herdr", "--skill"], decision="allow")
-# Delegation only to the named trusted teammates (names exist only in a herdr-team workspace).
-prefix_rule(pattern=["herdr", "agent", "prompt", ["dev-claude", "dev-opencode", "hx-claude", "hx-opencode"]], decision="allow")
+# Team messages go through `hx say`, which only reaches the sender's own team (allowed by the hx rules below).
+# A raw prompt could reach any agent, including another team's, so it asks.
+prefix_rule(pattern=["herdr", "agent", "prompt"], decision="prompt")
 # Keyboard injection, raw pane control and agent lifecycle stay with the user.
 prefix_rule(pattern=["herdr", "agent", ["send-keys", "start", "rename", "focus", "attach"]], decision="prompt")
 prefix_rule(pattern=["herdr", "pane", ["run", "send-text", "send-keys", "close", "split", "move", "input"]], decision="prompt")

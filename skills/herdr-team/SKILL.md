@@ -15,7 +15,7 @@ Active only when `HERDR_ENV=1` and `herdr agent list` shows team agents (`<team>
 ## Commands
 Run each as one plain command. No pipes, `;`, `&&`, variables or subshells, because Codex rules only match plain commands. Put the message in single quotes with no apostrophes inside it.
 - Discover: `herdr agent list`
-- Delegate or report: `herdr agent prompt dev-<name> '[team from dev-<you>] ...'`
+- Delegate or report: `hx say <role> '[team from dev-<you>] ...'` with role `claude`, `codex` or `opencode`. It only reaches your own team, refuses a header that names someone else, and is the one send command that needs no approval; a raw `herdr agent prompt` asks the user.
 - Check: `herdr agent get dev-<name>` / `herdr agent read dev-<name> --source recent-unwrapped --lines 60`
 - Syntax help: `herdr --skill`
 

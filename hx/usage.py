@@ -475,17 +475,26 @@ def team_prefix(policy: dict[str, Any]) -> str:
     env = os.environ.get("HX_HERDR_PREFIX")
     if env:
         return env
-    pane = os.environ.get("HERDR_PANE_ID")
-    if pane:
-        try:
-            agents = _herdr_agent_list().get("result", {}).get("agents", [])
-        except Exception:
-            agents = []
-        for agent in agents:
-            match = TEAM_AGENT.fullmatch(str(agent.get("name") or ""))
-            if agent.get("pane_id") == pane and match:
-                return match[1]
+    name = own_agent_name()
+    if name:
+        return TEAM_AGENT.fullmatch(name)[1]
     return str(policy.get("team_prefix", "hx-"))
+
+
+def own_agent_name() -> str | None:
+    """This pane's herdr team agent name (e.g. dev-codex), or None outside a team pane."""
+    pane = os.environ.get("HERDR_PANE_ID")
+    if not pane:
+        return None
+    try:
+        agents = _herdr_agent_list().get("result", {}).get("agents", [])
+    except Exception:
+        return None
+    for agent in agents:
+        name = str(agent.get("name") or "")
+        if agent.get("pane_id") == pane and TEAM_AGENT.fullmatch(name):
+            return name
+    return None
 
 
 def agents_usage(

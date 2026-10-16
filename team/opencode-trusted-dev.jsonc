@@ -8,6 +8,7 @@
     "bash": {
       "*": "allow",
       "herdr *": "ask",
+      // Team messages use `hx say` (allowed by "*"), which only reaches the own team; raw prompts ask.
       "herdr agent list*": "allow",
       "herdr agent get *": "allow",
       "herdr agent read *": "allow",
@@ -15,11 +16,7 @@
       "herdr pane list*": "allow",
       "herdr pane read *": "allow",
       "herdr status*": "allow",
-      "herdr --skill*": "allow",
-      "herdr agent prompt dev-claude *": "allow",
-      "herdr agent prompt dev-codex *": "allow",
-      "herdr agent prompt hx-claude *": "allow",
-      "herdr agent prompt hx-codex *": "allow"
+      "herdr --skill*": "allow"
     }
   }
 }

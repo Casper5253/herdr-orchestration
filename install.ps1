@@ -54,9 +54,13 @@ function Install-Text($to, $content) {
     if (Test-Path $to) { Copy-Item $to "$to.bak-$stamp" }
     Move-Item -Force $tmp $to
 }
-Install-Text (Join-Path $bin 'hx.cmd') "@echo off`r`nsetlocal`r`nset `"PYTHONPATH=$repo;%PYTHONPATH%`"`r`npython -m hx %*`r`n"
+# The shims call one absolute Python: the WindowsApps python stub on PATH cannot run inside Codex's sandbox.
+$hxPython = (& uv python find 3.11 2>$null)
+if (-not $hxPython) { $hxPython = $python }
+Install-Text (Join-Path $bin 'hx.cmd') "@echo off`r`nsetlocal`r`nset `"PYTHONPATH=$repo;%PYTHONPATH%`"`r`n`"$hxPython`" -m hx %*`r`n"
 $repoPosix = $repo.Replace('\', '/')
-Install-Text (Join-Path $bin 'hx') "#!/bin/sh`nPYTHONPATH=`"$repoPosix`${PYTHONPATH:+;`$PYTHONPATH}`" exec python -m hx `"`$@`"`n"
+$hxPythonPosix = $hxPython.Replace('\', '/')
+Install-Text (Join-Path $bin 'hx') "#!/bin/sh`nPYTHONPATH=`"$repoPosix`${PYTHONPATH:+;`$PYTHONPATH}`" exec `"$hxPythonPosix`" -m hx `"`$@`"`n"
 Write-Host "installed $bin\hx(.cmd)"
 
 # One pointer line in the global Claude instructions, added once.

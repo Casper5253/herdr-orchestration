@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, context, ledger, ocrun, route, usage
+from hx import checkpoint, context, ledger, ocrun, route, say, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -15,6 +15,13 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Print a JSON snapshot of provider availability and quota.",
     )
     parser.set_defaults(func=lambda _args: usage.print_usage())
+
+
+def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("say", help="Message a teammate on your own team (claude, codex or opencode).")
+    parser.add_argument("target", help="claude, codex, opencode or the full <team>-<role> name")
+    parser.add_argument("message", nargs="+")
+    parser.set_defaults(func=lambda args: say.say(args.target, " ".join(args.message)))
 
 
 def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -104,6 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_usage_parser(subparsers)
     _add_task_parser(subparsers)
+    _add_say_parser(subparsers)
     _add_checkpoint_parser(subparsers)
     context_parser = subparsers.add_parser("context", help="Session context decisions and recovery.")
     context_sub = context_parser.add_subparsers(dest="context_command", required=True)
