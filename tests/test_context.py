@@ -1,9 +1,12 @@
 """Protected compaction with fake Herdr and provider telemetry."""
 
 import copy
+import datetime as dt
 import json
 import sqlite3
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -263,3 +266,95 @@ def test_opencode_telemetry_filters_session_and_requires_model_limit(tmp_path, m
     agent = {"agent": "opencode", "agent_session": {"value": "sid"}}
     assert context.telemetry(agent, {"context_limits": {"model": 1000}})["utilisation"] == .3
     assert context.telemetry(agent, {})["utilisation"] is None
+
+
+@pytest.mark.parametrize("outcome", ["success", "timeout"])
+def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeypatch, outcome):
+    led = controller.ledger
+    original_load = led._load_leases
+    original_herdr = context._herdr
+    reads = []
+
+    def load_leases():
+        assert led.leases_lock_path.exists(), "every controller lease access needs the shared lock"
+        reads.append(True)
+        return original_load()
+
+    def herdr(*args, **kwargs):
+        assert not led.leases_lock_path.exists(), "Herdr must run outside the shared lock"
+        assert not led.lock_path.exists(), "Herdr must run outside the repo lock"
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired("herdr", 310)
+        return original_herdr(*args, **kwargs)
+
+    monkeypatch.setattr(led, "_load_leases", load_leases)
+    monkeypatch.setattr(context, "_herdr", herdr)
+    result = controller.compact("hx-codex")
+    if outcome == "success":
+        assert result["action"] == "compacted"
+    else:
+        assert result["action"] == "compact-unknown"
+        controller.sample["sampled_at"] = context._now().isoformat()
+        assert controller.recover("hx-codex")["action"] == "recovered"
+    assert reads
+
+
+@pytest.mark.parametrize("operation", ["finish", "recover"])
+def test_context_update_serializes_with_another_projects_lease_writer(controller, monkeypatch, operation):
+    led = controller.ledger
+    other_root = led.repo_root / "other-project"
+    other = ledger.Ledger(repo_root=other_root, ledger_path=other_root / "ledger.json",
+                          lock_path=other_root / "repo.lock", leases_path=led.leases_path)
+    assert other.lock_path != led.lock_path
+    assert other.leases_lock_path == led.leases_lock_path
+    lease = {"agent": "hx-codex", "task_id": "t", "token": "token",
+             "state": "compact-unknown",
+             "requested_at": (context._now() - dt.timedelta(seconds=1)).isoformat()}
+    led.mutate_leases(lambda data: data["sessions"].update(sid=lease))
+    ledger._atomic_write_json(controller.guard_path, {"sid": {"tasks": {"t": {"count": 1}}}})
+    context_loaded = threading.Event()
+    release_context = threading.Event()
+    other_attempting = threading.Event()
+    other_loaded = threading.Event()
+    original_load = led._load_leases
+    original_other_load = other._load_leases
+
+    def context_load():
+        data = original_load()
+        context_loaded.set()
+        assert release_context.wait(3), "test must release the context writer"
+        return data
+
+    def other_load():
+        other_loaded.set()
+        return original_other_load()
+
+    def write_other_project():
+        other_attempting.set()
+        other.mutate_leases(lambda data: data["sessions"].update(
+            other_session={"agent": "other-worker", "state": "held"}))
+
+    monkeypatch.setattr(led, "_load_leases", context_load)
+    monkeypatch.setattr(other, "_load_leases", other_load)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        if operation == "finish":
+            context_update = pool.submit(controller._finish, "sid", "token", "compact-unknown", True)
+        else:
+            context_update = pool.submit(controller.recover, "hx-codex")
+        try:
+            assert context_loaded.wait(3)
+            other_update = pool.submit(write_other_project)
+            assert other_attempting.wait(3)
+            blocked_by_shared_lock = not other_loaded.wait(.2)
+        finally:
+            release_context.set()
+        result = context_update.result(timeout=3)
+        other_update.result(timeout=3)
+    assert blocked_by_shared_lock, "the other project must wait for the context transaction"
+    saved = json.loads(led.leases_path.read_text())
+    assert saved["sessions"]["other_session"]["state"] == "held"
+    if operation == "recover":
+        assert result["action"] == "recovered"
+        assert "sid" not in saved["sessions"]
+    else:
+        assert saved["sessions"]["sid"]["state"] == "compact-unknown"

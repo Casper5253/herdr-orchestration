@@ -167,7 +167,7 @@ class Controller:
                 raise ValueError("agent worktree differs from task")
             if not _fresh(sample, sid, _now()):
                 raise ValueError("session telemetry unknown or stale")
-            with ledger.LeaseLock(self.ledger.lock_path):
+            with self.ledger._leases_lock():
                 leases = self.ledger._load_leases()
                 guards = ledger._load_json(self.guard_path) or {}
                 if sid in leases.get("sessions", {}) or any(item.get("agent") == name for item in leases.get("sessions", {}).values()):
@@ -189,8 +189,7 @@ class Controller:
         return result
 
     def _finish(self, sid: str, token: str, state: str | None, failed: bool) -> None:
-        with ledger.LeaseLock(self.ledger.lock_path):
-            leases = self.ledger._load_leases()
+        def finish(leases: dict[str, Any]) -> None:
             lease = leases.get("sessions", {}).get(sid)
             if not lease or lease.get("token") != token:
                 raise RuntimeError("session lease lost; manual reconciliation required")
@@ -201,7 +200,8 @@ class Controller:
                 lease["state"] = state
             else:
                 del leases["sessions"][sid]
-            ledger._atomic_write_json(self.ledger.leases_path, leases)
+
+        self.ledger.mutate_leases(finish)
 
     def compact(self, name: str, task_id: str | None = None, related: bool = False) -> dict[str, Any]:
         decision = self.decide(name, task_id, related)
@@ -210,16 +210,16 @@ class Controller:
         sid, task_id = decision["session_id"], decision["task_id"]
         token = str(uuid.uuid4())
         started = _now()
-        with ledger.LeaseLock(self.ledger.lock_path):
-            leases = self.ledger._load_leases()
+
+        def reserve(ledger_data: dict[str, Any], leases: dict[str, Any]) -> dict[str, Any]:
             sessions = leases.setdefault("sessions", {})
             if sid in sessions or any(item.get("agent") == name for item in sessions.values()):
                 return {"action": "keep", "reason": "session already leased"}
-            task = self.ledger._load_ledger()["tasks"][task_id]
+            task = ledger_data["tasks"][task_id]
             if task.get("owner") != name or task.get("status") not in {"done", "failed"}:
                 return {"action": "keep", "reason": "task changed before reservation"}
             if any(t.get("owner") == name and t.get("status") not in {"done", "failed"}
-                   for t in self.ledger._load_ledger()["tasks"].values()):
+                   for t in ledger_data["tasks"].values()):
                 return {"action": "keep", "reason": "agent acquired unfinished work"}
             guards = ledger._load_json(self.guard_path) or {}
             guard = guards.setdefault(sid, {"tasks": {}})
@@ -232,8 +232,13 @@ class Controller:
                              "state": "compacting", "requested_at": started.isoformat()}
             guard["last_at"] = started.isoformat()
             task_guard["count"] += 1
-            ledger._atomic_write_json(self.ledger.leases_path, leases)
             ledger._atomic_write_json(self.guard_path, guards)
+            return {"action": "reserved", "task": task}
+
+        reservation = self.ledger.mutate_leases_with_repo(reserve)
+        if reservation["action"] != "reserved":
+            return reservation
+        task = reservation["task"]
         submitted = False
         try:
             validation = checkpoint.validate_checkpoint(task_id, ledger=self.ledger)
@@ -268,13 +273,14 @@ class Controller:
             if not _fresh(before, sid, _now()):
                 raise ValueError("pre-request telemetry unknown or stale")
             started = _now()
-            with ledger.LeaseLock(self.ledger.lock_path):
-                leases = self.ledger._load_leases()
+
+            def mark_requested(leases: dict[str, Any]) -> None:
                 lease = leases.get("sessions", {}).get(sid)
                 if not lease or lease.get("token") != token:
                     raise ValueError("session lease lost before send")
                 lease["requested_at"] = started.isoformat()
-                ledger._atomic_write_json(self.ledger.leases_path, leases)
+
+            self.ledger.mutate_leases(mark_requested)
             current = self._agent(name)
             if _session(current) != sid or current.get("agent_status") != "idle":
                 raise ValueError("session changed or agent became busy immediately before send")
@@ -309,8 +315,8 @@ class Controller:
         agent = self._agent(name)
         sid = _session(agent)
         sample = telemetry(agent, self.policy)
-        with ledger.LeaseLock(self.ledger.lock_path):
-            leases = self.ledger._load_leases()
+
+        def recover(leases: dict[str, Any]) -> dict[str, Any]:
             lease = leases.get("sessions", {}).get(sid)
             if not lease or lease.get("agent") != name or lease.get("state") != "compact-unknown":
                 return {"action": "keep", "reason": "no matching unknown compaction"}
@@ -318,5 +324,6 @@ class Controller:
             if not requested or agent.get("agent_status") != "idle" or not _fresh(sample, sid, _now(), after=requested):
                 return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
             del leases["sessions"][sid]
-            ledger._atomic_write_json(self.ledger.leases_path, leases)
-        return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}
+            return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}
+
+        return self.ledger.mutate_leases(recover)
