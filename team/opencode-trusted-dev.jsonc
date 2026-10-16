@@ -1,5 +1,7 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  // Persistent team worker model, chosen by bench/RESULTS.md (2026-10-16).
+  "model": "opencode-go/glm-5.3-flash",
   // Herdr trusted dev team overlay, loaded only via OPENCODE_CONFIG by Start-HerdrTeam.ps1.
   // OpenCode 1.18 applies the LAST matching rule, so the narrow allows come after the herdr ask.
   "permission": {

@@ -27,3 +27,35 @@ $repoKey = "[projects.'" + $PSScriptRoot.ToLower() + "']"
 if (-not $text.Contains($repoKey)) { $text += "`r`n$repoKey`r`ntrust_level = `"trusted`"`r`n" }
 [IO.File]::WriteAllText($profile_, $text, (New-Object Text.UTF8Encoding $false))
 Write-Host "updated $profile_"
+
+# Skills: repo copies are the source; pstack sync distributes them to Claude, OpenCode and Codex.
+$pstackLocal = Join-Path $home_ '.agents\pstack\local'
+foreach ($skill in 'herdr-team', 'hx-router') {
+    $dest = Join-Path $pstackLocal $skill
+    New-Item -ItemType Directory -Force $dest | Out-Null
+    Install-File (Join-Path $PSScriptRoot "skills\$skill\SKILL.md") (Join-Path $dest 'SKILL.md')
+}
+$python = (Get-Command python).Source
+& $python -I (Join-Path $home_ '.agents\pstack\sync.py')
+& $python -I (Join-Path $home_ '.agents\pstack\sync.py') --check
+if ($LASTEXITCODE -ne 0) { throw 'pstack sync --check failed' }
+
+# hx on PATH (~/.local/bin is already on PATH): a .cmd for PowerShell/cmd and a shell script for Git Bash.
+$bin = Join-Path $home_ '.local\bin'
+New-Item -ItemType Directory -Force $bin | Out-Null
+$repo = $PSScriptRoot
+[IO.File]::WriteAllText((Join-Path $bin 'hx.cmd'), "@echo off`r`nset `"PYTHONPATH=$repo;%PYTHONPATH%`"`r`npython -m hx %*`r`n")
+$repoPosix = $repo.Replace('\', '/')
+[IO.File]::WriteAllText((Join-Path $bin 'hx'), "#!/bin/sh`nPYTHONPATH=`"$repoPosix`${PYTHONPATH:+;`$PYTHONPATH}`" exec python -m hx `"`$@`"`n")
+Write-Host "installed $bin\hx(.cmd)"
+
+# One pointer line in the global Claude instructions, added once.
+$claudeMd = Join-Path $home_ '.claude\CLAUDE.md'
+$line = '- Routing, quota checks, task tracking and compaction for the team run through the `hx` CLI: follow the `hx-router` skill when leading.'
+if (-not (Select-String -Path $claudeMd -SimpleMatch $line -Quiet)) {
+    Copy-Item $claudeMd "$claudeMd.bak-$stamp"
+    $text = Get-Content -Raw $claudeMd
+    $text = $text.Replace("- Prefer working solo for independent, bounded tasks;", "$line`n- Prefer working solo for independent, bounded tasks;")
+    [IO.File]::WriteAllText($claudeMd, $text, (New-Object Text.UTF8Encoding $false))
+    Write-Host "updated $claudeMd"
+}

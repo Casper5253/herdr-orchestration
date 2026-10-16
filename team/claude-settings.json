@@ -1,28 +1,81 @@
 {
   "permissions": {
     "allow": [
-      "Bash(herdr agent list:*)", "PowerShell(herdr agent list:*)",
-      "Bash(herdr agent get:*)", "PowerShell(herdr agent get:*)",
-      "Bash(herdr agent read:*)", "PowerShell(herdr agent read:*)",
-      "Bash(herdr agent wait:*)", "PowerShell(herdr agent wait:*)",
-      "Bash(herdr pane list:*)", "PowerShell(herdr pane list:*)",
-      "Bash(herdr pane read:*)", "PowerShell(herdr pane read:*)",
-      "Bash(herdr status:*)", "PowerShell(herdr status:*)",
-      "Bash(herdr --skill:*)", "PowerShell(herdr --skill:*)",
-      "Bash(herdr agent prompt dev-codex:*)", "PowerShell(herdr agent prompt dev-codex:*)",
-      "Bash(herdr agent prompt dev-opencode:*)", "PowerShell(herdr agent prompt dev-opencode:*)",
-      "Bash(herdr agent prompt hx-codex:*)", "PowerShell(herdr agent prompt hx-codex:*)",
-      "Bash(herdr agent prompt hx-opencode:*)", "PowerShell(herdr agent prompt hx-opencode:*)"
+      "Bash(herdr agent list:*)",
+      "PowerShell(herdr agent list:*)",
+      "Bash(herdr agent get:*)",
+      "PowerShell(herdr agent get:*)",
+      "Bash(herdr agent read:*)",
+      "PowerShell(herdr agent read:*)",
+      "Bash(herdr agent wait:*)",
+      "PowerShell(herdr agent wait:*)",
+      "Bash(herdr pane list:*)",
+      "PowerShell(herdr pane list:*)",
+      "Bash(herdr pane read:*)",
+      "PowerShell(herdr pane read:*)",
+      "Bash(herdr status:*)",
+      "PowerShell(herdr status:*)",
+      "Bash(herdr --skill:*)",
+      "PowerShell(herdr --skill:*)",
+      "Bash(herdr agent prompt dev-codex:*)",
+      "PowerShell(herdr agent prompt dev-codex:*)",
+      "Bash(herdr agent prompt dev-opencode:*)",
+      "PowerShell(herdr agent prompt dev-opencode:*)",
+      "Bash(herdr agent prompt hx-codex:*)",
+      "PowerShell(herdr agent prompt hx-codex:*)",
+      "Bash(herdr agent prompt hx-opencode:*)",
+      "PowerShell(herdr agent prompt hx-opencode:*)",
+      "Bash(hx:*)",
+      "PowerShell(hx:*)",
+      "Bash(python -m hx:*)",
+      "PowerShell(python -m hx:*)"
     ],
     "ask": [
-      "Bash(herdr agent send-keys:*)", "PowerShell(herdr agent send-keys:*)",
-      "Bash(herdr agent start:*)", "PowerShell(herdr agent start:*)",
-      "Bash(herdr pane run:*)", "PowerShell(herdr pane run:*)",
-      "Bash(herdr pane send-text:*)", "PowerShell(herdr pane send-text:*)",
-      "Bash(herdr pane send-keys:*)", "PowerShell(herdr pane send-keys:*)",
-      "Bash(herdr pane close:*)", "PowerShell(herdr pane close:*)",
-      "Bash(herdr workspace close:*)", "PowerShell(herdr workspace close:*)",
-      "Bash(herdr server:*)", "PowerShell(herdr server:*)"
+      "Bash(herdr agent send-keys:*)",
+      "PowerShell(herdr agent send-keys:*)",
+      "Bash(herdr agent start:*)",
+      "PowerShell(herdr agent start:*)",
+      "Bash(herdr pane run:*)",
+      "PowerShell(herdr pane run:*)",
+      "Bash(herdr pane send-text:*)",
+      "PowerShell(herdr pane send-text:*)",
+      "Bash(herdr pane send-keys:*)",
+      "PowerShell(herdr pane send-keys:*)",
+      "Bash(herdr pane close:*)",
+      "PowerShell(herdr pane close:*)",
+      "Bash(herdr workspace close:*)",
+      "PowerShell(herdr workspace close:*)",
+      "Bash(herdr server:*)",
+      "PowerShell(herdr server:*)"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python \"C:/Users/caspe/Documents/Projects/herdr-orchestration/hooks/claude_statusline.py\""
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/caspe/Documents/Projects/herdr-orchestration/hooks/claude_precompact.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/caspe/Documents/Projects/herdr-orchestration/hooks/claude_session_compact.py\"",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

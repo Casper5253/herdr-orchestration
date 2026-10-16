@@ -22,3 +22,9 @@ Needs you: Herdr send-keys, pane run/send-text/close, workspace/server close or 
 Full rollback: delete all of the above. Nothing else was changed (~/.codex/rules/default.rules is back to the original).
 
 Two-agent mode (Claude + Codex only): add -NoOpenCode to the launch command.
+
+## hx: routing, usage and context (added 2026-10-16)
+Source: ~/Documents/Projects/herdr-orchestration (re-run its install.ps1 after changes). The lead follows the `hx-router` skill.
+`hx usage` (quota per pool), `hx route` (who/which model/effort), `hx task` (ownership), `hx checkpoint`, `hx context decide|recover`, `hx compact <agent>`, `hx ocrun` (headless OpenCode with per-task model).
+Team Claude sessions get a status line that records context and quota, a PreCompact hook that keeps task state, and a SessionStart(compact) hook that restores it.
+Launch a second team beside the first with `-Team hx`; `-LeadPane <pane>` keeps an existing Claude as lead.
