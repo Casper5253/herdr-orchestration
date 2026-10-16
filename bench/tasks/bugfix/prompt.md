@@ -1,0 +1,1 @@
+I'm working on a small billing report helper and the date iterator is dropping the last day in a range. Please fix the off-by-one bug in `dates.py` so the range is fully inclusive on both ends (start *and* end). The existing tests in `test_dates.py` are the source of truth — make all of them pass. After your fix, `pytest -q` from this directory should be green.
