@@ -47,7 +47,7 @@ Workers write checkpoints (objective, decisions, exact errors, tests, next actio
 
 ## 7. Tests and outcomes
 240 unit tests pass (`python -m pytest tests -q`). Live checks:
-- Communication: Claude↔Codex, Claude↔OpenCode in both directions (Codex↔OpenCode relied on the earlier validation).
+- Communication: all six directions verified on the hx team (Claude↔Codex, Claude↔OpenCode, Codex↔OpenCode, each by a direct `herdr agent prompt`).
 - End-to-end on `e2e/todo-cli`: feature routed to the warm session (glm-5.3-flash) → implemented → Codex review (2 findings) → one correction round → 33 tests → merged → task closed with a valid checkpoint → **live compaction 310K → 31.6K tokens, same session** → follow-up task built by the compacted session reusing its earlier work (38 tests).
 - Escalation live: minimax-m3 capability failure → kimi-k2.7-code succeeded.
 - Fallback paths: forced OpenCode exhaustion routes to Codex gpt-6-luna; `hx ocrun --worker codex` ran live in a visible window and returned ok.
