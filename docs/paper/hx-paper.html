@@ -374,7 +374,7 @@ sequenceDiagram
 <ul class="col">
   <li>OpenCode headroom is estimated from this machine's history. It matched the dashboard today, but use from another device would not be counted, and no vendor API exposes the remaining allowance.</li>
   <li>Codex and Claude headroom often read <span class="tag t-u">unknown</span>: Codex refreshes only when Codex runs, and Claude only in team sessions with the status line. The router treats unknown as usable, not exhausted.</li>
-  <li>The lead is not compacted proactively; it relies on Claude's auto-compact and the hooks. Whether a queued <code>/compact</code> to the lead's own pane runs after its turn is the last open test.</li>
+  <li>Lead self-compaction was tested last and works: a background job sends <code>/compact</code> to the lead's own pane after its turn ends, and the session resumes from the hook summary. The hx-router skill now does this at task boundaries; Claude's auto-compact remains the safety net.</li>
   <li>Benchmark cells are single runs on small tasks.</li>
   <li>No whole-week savings figure exists yet. That needs <code>routing.jsonl</code> from real use. The per-task numbers above are the evidence today.</li>
 </ul>
@@ -401,7 +401,7 @@ sequenceDiagram
 <h2 class="col"><span class="n">12</span>Next steps</h2>
 <ol class="col">
   <li>After one to two weeks of use, summarise <code>routing.jsonl</code> by model and pool and re-tune the ladders.</li>
-  <li>Make lead self-compaction proactive at task boundaries, depending on the queued-<code>/compact</code> test.</li>
+  
   <li>Re-benchmark on harder multi-file tasks with three runs per cell, including gpt-6-luna at low versus medium.</li>
   <li>Log what hooks swallow; store method and model on <code>task assign</code>.</li>
   <li>Decide whether to enable the Global-regions setting for deepseek.</li>

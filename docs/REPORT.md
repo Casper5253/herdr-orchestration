@@ -66,7 +66,7 @@ Team Codex now runs CLI 0.163.0 with the normal elevated sandbox; 0.163.0 contai
 ## 9. Known limitations
 - OpenCode quota is estimated from this machine's history only (it matched the vendor dashboard within ~2 points on 16 Oct); there is no API for remaining Go allowance. Real 429/quota detection is unit-tested, never seen live.
 - Codex and Claude headroom often reads `unknown` (Codex refreshes only when Codex runs; Claude only in team sessions with the status line). The router treats unknown as usable, not exhausted.
-- Lead self-compaction is not proactive: the lead relies on Claude's auto-compact plus hooks. Whether a queued `/compact` to the lead's own pane runs after its turn is being tested last.
+- Lead self-compaction works (finding 19): a deferred background `herdr agent prompt <lead> '/compact'` runs once the lead's turn ends, and the session resumes from the hook summary. The hx-router skill now tells the lead to do this at task boundaries.
 - The hooks swallow errors to protect the session; they should also log what they swallow.
 - hx-claude in this session predates the install, so the hooks were tested by direct invocation, not by a real Claude compaction.
 - The `.hx/` task record does not store method/model from `task assign` (null fields).
@@ -74,7 +74,6 @@ Team Codex now runs CLI 0.163.0 with the normal elevated sandbox; 0.163.0 contai
 
 ## 10. Next opportunities
 1. After 1-2 weeks of real use, `hx report` from `routing.jsonl`: success rate and cost per model and pool; re-tune ladders.
-2. Lead self-compaction at task boundaries (depends on the queued-`/compact` test).
-3. Re-benchmark on harder, multi-file tasks with 3 runs per cell; include gpt-6-luna variants low vs medium.
-4. Log swallowed hook errors; store method/model on assign.
-5. Decide on deepseek (needs the Global-regions privacy setting).
+2. Re-benchmark on harder, multi-file tasks with 3 runs per cell; include gpt-6-luna variants low vs medium.
+3. Log swallowed hook errors; store method/model on assign.
+4. Decide on deepseek (needs the Global-regions privacy setting).

@@ -40,7 +40,7 @@ Set it at dispatch, never by reconfiguring a live session. Real controls: `codex
 - At a task boundary: `hx context decide <agent>`. If it says compact, run `hx compact <agent> --task <id>`. It takes the session lease, validates the checkpoint, sends `/compact` through Herdr, verifies the same session came back smaller, and makes the worker acknowledge the checkpoint. It never compacts mid-task; native auto-compaction is the safety net under pressure.
 - If a compaction outcome is unknown (timeout), the agent stays reserved: `hx context recover <agent>` once it is idle again. Do not retry compaction for that task.
 - Never send `/compact` from Git Bash: MSYS rewrites it into a Windows path. hx sends it from Python.
-- You, the lead, are compacted by Claude Code itself: the PreCompact hook keeps task ids, exact errors and next actions, and the SessionStart(compact) hook re-injects the active tasks and newest checkpoint.
+- You, the lead, can compact yourself at a task boundary: when `hx context decide <your name>` says compact, write `hx checkpoint` first, then start a background PowerShell command `Start-Sleep 60; herdr agent prompt <your name> '/compact'` and end your turn. The prompt lands once your pane is idle. `hx compact` cannot target yourself (it would wait on its own turn). The PreCompact hook keeps task ids, exact errors and next actions, and the SessionStart(compact) hook re-injects the active tasks and newest checkpoint. Claude's auto-compact stays the safety net.
 - Durable decisions belong in agentmem (`mem remember`), not in `.hx/`.
 
 ## Don't
