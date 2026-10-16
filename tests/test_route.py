@@ -734,3 +734,125 @@ def test_module_main_block_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert hasattr(route_pkg, "route")
     assert hasattr(route_pkg, "decide")
     assert hasattr(route_pkg, "main")
+
+
+# ---------- regression tests for reviewer findings ----------
+
+
+def test_input_repair_keeps_persistent_when_eligible(policy: dict) -> None:
+    """Finding 8: missing-context reuses prev model/effort but re-runs eligibility -> persistent."""
+    usage = _all_available_usage()
+    prev = {
+        "worker": "opencode",
+        "model": "minimax-m3",
+        "effort": "medium",
+        "tier": "default",
+        "method": "ocrun",
+        "capability_failures": 0,
+    }
+    retry = _feature_task(
+        attempt=2,
+        last_failure="missing-context",
+        prev=prev,
+        iterative=True,
+        persistent={"model": "minimax-m3", "effort": "medium", "status": "idle"},
+    )
+    result = route(retry, usage, policy)
+    assert result["model"] == "minimax-m3"
+    assert result["method"] == "persistent"
+    assert "fix the input" in result["reason"].lower()
+
+
+def test_input_repair_falls_back_to_ocrun_when_persistent_busy(policy: dict) -> None:
+    """Finding 8: eligible persistent agent is busy -> reuse model but dispatch as ocrun."""
+    usage = _all_available_usage()
+    prev = {
+        "worker": "opencode",
+        "model": "minimax-m3",
+        "effort": "medium",
+        "tier": "default",
+        "method": "persistent",
+        "capability_failures": 0,
+    }
+    retry = _feature_task(
+        attempt=2,
+        last_failure="tool",
+        prev=prev,
+        iterative=True,
+        persistent={"model": "minimax-m3", "effort": "medium", "status": "working"},
+    )
+    result = route(retry, usage, policy)
+    assert result["model"] == "minimax-m3"
+    assert result["method"] == "ocrun"
+
+
+def test_input_repair_falls_back_to_ocrun_on_persistent_model_mismatch(policy: dict) -> None:
+    """Finding 8: persistent block matches a different model -> reuse prev model, ocrun dispatch."""
+    usage = _all_available_usage()
+    prev = {
+        "worker": "opencode",
+        "model": "minimax-m3",
+        "effort": "medium",
+        "tier": "default",
+        "method": "persistent",
+        "capability_failures": 0,
+    }
+    retry = _feature_task(
+        attempt=2,
+        last_failure="unclear",
+        prev=prev,
+        iterative=True,
+        persistent={"model": "qwen3.7-plus", "effort": "medium", "status": "idle"},
+    )
+    result = route(retry, usage, policy)
+    assert result["model"] == "minimax-m3"
+    assert result["method"] == "ocrun"
+
+
+def test_input_repair_reselects_when_prev_codex_exhausted(policy: dict) -> None:
+    """Finding 8: tool failure with exhausted codex pool falls through to ladder selection."""
+    usage = _make_usage(
+        opencode_models={m: _model_state() for m in _all_ladder_models()},
+        codex_pct=90.0,
+    )
+    prev = {
+        "worker": "codex",
+        "model": _codex_strong_model(policy),
+        "effort": "high",
+        "tier": "strong",
+        "method": "ocrun-codex",
+        "capability_failures": 0,
+    }
+    retry = _feature_task(
+        attempt=2,
+        last_failure="tool",
+        prev=prev,
+    )
+    result = route(retry, usage, policy)
+    assert result["worker"] == "opencode"
+    assert "fix the input" in result["reason"].lower()
+
+
+def test_decide_returns_decision_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    policy: dict,
+) -> None:
+    """Finding 9: decide() returns its generated decision_id in the result."""
+    monkeypatch.setattr(route_pkg, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(route_pkg.hx_usage, "usage_snapshot", lambda policy=None, now=None: _all_available_usage())
+    monkeypatch.setattr(route_pkg.hx_usage, "load_policy", lambda: policy)
+
+    task = {"task_id": "task_decide", **_feature_task()}
+    result = decide(task)
+
+    assert "decision_id" in result
+    assert isinstance(result["decision_id"], str)
+
+    log = tmp_path / ".hx" / "routing.jsonl"
+    assert log.exists()
+    record = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["kind"] == "decision"
+    assert record["decision_id"] == result["decision_id"]
+    assert record["task_id"] == "task_decide"
+    assert record["result"]["decision_id"] == result["decision_id"]
