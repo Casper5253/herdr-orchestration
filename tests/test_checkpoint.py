@@ -309,3 +309,55 @@ def json_recover(stdout: str, task_id: str) -> dict:
     assert obj["id"] == task_id
     return obj
 
+
+# ---------- correction round 2: checkpoint write overrides saved text ---------
+
+
+def test_checkpoint_write_explicit_flags_override_saved_text(
+    repo: Path, ledger: ledger_mod.Ledger
+) -> None:
+    checkpoint.write_checkpoint(
+        "t1",
+        ledger=ledger,
+        decisions="saved decision",
+        errors="saved error",
+        next_action="saved next",
+        objective="saved objective",
+    )
+    checkpoint.write_checkpoint(
+        "t1",
+        ledger=ledger,
+        decisions="NEW decision",
+        errors="NEW error",
+        next_action="NEW next",
+    )
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    text = Path(result["checkpoint"]).read_text(encoding="utf-8")
+
+    assert "NEW decision" in text
+    assert "NEW error" in text
+    assert "NEW next" in text
+    assert "saved decision" not in text
+    assert "saved error" not in text
+    assert "saved next" not in text
+    assert "saved objective" in text
+
+
+def test_checkpoint_write_saved_text_is_default_for_empty_flags(
+    repo: Path, ledger: ledger_mod.Ledger
+) -> None:
+    checkpoint.write_checkpoint(
+        "t1",
+        ledger=ledger,
+        decisions="kept decision",
+        errors="kept error",
+        next_action="kept next",
+    )
+    checkpoint.write_checkpoint("t1", ledger=ledger)
+    result = checkpoint.validate_checkpoint("t1", ledger=ledger)
+    text = Path(result["checkpoint"]).read_text(encoding="utf-8")
+
+    assert "kept decision" in text
+    assert "kept error" in text
+    assert "kept next" in text
+

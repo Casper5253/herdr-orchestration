@@ -259,12 +259,20 @@ class DualLock:
         self.stale_seconds = stale_seconds
 
     def __enter__(self) -> "DualLock":
-        for path in self.lock_paths:
-            _acquire_lock(path, stale_seconds=self.stale_seconds)
+        acquired: list[Path] = []
+        try:
+            for path in self.lock_paths:
+                _acquire_lock(path, stale_seconds=self.stale_seconds)
+                acquired.append(path)
+        except BaseException:
+            for path in reversed(acquired):
+                _release_lock(path)
+            raise
+        self._acquired = acquired
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        for path in reversed(self.lock_paths):
+        for path in reversed(getattr(self, "_acquired", self.lock_paths)):
             _release_lock(path)
 
 
@@ -303,6 +311,39 @@ class Ledger:
 
     def _leases_lock(self) -> LeaseLock:
         return LeaseLock(self.leases_lock_path)
+
+    def mutate_leases(self, mutator: Callable[[dict[str, Any]], Any]) -> Any:
+        """Apply ``mutator(leases_data)`` to leases.json under the shared lock.
+
+        leases.json is machine-wide and read/written by hx.context outside the
+        ledger flow, so any leases change must go through here, never through
+        a repo-only lock. The shared lock is held for the whole call: never
+        call herdr commands or model operations from inside ``mutator``.
+        Other agents sleep while the caller computes.
+        """
+        with self._leases_lock():
+            data = self._load_leases()
+            result = mutator(data)
+            self._save_leases(data)
+            return result
+
+    def mutate_leases_with_repo(
+        self,
+        mutator: Callable[[dict[str, Any], dict[str, Any]], Any],
+    ) -> Any:
+        """Task-bound leases changes: ``mutator(ledger_data, leases_data)``.
+
+        Acquires the repo lock first, then the shared leases lock (the same
+        stable order as every ledger mutation), and commits both files at the
+        end. Rules are the same as for :meth:`mutate_leases`: no herdr or
+        model work while the locks are held.
+        """
+        with self._dual_lock():
+            ledger_data = self._load_ledger()
+            leases_data = self._load_leases()
+            result = mutator(ledger_data, leases_data)
+            self._save(ledger_data, leases_data)
+            return result
 
     def _ensure_dirs(self) -> None:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -378,14 +419,17 @@ class Ledger:
         new_worktree: str | None = None,
     ) -> None:
         partition = leases.get("files", {}).get(self._project_partition_key(), {})
-        new_wt = _canonical_path(new_worktree) if new_worktree else ""
+        # ``worktree`` None means the primary tree, so tasks may claim the
+        # primary root (or omit worktree) and stay in the same tree.
+        primary = _canonical_path(self.repo_root)
+        new_wt = _canonical_path(new_worktree) if new_worktree else primary
         for f in files:
             key = _canonical_path(f)
             lease = partition.get(key)
             if not lease or lease.get("task_id") == exclude_task_id:
                 continue
             lease_wt_raw = lease.get("worktree")
-            lease_wt = _canonical_path(lease_wt_raw) if lease_wt_raw else ""
+            lease_wt = _canonical_path(lease_wt_raw) if lease_wt_raw else primary
             if lease_wt != new_wt:
                 # Different worktrees may clone the same files in parallel.
                 continue
@@ -398,13 +442,17 @@ class Ledger:
         if not worktree:
             return
         if not (self.repo_root / ".git").exists():
-            # Not a git repo (or git missing): cannot verify here, keep
-            # working as before; intra-worktree conflict checks still apply.
+            # Not a git repo: verification is not applicable here; the
+            # normalised intra-worktree conflict checks still apply.
             return
         claimed = _canonical_path(worktree)
-        rc, out, _err = _run_git(["worktree", "list", "--porcelain"], self.repo_root)
+        rc, out, err = _run_git(["worktree", "list", "--porcelain"], self.repo_root)
         if rc != 0:
-            return
+            # Fail closed: if git cannot enumerate worktrees we cannot verify
+            # the claim and must refuse it.
+            raise ValueError(
+                f"cannot verify git worktrees for {self.repo_root}: {err.strip() or 'git failed'}"
+            )
         entries = {
             _canonical_path(line[len("worktree "):].strip())
             for line in out.splitlines()
@@ -507,6 +555,17 @@ class Ledger:
                         raise SessionLeaseConflict(
                             f"Agent {agent} session is {entry['state']}; refusing dispatch"
                         )
+                    reserved_task = entry.get("task_id")
+                    if (
+                        "token" not in entry
+                        and reserved_task is not None
+                        and reserved_task != task_id
+                        and entry.get("holder") == owner
+                    ):
+                        raise SessionLeaseConflict(
+                            f"Agent {agent} session is reserved for task {reserved_task} "
+                            f"by {entry.get('holder')}; refusing dispatch for task {task_id}"
+                        )
                     entry_holder = entry.get("holder")
                     if entry_holder and entry_holder != owner:
                         raise SessionLeaseConflict(
@@ -569,11 +628,39 @@ class Ledger:
             if status in self.CLOSED_STATUSES:
                 if status == "failed":
                     task["attempts"] = task.get("attempts", 0) + 1
+                self._release_task_reservations(leases, task_id)
             task["rev"] = task.get("rev", 0) + 1
             self._next_rev(ledger)
             leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task
+
+    def _release_task_reservations(self, leases: dict[str, Any], task_id: str) -> int:
+        """Drop held dispatch reservations linked to ``task_id``.
+
+        Compaction leases (``token`` entries) belong to hx.context and are
+        never touched here.
+        """
+        sessions = leases.get("sessions", {})
+        doomed = [
+            key
+            for key, entry in sessions.items()
+            if isinstance(entry, dict)
+            and "token" not in entry
+            and entry.get("state") == "held"
+            and entry.get("task_id") == task_id
+        ]
+        for key in doomed:
+            del sessions[key]
+        return len(doomed)
+
+    def release_task_reservations(self, task_id: str) -> int:
+        """Release stranded session reservations for a closed/lost task."""
+        with self._leases_lock():
+            leases = self._load_leases()
+            released = self._release_task_reservations(leases, task_id)
+            self._save_leases(leases)
+            return released
 
     def update_task(self, task_id: str, **fields: Any) -> dict[str, Any]:
         with self._dual_lock():
@@ -702,6 +789,7 @@ class Ledger:
             ledger["rev"] = ledger.get("rev", 0) + 1
             path = checkpoint_writer(task, task["rev"])
             task["checkpoint"] = str(path)
+            self._release_task_reservations(leases, task_id)
             leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task

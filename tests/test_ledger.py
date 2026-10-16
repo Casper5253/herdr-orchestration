@@ -460,3 +460,195 @@ def test_worktree_claims_verified_against_git_worktree_list(
 
     task = led.add_task("t4", title="T4", owner="o", files=["owned1.py"])
     assert task["worktree"] is None
+
+
+# ---------- correction round 2 ------------------------------------------------
+
+
+def test_dual_lock_releases_acquired_locks_when_a_later_acquire_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.lock"
+    second = tmp_path / "second.lock"
+    original = ledger_mod._acquire_lock
+
+    def failing_second(path: Path, stale_seconds: float = 60.0, retries: int = 100, delay: float = 0.05) -> None:
+        if path == second:
+            raise ledger_mod.LockTimeout(f"forced failure on {path}")
+        original(path, stale_seconds=stale_seconds, retries=retries, delay=delay)
+
+    monkeypatch.setattr(ledger_mod, "_acquire_lock", failing_second)
+    with pytest.raises(ledger_mod.LockTimeout):
+        with ledger_mod.DualLock([first, second]):
+            pass
+    assert not first.exists()
+    assert not second.exists()
+
+
+def test_persistent_reservation_refuses_same_owner_other_task(
+    ledger: ledger_mod.Ledger,
+) -> None:
+    ledger.add_task("t1", title="T1", owner="w", files=["src/a.py"])
+    ledger.add_task("t2", title="T2", owner="w", files=["src/b.py"])
+    ledger.assign_task("t1", owner="w", method="persistent", agent="hx-opencode")
+    with pytest.raises(ledger_mod.SessionLeaseConflict):
+        ledger.assign_task("t2", owner="w", method="persistent", agent="hx-opencode")
+
+
+def test_primary_root_and_none_worktree_are_the_same_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leases = tmp_path / "leases.json"
+    monkeypatch.setenv("HX_LEASES_PATH", str(leases))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    (repo / "owned1.py").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", str(wt), "-b", "wtbranch")
+
+    led = ledger_mod.Ledger(
+        ledger_path=tmp_path / "repo" / ".hx" / "ledger.json",
+        leases_path=leases,
+        lock_path=tmp_path / "repo" / ".hx" / "l.lock",
+        repo_root=repo,
+    )
+
+    led.add_task("t_none", title="T", owner="o", files=["owned1.py"])
+    from hx.ledger import OwnershipConflict
+
+    with pytest.raises(OwnershipConflict):
+        led.add_task(
+            "t_root", title="T", owner="o", files=["owned1.py"], worktree=str(repo)
+        )
+
+    # The primary root as worktree is a valid git worktree of the repo.
+    task = led.add_task(
+        "t_root_otherfile", title="T", owner="o", files=["owned2foo.py"], worktree=str(repo)
+    )
+    assert task["worktree"] is not None
+
+
+def test_worktree_verification_fails_closed_on_git_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leases = tmp_path / "leases.json"
+    monkeypatch.setenv("HX_LEASES_PATH", str(leases))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    monkeypatch.setattr(
+        ledger_mod,
+        "_run_git",
+        lambda args, cwd: (1, "", "git exploded"),
+    )
+    led = ledger_mod.Ledger(
+        ledger_path=tmp_path / "repo" / ".hx" / "ledger.json",
+        leases_path=leases,
+        lock_path=tmp_path / "repo" / ".hx" / "l.lock",
+        repo_root=repo,
+    )
+    with pytest.raises(ValueError):
+        led.add_task("t1", title="T", owner="o", files=["a.py"], worktree=str(tmp_path / "wt"))
+
+
+def test_reservation_released_on_close_and_status(
+    ledger: ledger_mod.Ledger,
+) -> None:
+    ledger.add_task("t1", title="T1", owner="w", files=["src/a.py"])
+    ledger.assign_task("t1", owner="w", method="persistent", agent="hx-opencode")
+    assert ledger.get_session("hx-opencode") is not None
+
+    ledger.set_status("t1", "done")
+    assert ledger.get_session("hx-opencode") is None
+
+    ledger.add_task("t2", title="T2", owner="w", files=["src/b.py"])
+    ledger.assign_task("t2", owner="w", method="persistent", agent="hx-opencode")
+    assert ledger.get_session("hx-opencode") is not None
+
+    ledger.set_status("t2", "failed")
+    assert ledger.get_session("hx-opencode") is None
+
+    ledger.add_task("t3", title="T3", owner="w", files=["src/c.py"])
+    ledger.assign_task("t3", owner="w", method="persistent", agent="hx-opencode")
+
+    def writer(task, rev):
+        return ledger.leases_path.parent / "unused.md"
+
+    ledger.complete_task("t3", "blocked", writer)
+    assert ledger.get_session("hx-opencode") is None
+
+
+def test_reservation_released_on_close_via_checkpoint_writer(
+    ledger: ledger_mod.Ledger,
+) -> None:
+    from hx import checkpoint as checkpoint_mod
+
+    ledger.add_task("t1", title="T1", owner="w", files=["src/a.py"])
+    ledger.assign_task("t1", owner="w", method="persistent", agent="hx-opencode")
+    checkpoint_mod.write_completion_checkpoint(
+        "t1",
+        ledger=ledger,
+        status="done",
+        objective="o",
+        decisions="d",
+        errors="none",
+        next_action="n",
+    )
+    assert ledger.get_session("hx-opencode") is None
+
+
+def test_task_release_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from hx import __main__ as cli
+
+    monkeypatch.setenv("HX_LEDGER_PATH", str(tmp_path / ".hx" / "ledger.json"))
+    monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / ".herdr-team" / "state" / "leases.json"))
+    monkeypatch.setenv("HX_LOCK_PATH", str(tmp_path / ".hx" / "ledger.lock"))
+    led = ledger_mod.Ledger(repo_root=tmp_path)
+    led.add_task("t1", title="T", owner="w", files=["a.py"])
+    led.assign_task("t1", owner="w", method="persistent", agent="hx-opencode")
+    assert led.get_session("hx-opencode") is not None
+
+    import io, contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = cli.main(["task", "release", "t1"])
+    assert code == 0
+    payload = json.loads(buf.getvalue())
+    assert payload["released"] == 1
+    assert led.get_session("hx-opencode") is None
+
+
+def test_mutate_leases_runs_under_shared_lock_and_saves(
+    ledger: ledger_mod.Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_seen: list[Path] = []
+    original = ledger_mod._acquire_lock
+
+    def spy(path: Path, stale_seconds: float = 60.0, retries: int = 100, delay: float = 0.05) -> None:
+        lock_seen.append(path)
+        original(path, stale_seconds=stale_seconds, retries=retries, delay=delay)
+
+    monkeypatch.setattr(ledger_mod, "_acquire_lock", spy)
+
+    def add_entry(data: dict) -> str:
+        data["sessions"]["hx-codex"] = {"agent": "hx-codex", "session_id": "s1", "state": "held"}
+        return "done"
+
+    result = ledger.mutate_leases(add_entry)
+    assert result == "done"
+    assert lock_seen == [ledger_mod.Path(ledger.leases_lock_path)]
+    assert ledger.get_session("hx-codex")["session_id"] == "s1"
+
+    def round_trip(ledger_data: dict, data: dict) -> tuple[int, bool]:
+        return ledger_data["rev"], "files" in data
+
+    rev, has_files = ledger.mutate_leases_with_repo(round_trip)
+    assert rev >= 0
+    assert has_files is True
+    assert ledger.get_session("hx-codex") is not None

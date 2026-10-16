@@ -55,6 +55,13 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     failed.add_argument("id")
     failed.set_defaults(func=_task_failed)
 
+    release = task_sub.add_parser(
+        "release",
+        help="Release stranded session reservations for a task.",
+    )
+    release.add_argument("id")
+    release.set_defaults(func=_task_release)
+
     list_ = task_sub.add_parser("list", help="List tasks.")
     list_.add_argument("--status")
     list_.set_defaults(func=_task_list)
@@ -185,6 +192,12 @@ def _task_failed(args: argparse.Namespace) -> None:
     led = ledger.default_ledger()
     task = led.set_status(args.id, "failed")
     print(json.dumps(task, indent=2))
+
+
+def _task_release(args: argparse.Namespace) -> None:
+    led = ledger.default_ledger()
+    released = led.release_task_reservations(args.id)
+    print(json.dumps({"task": args.id, "released": released}, indent=2))
 
 
 def _task_list(args: argparse.Namespace) -> None:

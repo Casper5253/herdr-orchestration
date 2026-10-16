@@ -286,20 +286,34 @@ def write_checkpoint(
     owned_committed = [line for line in committed_lines]
 
     path = checkpoints_dir / f"{task_id}.md"
+    # Explicit non-empty flags override the saved text; saved text is the
+    # default for sections the caller left empty, so repeated writes preserve
+    # earlier agent prose unless the agent rewrites it.
+    saved = _read_authored_sections(path)
+    merged = {
+        "objective": objective or saved.get("Objective", ""),
+        "owner": owner or "",
+        "status": status or "",
+        "decisions": decisions or saved.get("Decisions", ""),
+        "errors": errors or saved.get("Exact errors", ""),
+        "tests": tests or saved.get("Tests", ""),
+        "next_action": next_action or saved.get("Next action", ""),
+        "references": references or saved.get("References", ""),
+    }
     # Record the checkpoint path in the ledger first so the file mtime is
     # strictly newer than the task's updated timestamp when validated.
     task = ledger.update_task(task_id, checkpoint=str(path))
     _write_checkpoint(
         path,
         task,
-        objective=objective,
-        owner=owner,
-        status=status,
-        decisions=decisions,
-        errors=errors,
-        tests=tests,
-        next_action=next_action,
-        references=references,
+        objective=merged["objective"],
+        owner=merged["owner"],
+        status=merged["status"],
+        decisions=merged["decisions"],
+        errors=merged["errors"],
+        tests=merged["tests"],
+        next_action=merged["next_action"],
+        references=merged["references"],
         git_status=owned_status,
         diff_stat=owned_diff_stat,
         committed=owned_committed,
