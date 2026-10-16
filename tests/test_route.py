@@ -951,3 +951,20 @@ def test_decision_and_outcome_share_ids(
     assert out["decision_id"] == decision_id
     assert dec["task_id"] == task_id
     assert out["task_id"] == task_id
+
+
+def test_iterative_work_prefers_warm_persistent_model_in_tier() -> None:
+    """e2e finding: glm-5.3-flash persistent session is in the default ladder but was never chosen."""
+    from hx.route import route
+    policy = {"ladders": {"economy": ["glm-5.3-flash"], "default": ["qwen3.7-plus", "glm-5.3-flash"], "strong": ["kimi-k2.7-code"]},
+              "thresholds": {"pool_soft_limit": 0.85, "stale_seconds": 3600}, "effort_by_kind": {"feature": "medium"}}
+    win = {"5h": {"utilisation": 0.0}, "7d": {"utilisation": 0.0}, "30d": {"utilisation": 0.0}}
+    usage = {"opencode": {"tag": "estimated", "sample_age_seconds": 5,
+                          "models": {m: {"windows": win, "last_error": None} for m in ("qwen3.7-plus", "glm-5.3-flash", "kimi-k2.7-code")}}}
+    task = {"kind": "feature", "size": "large", "iterative": True,
+            "persistent": {"model": "glm-5.3-flash", "effort": "high", "status": "idle"}}
+    d = route(task, usage, policy)
+    assert (d["model"], d["method"]) == ("glm-5.3-flash", "persistent"), d
+    task["persistent"]["status"] = "working"
+    d = route(task, usage, policy)
+    assert (d["model"], d["method"]) == ("qwen3.7-plus", "ocrun"), d

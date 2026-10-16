@@ -312,11 +312,37 @@ def _persistent_eligible(
     if persistent.get("model") != chosen_model:
         return False
     p_effort = persistent.get("effort")
-    if p_effort == chosen_effort:
+    order = ["low", "medium", "high", "max"]
+    if p_effort == chosen_effort or (
+        p_effort in order and chosen_effort in order and order.index(p_effort) >= order.index(chosen_effort)
+    ):
         return True
     if p_effort == "unknown" and chosen_effort == policy.get("default_effort", "medium"):
         return True
     return False
+
+
+def _warm_persistent_model(
+    task: dict[str, Any], tier: str, effort: str, oc: dict[str, Any], policy: dict[str, Any]
+) -> tuple[str, str, float] | None:
+    """(model, status, util) of the idle persistent session if it can take iterative work."""
+    iterative = task.get("iterative")
+    if iterative is None:
+        iterative = task.get("size") == "large"
+    persistent = task.get("persistent") or {}
+    model = persistent.get("model")
+    if not iterative or task.get("parallel") or persistent.get("status") != "idle" or not model:
+        return None
+    if model not in policy.get("ladders", {}).get(tier, []):
+        return None
+    order = ["low", "medium", "high", "max"]
+    p_effort = persistent.get("effort")
+    if p_effort in order and order.index(p_effort) < order.index(effort):
+        return None
+    status, util = _model_status_opencode(model, oc, policy)
+    if status != "available":
+        return None
+    return model, status, util
 
 
 def _decide_method(
@@ -472,6 +498,12 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
         start_tier = _tier_for_effort(effort)
         stages.append(f"tier:{start_tier}")
         model_id, status, util, tried = _pick_opencode(start_tier, oc, policy)
+        warm = _warm_persistent_model(task, start_tier, effort, oc, policy)
+        if warm is not None and model_id is not None:
+            # Iterative work prefers the warm persistent session when its model is in the
+            # chosen tier and available: reusing cached context beats ladder order.
+            stages.append("persistent:warm")
+            model_id, status, util = warm
         if model_id is None:
             for t in tried:
                 stages.append(f"tried:{t}")
