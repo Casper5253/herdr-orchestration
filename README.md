@@ -11,6 +11,10 @@
 - `bench/`: five-task model benchmark with validated graders. Results in `bench/RESULTS.md`.
 - `docs/`: `REPORT.md`, `ARCHITECTURE.md`, `FINDINGS.md`, provider audits, and the article `paper/hx-paper.html`.
 
+## Related
+- [agent-memory](https://github.com/Casper5253/agent-memory): the shared Obsidian memory (session capture, project notes, `mem search`) described in the article.
+- Skills reach all three agents through pstack by Lauren Tan, which is not part of this repo. `install.ps1` copies the two skills above into a local pstack install and runs its sync.
+
 ## Use
 Windows, Python 3.11+, Herdr 0.9, and the three agent CLIs.
 
