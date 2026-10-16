@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, ledger, usage
+from hx import checkpoint, context, ledger, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -96,7 +96,29 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_usage_parser(subparsers)
     _add_task_parser(subparsers)
     _add_checkpoint_parser(subparsers)
+    context_parser = subparsers.add_parser("context", help="Session context decisions and recovery.")
+    context_sub = context_parser.add_subparsers(dest="context_command", required=True)
+    decide = context_sub.add_parser("decide")
+    decide.add_argument("agent")
+    decide.add_argument("--task")
+    decide.add_argument("--related", action="store_true")
+    decide.set_defaults(func=lambda args: print(json.dumps(context.Controller().decide(args.agent, args.task, args.related))))
+    recover = context_sub.add_parser("recover")
+    recover.add_argument("agent")
+    recover.set_defaults(func=lambda args: print(json.dumps(context.Controller().recover(args.agent))))
+    compact = subparsers.add_parser("compact", help="Compact an idle worker at a completed task boundary.")
+    compact.add_argument("agent")
+    compact.add_argument("--task")
+    compact.add_argument("--related", action="store_true")
+    compact.set_defaults(func=_compact)
     return parser
+
+
+def _compact(args: argparse.Namespace) -> None:
+    result = context.Controller().compact(args.agent, args.task, args.related)
+    print(json.dumps(result))
+    if result["action"] == "compact-unknown":
+        raise SystemExit(1)
 
 
 def _task_add(args: argparse.Namespace) -> None:
