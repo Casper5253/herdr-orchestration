@@ -10,7 +10,9 @@
       "Bash(herdr status:*)", "PowerShell(herdr status:*)",
       "Bash(herdr --skill:*)", "PowerShell(herdr --skill:*)",
       "Bash(herdr agent prompt dev-codex:*)", "PowerShell(herdr agent prompt dev-codex:*)",
-      "Bash(herdr agent prompt dev-opencode:*)", "PowerShell(herdr agent prompt dev-opencode:*)"
+      "Bash(herdr agent prompt dev-opencode:*)", "PowerShell(herdr agent prompt dev-opencode:*)",
+      "Bash(herdr agent prompt hx-codex:*)", "PowerShell(herdr agent prompt hx-codex:*)",
+      "Bash(herdr agent prompt hx-opencode:*)", "PowerShell(herdr agent prompt hx-opencode:*)"
     ],
     "ask": [
       "Bash(herdr agent send-keys:*)", "PowerShell(herdr agent send-keys:*)",

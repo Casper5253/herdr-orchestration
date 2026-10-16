@@ -6,7 +6,7 @@ prefix_rule(pattern=["herdr", ["workspace", "tab"], "list"], decision="allow")
 prefix_rule(pattern=["herdr", "status"], decision="allow")
 prefix_rule(pattern=["herdr", "--skill"], decision="allow")
 # Delegation only to the named trusted teammates (names exist only in a herdr-team workspace).
-prefix_rule(pattern=["herdr", "agent", "prompt", ["dev-claude", "dev-opencode"]], decision="allow")
+prefix_rule(pattern=["herdr", "agent", "prompt", ["dev-claude", "dev-opencode", "hx-claude", "hx-opencode"]], decision="allow")
 # Keyboard injection, raw pane control and agent lifecycle stay with the user.
 prefix_rule(pattern=["herdr", "agent", ["send-keys", "start", "rename", "focus", "attach"]], decision="prompt")
 prefix_rule(pattern=["herdr", "pane", ["run", "send-text", "send-keys", "close", "split", "move", "input"]], decision="prompt")

@@ -15,7 +15,9 @@
       "herdr status*": "allow",
       "herdr --skill*": "allow",
       "herdr agent prompt dev-claude *": "allow",
-      "herdr agent prompt dev-codex *": "allow"
+      "herdr agent prompt dev-codex *": "allow",
+      "herdr agent prompt hx-claude *": "allow",
+      "herdr agent prompt hx-codex *": "allow"
     }
   }
 }
