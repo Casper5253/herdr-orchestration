@@ -280,3 +280,103 @@ def test_cli_usage_prints_json(
     parsed = json.loads(out)
     assert parsed["opencode"]["tag"] == "estimated"
     assert parsed["codex"]["tag"] == "measured"
+
+
+# ---------- claude status preference (per-session files) ----------------------
+
+
+def _write_claude_status(path: Path, used: float, mtime_ts: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": path.stem.removeprefix("claude-status-"),
+                "context_window": {"used_percentage": used},
+                "rate_limits": {"five_hour": {"used_percentage": used / 2}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(path, (mtime_ts, mtime_ts))
+
+
+@pytest.fixture
+def claude_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    state = tmp_path / "state"
+    monkeypatch.delenv("HX_CLAUDE_STATUS", raising=False)
+    monkeypatch.setenv("HX_STATE_DIR", str(state))
+    monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / "leases.json"))
+    monkeypatch.setenv("HX_LOCK_PATH", str(tmp_path / "lock.lock"))
+    return state
+
+
+def test_claude_prefers_lead_session_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, claude_state: Path, now: datetime.datetime
+) -> None:
+    mtime = now.timestamp() - 60
+    _write_claude_status(claude_state / "claude-status.json", 90.0, mtime)
+    _write_claude_status(claude_state / "claude-status-lead-sid.json", 10.0, mtime)
+    _write_claude_status(claude_state / "claude-status-other.json", 80.0, mtime)
+    (tmp_path / "leases.json").write_text(
+        json.dumps(
+            {
+                "files": {},
+                "sessions": {
+                    "hx-claude": {
+                        "agent": "hx-claude",
+                        "session_id": "lead-sid",
+                        "holder": "claude",
+                        "state": "held",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = claude_usage({"team_prefix": "hx-", "thresholds": {"pool_soft_limit": 0.85}}, now=now)
+
+    assert result["tag"] == "measured"
+    assert result["status_path"].endswith("claude-status-lead-sid.json")
+    assert result["context_window"]["used_percentage"] == 10.0
+
+
+def test_claude_prefers_newest_per_session_without_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, claude_state: Path, now: datetime.datetime
+) -> None:
+    older = now.timestamp() - 600
+    newer = now.timestamp() - 120
+    _write_claude_status(claude_state / "claude-status-older.json", 70.0, older)
+    _write_claude_status(claude_state / "claude-status-newer.json", 20.0, newer)
+
+    result = claude_usage({"team_prefix": "hx-", "thresholds": {"pool_soft_limit": 0.85}}, now=now)
+
+    assert result["status_path"].endswith("claude-status-newer.json")
+    assert result["context_window"]["used_percentage"] == 20.0
+
+
+def test_claude_aggregate_is_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, claude_state: Path, now: datetime.datetime
+) -> None:
+    mtime = now.timestamp() - 60
+    _write_claude_status(claude_state / "claude-status.json", 50.0, mtime)
+
+    result = claude_usage({"team_prefix": "hx-", "thresholds": {"pool_soft_limit": 0.85}}, now=now)
+
+    assert result["status_path"].endswith("claude-status.json")
+    assert result["context_window"]["used_percentage"] == 50.0
+
+
+def test_claude_env_override_still_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, claude_state: Path, now: datetime.datetime
+) -> None:
+    mtime = now.timestamp() - 60
+    _write_claude_status(claude_state / "claude-status-lead-sid.json", 99.0, mtime)
+    explicit = tmp_path / "explicit.json"
+    _write_claude_status(explicit, 5.0, mtime)
+    monkeypatch.setenv("HX_CLAUDE_STATUS", str(explicit))
+
+    result = claude_usage({"team_prefix": "hx-", "thresholds": {"pool_soft_limit": 0.85}}, now=now)
+
+    assert result["status_path"] == str(explicit)
+    assert result["context_window"]["used_percentage"] == 5.0

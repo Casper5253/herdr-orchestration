@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from hx import paths
+
 PROVIDER = "opencode-go"
 
 QUOTA_MARKERS = (
@@ -39,7 +41,7 @@ QUOTA_MARKERS = (
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return paths.project_root()
 
 
 def default_routing_log() -> Path:
@@ -318,7 +320,12 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m hx.ocrun",
         description="Headless OpenCode worker wrapper with silent-failure detection.",
     )
-    parser.add_argument("prompt", help="task prompt for the worker")
+    parser.add_argument("prompt", nargs="?", default=None, help="task prompt for the worker")
+    parser.add_argument(
+        "--prompt-file",
+        default=None,
+        help="read the prompt from this file instead of the positional prompt",
+    )
     parser.add_argument("--model", required=True, help="model name or provider/model id")
     parser.add_argument("--variant", default=None, help="provider-specific reasoning effort")
     parser.add_argument("--cwd", default=None, help="directory to run in")
@@ -326,8 +333,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", default=None, help="title for the session")
     args = parser.parse_args(argv)
 
+    if args.prompt_file:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    elif args.prompt:
+        prompt = args.prompt
+    else:
+        parser.error("one of prompt or --prompt-file is required")
+
     result = run(
-        args.prompt,
+        prompt,
         args.model,
         variant=args.variant,
         cwd=Path(args.cwd) if args.cwd else None,

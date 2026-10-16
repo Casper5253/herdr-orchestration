@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from hx import paths
 from hx import usage as hx_usage
 
 
@@ -37,7 +38,7 @@ EFFORT_TO_TIER: dict[str, str] = {
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return paths.project_root()
 
 
 def _now() -> datetime:

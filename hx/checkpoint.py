@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from hx import ledger as ledger_mod
+from hx import paths
 
 
 SECTIONS = [
@@ -37,7 +38,7 @@ _LEDGER_REV_RE = re.compile(r"^ledger_rev:\s*(\d+)\s*$", re.MULTILINE)
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return paths.project_root()
 
 
 def _env_path(var: str, default: Path) -> Path:
@@ -84,6 +85,26 @@ def _git_diff_stat(workdir: Path, base_commit: str) -> list[str]:
     if not base_commit:
         return []
     rc, out, _err = _run_git(["diff", "--stat", base_commit], workdir)
+    if rc != 0:
+        return []
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _git_committed(
+    workdir: Path, base_commit: str, owned_files: set[str]
+) -> list[str]:
+    """Commit subjects in ``base_commit..HEAD`` touching owned files.
+
+    ``git status --porcelain`` only sees working-tree dirt; work already
+    committed during the task shows up here instead.
+    """
+    if not base_commit or not owned_files:
+        return []
+    rels = [os.path.relpath(f, workdir) for f in sorted(owned_files)]
+    rc, out, _err = _run_git(
+        ["log", "--oneline", "--no-decorate", f"{base_commit}..HEAD", "--", *rels],
+        workdir,
+    )
     if rc != 0:
         return []
     return [line for line in out.splitlines() if line.strip()]
@@ -137,6 +158,7 @@ def _write_checkpoint(
     references: str,
     git_status: list[str],
     diff_stat: list[str],
+    committed: list[str],
     ledger_rev: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +180,9 @@ def _write_checkpoint(
         "",
         "### git status --porcelain",
         *git_status,
+        "",
+        "### committed (base..HEAD)",
+        *committed,
         "",
         "### git diff --stat",
         *diff_stat,
@@ -214,9 +239,11 @@ def write_checkpoint(
 
     status_lines = _git_status_porcelain(workdir)
     diff_stat_lines = _git_diff_stat(workdir, task.get("base_commit", ""))
+    committed_lines = _git_committed(workdir, task.get("base_commit", ""), owned_files)
 
     owned_status = _filter_owned(status_lines, owned_files, workdir)
     owned_diff_stat = _filter_owned(diff_stat_lines, owned_files, workdir)
+    owned_committed = [line for line in committed_lines]
 
     path = checkpoints_dir / f"{task_id}.md"
     # Record the checkpoint path in the ledger first so the file mtime is
@@ -235,6 +262,7 @@ def write_checkpoint(
         references=references,
         git_status=owned_status,
         diff_stat=owned_diff_stat,
+        committed=owned_committed,
         ledger_rev=task["rev"],
     )
     return path
@@ -274,12 +302,14 @@ def write_completion_checkpoint(
     def writer(task: dict[str, Any], rev: int) -> Path:
         workdir = _task_workdir(task, repo_root)
         owned_files = {_canonical_path(workdir / f) for f in task.get("files", [])}
+        base = task.get("base_commit", "")
         owned_status = _filter_owned(
             _git_status_porcelain(workdir), owned_files, workdir
         )
         owned_diff_stat = _filter_owned(
-            _git_diff_stat(workdir, task.get("base_commit", "")), owned_files, workdir
+            _git_diff_stat(workdir, base), owned_files, workdir
         )
+        owned_committed = _git_committed(workdir, base, owned_files)
         path = checkpoints_dir / f"{task_id}.md"
         _write_checkpoint(
             path,
@@ -294,6 +324,7 @@ def write_completion_checkpoint(
             references=references,
             git_status=owned_status,
             diff_stat=owned_diff_stat,
+            committed=owned_committed,
             ledger_rev=rev,
         )
         return path
@@ -369,23 +400,32 @@ def validate_checkpoint(
     owned_status = _filter_owned(status_lines, owned_files, workdir)
     file_section = _extract_section(text, "Files changed")
     if file_section is not None:
-        listed_status = [
-            line for line in file_section.splitlines()
-            if line.strip().startswith((" ", "\t")) or (len(line) >= 2 and line[:2] in {" M", " A", " D", "??", " R", " C"})
-        ]
-        # Simpler: collect lines that look like git status entries under the porcelain subheading.
-        in_porcelain = False
-        listed: list[str] = []
+        listed_porcelain: list[str] = []
+        listed_committed: list[str] = []
+        subsection: str | None = None
         for line in file_section.splitlines():
-            if "git status --porcelain" in line:
-                in_porcelain = True
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                if "git status --porcelain" in stripped:
+                    subsection = "porcelain"
+                    continue
+                if "committed" in stripped:
+                    subsection = "committed"
+                    continue
+                if "git diff --stat" in stripped:
+                    subsection = "stat"
+                    continue
+            if not stripped:
                 continue
-            if "git diff --stat" in line:
-                break
-            if in_porcelain and line.strip():
-                listed.append(line)
-        if listed != owned_status:
+            if subsection == "porcelain":
+                listed_porcelain.append(line)
+            elif subsection == "committed":
+                listed_committed.append(line)
+        owned_committed = _git_committed(workdir, task.get("base_commit", ""), owned_files)
+        if listed_porcelain != owned_status:
             errors.append("Files changed section does not match current git status for owned files")
+        if listed_committed != owned_committed:
+            errors.append("Files changed section does not match committed changes for owned files")
 
     # Detect owned files that were modified after the checkpoint was written.
     for owned_path in owned_paths:

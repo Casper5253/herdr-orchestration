@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from hx import paths
+
 
 class OwnershipConflict(Exception):
     """Raised when a file is already owned by another open task."""
@@ -40,7 +42,7 @@ class LockTimeout(Exception):
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return paths.project_root()
 
 
 def _env_path(var: str, default: Path) -> Path:

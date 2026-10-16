@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, context, ledger, usage
+from hx import checkpoint, context, ledger, ocrun, route, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -37,6 +37,8 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     assign.add_argument("id")
     assign.add_argument("--owner", required=True)
     assign.add_argument("--worktree")
+    assign.add_argument("--method")
+    assign.add_argument("--agent")
     assign.set_defaults(func=_task_assign)
 
     status = task_sub.add_parser("status", help="Update task status.")
@@ -139,7 +141,13 @@ def _task_add(args: argparse.Namespace) -> None:
 
 def _task_assign(args: argparse.Namespace) -> None:
     led = ledger.default_ledger()
-    task = led.assign_task(args.id, owner=args.owner, worktree=args.worktree)
+    task = led.assign_task(
+        args.id,
+        owner=args.owner,
+        worktree=args.worktree,
+        method=args.method,
+        agent=args.agent,
+    )
     print(json.dumps(task, indent=2))
 
 
@@ -151,12 +159,13 @@ def _task_status(args: argparse.Namespace) -> None:
 
 def _task_done(args: argparse.Namespace) -> None:
     led = ledger.default_ledger()
-    checkpoint.write_checkpoint(
+    checkpoint.write_completion_checkpoint(
         args.id,
         ledger=led,
+        status="done",
         objective=args.objective,
         owner=args.owner,
-        status=args.status,
+        status_note=args.status,
         decisions=args.decisions,
         errors=args.errors,
         tests=args.tests,
@@ -166,7 +175,7 @@ def _task_done(args: argparse.Namespace) -> None:
     result = checkpoint.validate_checkpoint(args.id, ledger=led)
     if not result["ok"]:
         raise RuntimeError(f"checkpoint validation failed: {'; '.join(result['errors'])}")
-    task = led.set_status(args.id, "done")
+    task = led.get_task(args.id)
     print(json.dumps(task, indent=2))
 
 
@@ -214,14 +223,24 @@ def _checkpoint_validate(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args_list = list(sys.argv[1:]) if argv is None else list(argv)
+    if args_list and args_list[0] in {"route", "ocrun"}:
+        handler = route.main if args_list[0] == "route" else ocrun.main
+        try:
+            return int(handler(args_list[1:]) or 0)
+        except SystemExit as exc:
+            return int(exc.code) if exc.code else 0
+        except Exception as exc:
+            print(f"hx: {exc}", file=sys.stderr)
+            return 1
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        args.func(args)
+        rc = args.func(args)
     except Exception as exc:
         print(f"hx: {exc}", file=sys.stderr)
         return 1
-    return 0
+    return int(rc) if isinstance(rc, int) else 0
 
 
 if __name__ == "__main__":

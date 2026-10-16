@@ -9,15 +9,18 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+from hx import paths
+
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return paths.package_root()
 
 
 def _env_path(var: str, default: Path) -> Path:
@@ -39,6 +42,70 @@ def default_codex_sessions_dir() -> Path:
 
 def default_claude_status_path() -> Path:
     return _env_path("HX_CLAUDE_STATUS", Path.home() / ".herdr-team" / "state" / "claude-status.json")
+
+
+def _claude_state_dir() -> Path:
+    env = os.environ.get("HX_STATE_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".herdr-team" / "state"
+
+
+def _safe_session_id(session_id: Any) -> str:
+    text = str(session_id or "").strip()
+    if not text:
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", text)[-80:]
+
+
+def _lead_session_id(prefix: str) -> str | None:
+    """Lead session id from the ledger's session leases (read-only peek)."""
+    try:
+        from hx import ledger as ledger_mod
+
+        leases_path = ledger_mod.default_leases_path()
+        if not leases_path.exists():
+            return None
+        data = json.loads(leases_path.read_text(encoding="utf-8"))
+        sessions = data.get("sessions", {})
+        entry = sessions.get(f"{prefix}claude")
+        if entry is None and isinstance(sessions, dict):
+            for value in sessions.values():
+                if isinstance(value, dict) and value.get("agent") == f"{prefix}claude":
+                    entry = value
+                    break
+        if isinstance(entry, dict):
+            session_id = entry.get("session_id")
+            return str(session_id) if session_id else None
+    except Exception:
+        return None
+    return None
+
+
+def resolve_claude_status_path(policy: dict[str, Any]) -> Path:
+    """Pick the freshest trusted claude status file.
+
+    Order: HX_CLAUDE_STATUS override, the per-session file of the lead's
+    session id recorded in the ledger, the newest per-session file, then the
+    aggregate ``claude-status.json`` as last resort.
+    """
+    env = os.environ.get("HX_CLAUDE_STATUS")
+    if env:
+        return Path(env)
+
+    state_dir = _claude_state_dir()
+    prefix = policy.get("team_prefix", "hx-")
+    session_id = _lead_session_id(str(prefix))
+    if session_id:
+        candidate = state_dir / f"claude-status-{_safe_session_id(session_id)}.json"
+        if candidate.exists():
+            return candidate
+    per_session = [
+        p for p in state_dir.glob("claude-status-*.json") if p.name != "claude-status.json"
+    ]
+    if per_session:
+        return max(per_session, key=lambda p: p.stat().st_mtime)
+    return state_dir / "claude-status.json"
 
 
 def _utcnow() -> datetime.datetime:
@@ -374,7 +441,7 @@ def claude_usage(
     now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     if status_path is None:
-        status_path = default_claude_status_path()
+        status_path = resolve_claude_status_path(policy)
     if now is None:
         now = _utcnow()
 
