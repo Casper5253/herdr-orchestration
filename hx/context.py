@@ -30,7 +30,7 @@ def _timestamp(value: Any) -> dt.datetime | None:
 
 def _herdr(*args: str, timeout: float = 30) -> dict[str, Any]:
     result = subprocess.run(
-        ["herdr", "agent", *args], capture_output=True, text=True,
+        ["herdr", "agent", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=True, timeout=timeout, shell=False,
     )
     data = json.loads(result.stdout)
@@ -51,7 +51,7 @@ def _herdr_read(name: str, lines: int = 60) -> str:
     """`herdr agent read` prints the pane as plain text, not JSON."""
     result = subprocess.run(
         ["herdr", "agent", "read", name, "--source", "recent-unwrapped", "--lines", str(lines)],
-        capture_output=True, text=True, check=True, timeout=30, shell=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, timeout=30, shell=False,
     )
     return result.stdout
 
