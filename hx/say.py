@@ -11,7 +11,7 @@ import subprocess
 
 from hx import usage
 
-ROLES = ("claude", "codex", "opencode")
+ROLES = ("claude", "codex", "opencode", "haiku", "luna")
 
 
 def resolve(sender: str, target: str) -> str:
@@ -36,6 +36,6 @@ def with_header(sender: str, message: str) -> str:
 def say(target: str, message: str) -> int:
     sender = usage.own_agent_name()
     if not sender:
-        raise ValueError("hx say runs only in a herdr team pane (<team>-claude, -codex or -opencode)")
+        raise ValueError("hx say runs only in a herdr team pane (<team>-claude, -codex, -opencode, -haiku or -luna)")
     name = resolve(sender, target)
     return subprocess.run(["herdr", "agent", "prompt", name, with_header(sender, message)], timeout=60).returncode

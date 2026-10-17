@@ -463,7 +463,7 @@ def _herdr_agent_list() -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
-TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)(?:claude|codex|opencode)")
+TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)(?:claude|codex|opencode|haiku|luna)")
 
 
 def team_prefix(policy: dict[str, Any]) -> str:
