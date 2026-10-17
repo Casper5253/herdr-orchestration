@@ -28,3 +28,6 @@ Source: ~/Documents/Projects/herdr-orchestration (re-run its install.ps1 after c
 `hx usage` (quota per pool), `hx route` (who/which model/effort), `hx task` (ownership), `hx checkpoint`, `hx context decide|recover`, `hx compact <agent>`, `hx ocrun` (headless OpenCode with per-task model).
 Team Claude sessions get a status line that records context and quota, a PreCompact hook that keeps task state, and a SessionStart(compact) hook that restores it.
 Launch a second team beside the first with `-Team hx`; `-LeadPane <pane>` keeps an existing Claude as lead.
+
+## Known roadblocks (2026-10-17)
+Read `docs/audit/2026-10-17-team-launch.md` before launching a team. It covers why the lead cannot start agents under auto mode, why haiku and luna workers miss protected compaction, why Codex cannot commit (current policy: Codex edits, the lead commits), and the fix plan that makes each of these hold for every project.
