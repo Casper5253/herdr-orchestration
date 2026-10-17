@@ -82,7 +82,7 @@ def test_load_policy() -> None:
     assert p["opencode_pool"]["go"]["5h"] == 12
     assert p["opencode_pool"]["go_plus"]["7d"] == 120
     assert "monthly_caps" not in p["plans"]["go"]
-    assert p["thresholds"]["pool_soft_limit"] == 0.85
+    assert p["thresholds"]["pool_soft_limit"] == 0.98
 
 
 def test_opencode_usage(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
@@ -135,6 +135,7 @@ def test_shared_pool_dashboard_calibration_includes_models_outside_ladders(tmp_p
             conn.execute("INSERT INTO message VALUES (?, ?)",
                          (int((now - ago).timestamp() * 1000),
                           json.dumps({"role": "assistant", "modelID": model, "cost": cost})))
+    policy["thresholds"]["pool_soft_limit"] = 0.85
     result = opencode_usage(policy, db_path=db, now=now)
     pool = result["pool"]["windows"]
     assert pool["5h"]["utilisation"] == pytest.approx(9.70 / 12)
