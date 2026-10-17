@@ -185,7 +185,7 @@ def _pool_status(pool: dict[str, Any], policy: dict[str, Any]) -> tuple[str, flo
     if tag == "unknown":
         return "unknown", 1.0
 
-    rl = pool.get("rate_limits", {})
+    rl = pool.get("rate_limits") or {}
     max_util = None
 
     if "primary" in rl:

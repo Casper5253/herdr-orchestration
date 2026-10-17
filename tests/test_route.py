@@ -570,6 +570,17 @@ def test_codex_secondary_null_is_unknown(policy: dict) -> None:
     assert result["worker"] == "claude"
 
 
+def test_claude_rate_limits_null_does_not_crash(policy: dict) -> None:
+    """A Claude status file written before the first API response has rate_limits: null."""
+    usage = _make_usage(
+        opencode_7d=0.9,
+        opencode_models={m: _model_state(spend_5h=0.9) for m in _all_ladder_models()},
+    )
+    usage["claude"]["rate_limits"] = None
+    result = route(_feature_task(), usage, policy)
+    assert result["worker"] == "codex"
+
+
 def test_claude_spend_limit_considered(policy: dict) -> None:
     """Regression 4: claude rate_limits.spend_limit is included in headroom."""
     usage = _make_usage(
