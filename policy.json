@@ -2,8 +2,18 @@
   "team_prefix": "hx-",
   "active_plan": "go",
   "opencode_pool": {
-    "go": {"5h": 12, "7d": 30, "30d": 60, "tag": "estimated"},
-    "go_plus": {"5h": 48, "7d": 120, "30d": 240, "tag": "estimated"},
+    "go": {
+      "5h": 12,
+      "7d": 30,
+      "30d": 60,
+      "tag": "estimated"
+    },
+    "go_plus": {
+      "5h": 48,
+      "7d": 120,
+      "30d": 240,
+      "tag": "estimated"
+    },
     "note": "2026-10-16: shared pool across all models. Go calibrated against user dashboard (82% 5h, 90% week) and local spend ($9.70/$26.46). Go Plus is an unverified 4x estimate."
   },
   "plans": {
@@ -77,8 +87,9 @@
     ]
   },
   "thresholds": {
-    "pool_soft_limit": 0.85,
-    "stale_seconds": 3600
+    "pool_soft_limit": 0.98,
+    "stale_seconds": 3600,
+    "pool_soft_limit_note": "2026-10-17 owner directive: spend all OpenCode allowance before falling back to Codex (was 0.85); 0.98 keeps a margin because spend is estimated."
   },
   "persistent_opencode_model": "glm-5.3-flash",
   "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.163.0/bin",
