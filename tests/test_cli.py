@@ -82,6 +82,21 @@ def test_task_add_assign_checkpoint_done_validate_flow(
     assert shown["checkpoint"] == str(cli_repo / ".hx" / "checkpoints" / "t1.md")
 
 
+def test_lead_checkpoint_without_ledger_task(cli_repo, capsys):
+    assert cli.main(["checkpoint", "write", "lead", "--owner", "hx-claude",
+                     "--objective", "Finish release", "--decisions", "Keep worker contracts",
+                     "--errors", "None", "--tests", "Suite passed", "--next", "Review changes"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    path = cli_repo / ".hx" / "checkpoints" / "lead.md"
+    assert result["checkpoint"] == str(path)
+    text = path.read_text(encoding="utf-8")
+    for value in ("Finish release", "hx-claude", "Keep worker contracts", "None", "Suite passed", "Review changes"):
+        assert value in text
+    assert not (cli_repo / ".hx" / "ledger.json").exists()
+    assert cli.main(["checkpoint", "write", "lead", "--owner", "hx-claude"]) == 0
+    assert "Review changes" in path.read_text(encoding="utf-8")
+
+
 def test_checkpoint_includes_committed_changes_for_owned_files(
     cli_repo: Path, capsys: pytest.CaptureFixture
 ) -> None:

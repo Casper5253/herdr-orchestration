@@ -119,7 +119,12 @@ def _build_parser() -> argparse.ArgumentParser:
     decide.add_argument("agent")
     decide.add_argument("--task")
     decide.add_argument("--related", action="store_true")
-    decide.set_defaults(func=lambda args: print(json.dumps(context.Controller().decide(args.agent, args.task, args.related))))
+    decide.add_argument("--session", help="Claude session id when Herdr does not provide one.")
+    decide.set_defaults(func=lambda args: print(json.dumps(context.Controller().decide(args.agent, args.task, args.related, session_id=args.session))))
+    confirmed = context_sub.add_parser("self-compacted", help="Confirm that a Claude lead has compacted.")
+    confirmed.add_argument("agent")
+    confirmed.add_argument("--session", required=True)
+    confirmed.set_defaults(func=lambda args: print(json.dumps(context.Controller().self_compacted(args.agent, args.session))))
     recover = context_sub.add_parser("recover")
     recover.add_argument("agent")
     recover.set_defaults(func=lambda args: print(json.dumps(context.Controller().recover(args.agent))))
@@ -222,9 +227,7 @@ def _task_show(args: argparse.Namespace) -> None:
 
 def _checkpoint_write(args: argparse.Namespace) -> None:
     led = ledger.default_ledger()
-    path = checkpoint.write_checkpoint(
-        args.id,
-        ledger=led,
+    sections = dict(
         objective=args.objective,
         owner=args.owner,
         status=args.status,
@@ -234,6 +237,16 @@ def _checkpoint_write(args: argparse.Namespace) -> None:
         next_action=args.next_action,
         references=args.references,
     )
+    standalone_lead = False
+    if args.id == "lead":
+        try:
+            led.get_task("lead")
+        except ledger.TaskNotFound:
+            standalone_lead = True
+    if standalone_lead:
+        path = context.write_lead_checkpoint(led, **sections)
+    else:
+        path = checkpoint.write_checkpoint(args.id, ledger=led, **sections)
     print(json.dumps({"checkpoint": str(path)}, indent=2))
 
 
