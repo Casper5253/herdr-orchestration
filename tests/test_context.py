@@ -63,7 +63,6 @@ def test_success_reserves_verifies_restores_and_releases(controller):
 @pytest.mark.parametrize("change,reason", [
     ({"agent_status": "working"}, "not idle"),
     ({"agent_status": "blocked"}, "not idle"),
-    ({"agent": "claude"}, "native auto"),
     ({"cwd": "elsewhere"}, "repository"),
 ])
 def test_decision_rejects_unsafe_agent(controller, change, reason):

@@ -141,6 +141,48 @@ def _fresh(sample: dict[str, Any], sid: str, now: dt.datetime, after: dt.datetim
     )
 
 
+def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
+    unknown = {"session_id": sid, "utilisation": None, "sampled_at": None}
+    if not sid:
+        return unknown
+    state_dir = Path(os.environ.get("HX_STATE_DIR", Path.home() / ".herdr-team" / "state"))
+    path = state_dir / f"claude-status-{usage._safe_session_id(sid)}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("session_id") != sid:
+            return unknown
+        window = data.get("context_window") or {}
+        current = window.get("current_usage")
+        if current is not None:
+            counters = [float(current["input_tokens"]),
+                        float(current.get("cache_creation_input_tokens", 0)),
+                        float(current.get("cache_read_input_tokens", 0))]
+            if any(value < 0 or not math.isfinite(value) for value in counters):
+                return unknown
+            tokens = sum(counters)
+        else:
+            tokens = float(window.get("used_percentage")) * float(window.get("context_window_size")) / 100
+        timestamp = data.get("timestamp") or dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat()
+        return _sample(sid, tokens, policy.get("context_limits", {}).get("claude-lead", 400000), timestamp)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        return unknown
+
+
+def write_lead_checkpoint(led: ledger.Ledger, **sections: str) -> Path:
+    """A lead checkpoint has no worker task or ownership to update."""
+    path = led.repo_root / ".hx" / "checkpoints" / "lead.md"
+    saved = checkpoint._read_authored_sections(path)
+    for field, heading in (("objective", "Objective"), ("decisions", "Decisions"),
+                           ("errors", "Exact errors"), ("tests", "Tests"),
+                           ("next_action", "Next action"), ("references", "References")):
+        sections[field] = sections.get(field) or saved.get(heading, "")
+    checkpoint._write_checkpoint(
+        path, {"id": "lead"}, **sections,
+        git_status=[], diff_stat=[], committed=[], ledger_rev=0,
+    )
+    return path
+
+
 class Controller:
     def __init__(self, led: ledger.Ledger | None = None, policy: dict[str, Any] | None = None):
         self.ledger = led if led is not None else ledger.default_ledger()
@@ -220,15 +262,62 @@ class Controller:
                 raise ValueError("agent has dirty files owned by an open task in pane repository")
         raise ValueError("pane repository contains uncheckpointed edits")
 
-    def decide(self, name: str, task_id: str | None = None, related: bool = False) -> dict[str, Any]:
+    def _decide_lead(self, result: dict[str, Any], agent: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+        name = result["agent"]
+        sid = _session(agent) or session_id or ""
+        sample = _lead_telemetry(sid, self.policy)
+        result.update(session_id=sid, task_id="lead", telemetry=sample)
+        if not sid:
+            raise ValueError("Claude session id unavailable from Herdr; pass --session <claude-session-id>")
+        if not _fresh(sample, sid, _now()):
+            raise ValueError("session telemetry unknown or stale")
+        with self.ledger._leases_lock():
+            guard = (ledger._load_json(self.guard_path) or {}).get(sid, {})
+            task_guard = guard.get("tasks", {}).get("lead", {})
+            if task_guard.get("failed") or task_guard.get("count", 0) >= self.policy.get("context", {}).get("max_per_task", 2):
+                raise ValueError("task compaction loop guard")
+            last = _timestamp(guard.get("last_at"))
+            if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
+                raise ValueError("minimum compaction interval")
+        if sample["utilisation"] < self.policy.get("context", {}).get("claude_lead_threshold", 0.6):
+            raise ValueError("below Claude lead threshold")
+        quoted_name = "'" + name.replace("'", "''") + "'"
+        quoted_sid = "'" + sid.replace("'", "''") + "'"
+        command = f"Start-Sleep 60; herdr agent prompt {quoted_name} '/compact'"
+        background = "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '" + command.replace("'", "''") + "'"
+        result.update(action="self-compact", reason="Claude lead above threshold; compact at the next turn boundary", steps=[
+            f"hx checkpoint write lead --owner {quoted_name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
+            background,
+            "End the turn so the background /compact prompt can reach the idle pane.",
+            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid}",
+        ])
+        return result
+
+    def self_compacted(self, name: str, session_id: str) -> dict[str, Any]:
+        agent = self._agent(name)
+        if agent.get("agent") != "claude":
+            raise ValueError("self-compacted requires a Claude lead")
+        if not session_id or (_session(agent) and _session(agent) != session_id):
+            raise ValueError("--session must identify the current Claude session")
+        with self.ledger._leases_lock():
+            guards = ledger._load_json(self.guard_path) or {}
+            guard = guards.setdefault(session_id, {"tasks": {}})
+            task_guard = guard.setdefault("tasks", {}).setdefault("lead", {"count": 0})
+            task_guard["count"] += 1
+            guard["last_at"] = _now().isoformat()
+            ledger._atomic_write_json(self.guard_path, guards)
+        return {"action": "self-compacted", "agent": name, "session_id": session_id, "task_id": "lead"}
+
+    def decide(self, name: str, task_id: str | None = None, related: bool = False,
+               session_id: str | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {"action": "keep", "agent": name}
         try:
             agent = self._agent(name)
+            if agent.get("agent") == "claude":
+                return self._decide_lead(result, agent, session_id)
             sid = _session(agent)
             sample = telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample)
-            if agent.get("agent") == "claude":
-                raise ValueError("Claude uses native auto-compaction")
             if agent.get("agent_status") != "idle":
                 raise ValueError("agent is not idle")
             task = self._task(name, task_id)
