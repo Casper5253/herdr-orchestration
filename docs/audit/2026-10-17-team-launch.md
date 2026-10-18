@@ -82,6 +82,12 @@ Add a `team` table to `policy.json`:
 - Add `hx agent retire <name>`: releases the agent's tasks in the ledger (`hx task release`), records the last checkpoint, and lists processes started from its worktree, such as dev servers, for the lead to stop.
 - Project verification scripts should start their servers with a unique port and `--force`, or stop a leftover server first. The portfolio's `scripts/smoke.mjs` needs this (see its `docs/STATUS.md`).
 
+### Interim practice until A and E land (used 2026-10-18)
+- At each task boundary the lead reads every worker's context directly: Codex from the newest `token_count` in its rollout (`~/.codex/sessions/<date>/*<session>*.jsonl`), Claude from the status line (`ctx N%`).
+- A worker above about 50% of its window, about to start a long task, gets a fresh session instead of a compaction: `send-keys esc`, `/quit` (sent from PowerShell, not Git Bash), `herdr agent start` with the same role arguments, then the brief again. This works because briefs live in files and work lives in git. On 2026-10-18 dev-luna was restarted at 54% of 258K before a 14-item round.
+- Every brief says: "if your context passes 60%, commit and report partial with the remaining items".
+- With the sandbox off (owner decision 2026-10-18), the guardrails are: the profile's `developer_instructions` bounds; `prompt` rules for destructive git (`push`, `reset`, `clean`, `rebase`, `branch -D`, `checkout -- .`, `restore`, `worktree remove`, `stash drop`), checked with `codex execpolicy check`; and no git remote in a project until the owner approves a deploy, because a chained command wrapped in `powershell -Command` matches no rule.
+
 ## 4. Order of work
 1. C first. Most of it is a config change with an owner decision, and it removes the prompts that block workers.
 2. A, then B. B depends on the role table.
