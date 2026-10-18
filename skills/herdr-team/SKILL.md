@@ -1,11 +1,11 @@
 ---
 name: herdr-team
-description: Collaboration contract for a trusted Herdr dev team (<team>-claude, <team>-codex, <team>-opencode; any team name, e.g. dev or hx). Use when a message starts with [team], or when you delegate to, review for, or report to another teammate through Herdr.
+description: Collaboration contract for a trusted Herdr dev team (agents named <team>-<role>, for example dev-claude, dev-codex, dev-luna, dev-haiku; any team name and any role). Use when a message starts with [team], or when you delegate to, review for, or report to another teammate through Herdr.
 ---
 
 # Herdr dev team
 
-Active only when `HERDR_ENV=1` and `herdr agent list` shows team agents (`<team>-claude`, `<team>-codex`, `<team>-opencode`). Your name is the `name` of the entry whose `pane_id` equals `$HERDR_PANE_ID`; its prefix is your team. Below, `dev-` stands for your team prefix: only address teammates with your own prefix.
+Active only when `HERDR_ENV=1` and `herdr agent list` shows team agents named `<team>-<role>`. Roles and models are free: `dev-claude`, `dev-codex`, `dev-luna` or `dev-haiku` are all teammates. The lead is `<team>-claude` unless `policy.json` sets another `lead_role`. Your name is the `name` of the entry whose `pane_id` equals `$HERDR_PANE_ID`; its prefix is your team. Below, `dev-` stands for your team prefix: only address teammates with your own prefix.
 
 ## Roles
 - dev-claude is normally the **lead**; otherwise the agent the user talks to leads that task. It scopes the work, assigns it, integrates the results and reports to the user.
@@ -15,7 +15,7 @@ Active only when `HERDR_ENV=1` and `herdr agent list` shows team agents (`<team>
 ## Commands
 Run each as one plain command. No pipes, `;`, `&&`, variables or subshells, because Codex rules only match plain commands. Put the message in single quotes with no apostrophes inside it.
 - Discover: `herdr agent list`
-- Delegate or report: `hx say <role> '[team from dev-<you>] ...'` with role `claude`, `codex` or `opencode`. It only reaches your own team, refuses a header that names someone else, and is the one send command that needs no approval; a raw `herdr agent prompt` asks the user.
+- Delegate or report: `hx say <role> '[team from dev-<you>] ...'` with any teammate's role (the part after the team prefix, for example `claude`, `codex`, `luna`) or full name. It only reaches live agents on your own team, refuses a header that names someone else, and is the one send command that needs no approval; a raw `herdr agent prompt` asks the user.
 - Check: `herdr agent get dev-<name>` / `herdr agent read dev-<name> --source recent-unwrapped --lines 60`
 - Syntax help: `herdr --skill`
 
