@@ -195,3 +195,8 @@ def test_claude_session_is_found_by_pane_when_herdr_has_none(tmp_path, monkeypat
     assert context._session({"agent": "claude", "pane_id": "wA:p9"}) == ""
     assert context._session({"agent": "codex", "pane_id": "wA:p3"}) == ""
     assert context._session({"agent": "claude", "pane_id": "wA:p3", "agent_session": {"value": "herdr-sid"}}) == "herdr-sid"
+
+
+def test_a_worker_in_herdr_done_state_counts_as_ready(lead):
+    lead.agent = {**lead.agent, "name": "test-haiku", "agent_status": "done"}
+    assert lead.decide("test-haiku")["reason"] != "agent is not idle"

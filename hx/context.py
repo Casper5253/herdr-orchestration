@@ -43,6 +43,10 @@ def agent_info(name: str) -> dict[str, Any]:
     return _herdr("get", name)["result"]["agent"]
 
 
+# Herdr reports a finished turn as "done" and an untouched one as "idle"; both are ready for input.
+READY = {"idle", "done"}
+
+
 def _session(agent: dict[str, Any]) -> str:
     sid = (agent.get("agent_session") or {}).get("value") or ""
     if not sid and agent.get("agent") == "claude" and agent.get("pane_id"):
@@ -342,7 +346,7 @@ class Controller:
             sid = _session(agent)
             sample = telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample)
-            if agent.get("agent_status") != "idle":
+            if agent.get("agent_status") not in READY:
                 raise ValueError("agent is not idle")
             task = self._task(name, task_id)
             result["task_id"] = task["id"]
@@ -432,7 +436,7 @@ class Controller:
                 if not checkpoint._extract_section(text, section):
                     raise ValueError(f"agent-authored checkpoint section empty: {section}")
             current = self._agent(name)
-            if _session(current) != sid or current.get("agent_status") != "idle":
+            if _session(current) != sid or current.get("agent_status") not in READY:
                 raise ValueError("session changed or agent became busy before send")
             self._check_worktrees(current, task)
             current_task = self.ledger.get_task(task_id)
@@ -451,15 +455,15 @@ class Controller:
 
             self.ledger.mutate_leases(mark_requested)
             current = self._agent(name)
-            if _session(current) != sid or current.get("agent_status") != "idle":
+            if _session(current) != sid or current.get("agent_status") not in READY:
                 raise ValueError("session changed or agent became busy immediately before send")
             submitted = True
-            _herdr("prompt", name, "/compact", "--wait", "--until", "idle", "--timeout", "300000", timeout=310)
+            _herdr("prompt", name, "/compact", "--wait", "--until", "idle", "--until", "done", "--timeout", "300000", timeout=310)
             deadline = time.monotonic() + self.policy.get("context", {}).get("verification_timeout_seconds", 10)
             while True:
                 current = self._agent(name)
                 after = telemetry(current, self.policy)
-                if (_session(current) == sid and current.get("agent_status") == "idle"
+                if (_session(current) == sid and current.get("agent_status") in READY
                         and _fresh(after, sid, _now(), after=started)
                         and after["utilisation"] < before["utilisation"]):
                     break
@@ -468,10 +472,10 @@ class Controller:
                 time.sleep(.25)
             next_action = checkpoint._extract_section(text, "Next action")
             message = f"[team from {usage.team_prefix(self.policy)}claude] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
-            _herdr("prompt", name, message, "--wait", "--until", "idle", "--timeout", "300000", timeout=310)
+            _herdr("prompt", name, message, "--wait", "--until", "idle", "--until", "done", "--timeout", "300000", timeout=310)
             current = self._agent(name)
             reply = _herdr_read(name)
-            if _session(current) != sid or current.get("agent_status") != "idle" or not _has_acknowledgement(reply, f"{token} {next_action}"):
+            if _session(current) != sid or current.get("agent_status") not in READY or not _has_acknowledgement(reply, f"{token} {next_action}"):
                 raise ValueError("checkpoint next action acknowledgement not verified")
             self._finish(sid, token, None, False)
             return {**decision, "action": "compacted", "telemetry": after}
@@ -490,7 +494,7 @@ class Controller:
             if not lease or lease.get("agent") != name or lease.get("state") != "compact-unknown":
                 return {"action": "keep", "reason": "no matching unknown compaction"}
             requested = _timestamp(lease.get("requested_at"))
-            if not requested or agent.get("agent_status") != "idle" or not _fresh(sample, sid, _now(), after=requested):
+            if not requested or agent.get("agent_status") not in READY or not _fresh(sample, sid, _now(), after=requested):
                 return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
             del leases["sessions"][sid]
             return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}
