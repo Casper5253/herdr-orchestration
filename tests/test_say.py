@@ -10,7 +10,10 @@ AGENTS = {"result": {"agents": [
     {"name": "dev-claude", "pane_id": "w8:p1"},
     {"name": "dev-codex", "pane_id": "w8:p2"},
     {"name": "hx-claude", "pane_id": "w9:p1"},
+    {"name": "dev-opencode", "pane_id": "w8:p3"},
+    {"name": "dev-gemini", "pane_id": "w8:p4"},
     {"name": "my-team-opencode", "pane_id": "w11:p3"},
+    {"name": "my-team-codex", "pane_id": "w11:p4"},
 ]}}
 
 
@@ -60,3 +63,15 @@ def test_spoofed_header_is_refused(monkeypatch: pytest.MonkeyPatch, sent: list[l
 def test_outside_a_team_pane_nothing_is_sent(sent: list[list[str]]) -> None:
     assert main(["say", "claude", "hi"]) == 1
     assert sent == []
+
+
+def test_any_live_role_on_the_team_is_reachable_without_code_changes(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]]) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    assert main(["say", "gemini", "hi"]) == 0
+    assert sent == [["herdr", "agent", "prompt", "dev-gemini", "[team from dev-codex] hi"]]
+
+
+def test_a_new_role_can_send(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]]) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p4")
+    assert main(["say", "claude", "report"]) == 0
+    assert sent == [["herdr", "agent", "prompt", "dev-claude", "[team from dev-gemini] report"]]

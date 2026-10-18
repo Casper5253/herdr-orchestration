@@ -330,3 +330,12 @@ def test_session_compact_no_checkpoints_found(tmp_path: Path) -> None:
 def test_session_compact_never_fails(tmp_path: Path) -> None:
     proc = _run_hook("claude_session_compact.py", None, tmp_path)
     assert proc.returncode == 0
+
+
+def test_statusline_records_the_herdr_pane(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    payload = {"session_id": "worker-sid", "context_window": {"used_percentage": 12}}
+    proc = _run_hook("claude_statusline.py", payload, tmp_path, {"HX_STATE_DIR": str(state_dir), "HERDR_PANE_ID": "wA:p3"})
+    assert proc.returncode == 0
+    record = json.loads((state_dir / "claude-status-worker-sid.json").read_text(encoding="utf-8"))
+    assert record["herdr_pane_id"] == "wA:p3"

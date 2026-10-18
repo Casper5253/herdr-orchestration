@@ -46,3 +46,12 @@ def test_context_accepts_the_dev_team(monkeypatch: pytest.MonkeyPatch) -> None:
     assert controller._agent("dev-codex") == {"name": "dev-codex"}
     with pytest.raises(ValueError, match="outside the configured team"):
         controller._agent("hx-codex")
+
+
+@pytest.mark.parametrize("name", ["dev-luna", "dev-haiku", "dev-gemini"])
+def test_context_accepts_any_role_on_the_team(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p1")
+    monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
+    monkeypatch.setattr(context, "agent_info", lambda n: {"name": n})
+    controller = context.Controller(policy={"team_prefix": "hx-"})
+    assert controller._agent(name) == {"name": name}

@@ -11,15 +11,14 @@ import subprocess
 
 from hx import usage
 
-ROLES = ("claude", "codex", "opencode", "haiku", "luna")
-
-
 def resolve(sender: str, target: str) -> str:
-    """Teammate name for a role or full name; ValueError outside the sender's team."""
+    """Teammate name for a role or full name; ValueError unless it is a live agent on the sender's team."""
     prefix = usage.TEAM_AGENT.fullmatch(sender)[1]
-    name = prefix + target if target in ROLES else target
-    if not (name.startswith(prefix) and name[len(prefix):] in ROLES):
-        raise ValueError(f"{target} is not on team {prefix[:-1]}; hx say only reaches {', '.join(prefix + r for r in ROLES)}")
+    name = target if target.startswith(prefix) else prefix + target
+    team = usage.team_agents(prefix)
+    if name not in team:
+        live = ", ".join(sorted(team)) or "none"
+        raise ValueError(f"{target} is not a live agent on team {prefix[:-1]}; live teammates: {live}")
     return name
 
 
@@ -36,6 +35,6 @@ def with_header(sender: str, message: str) -> str:
 def say(target: str, message: str) -> int:
     sender = usage.own_agent_name()
     if not sender:
-        raise ValueError("hx say runs only in a herdr team pane (<team>-claude, -codex, -opencode, -haiku or -luna)")
+        raise ValueError("hx say runs only in a herdr team pane (an agent named <team>-<role>)")
     name = resolve(sender, target)
     return subprocess.run(["herdr", "agent", "prompt", name, with_header(sender, message)], timeout=60).returncode

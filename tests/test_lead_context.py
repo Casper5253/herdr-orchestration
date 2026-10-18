@@ -170,3 +170,28 @@ def test_policy_declares_lead_threshold():
     policy = usage.load_policy()
     assert policy["context_limits"]["claude-lead"] == 400000
     assert policy["context"]["claude_lead_threshold"] == .6
+
+
+def test_a_claude_worker_is_not_treated_as_the_lead(lead):
+    lead.agent = {**lead.agent, "name": "test-haiku"}
+    decision = lead.decide("test-haiku")
+    assert decision["action"] == "keep"
+    assert decision["reason"] == "agent is not idle"
+    assert "steps" not in decision
+
+
+def test_the_lead_role_comes_from_policy(lead):
+    lead.policy = {**lead.policy, "lead_role": "opus"}
+    lead.agent = {**lead.agent, "name": "test-opus"}
+    assert lead.decide("test-opus")["action"] == "self-compact"
+    assert "steps" not in lead.decide("test-claude")
+
+
+def test_claude_session_is_found_by_pane_when_herdr_has_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
+    for sid, pane, stamp in [("old", "wA:p3", "2026-10-18T08:00:00+00:00"), ("new", "wA:p3", "2026-10-18T09:00:00+00:00"), ("other", "wA:p4", "2026-10-18T10:00:00+00:00")]:
+        (tmp_path / f"claude-status-{sid}.json").write_text(json.dumps({"session_id": sid, "herdr_pane_id": pane, "timestamp": stamp}), encoding="utf-8")
+    assert context._session({"agent": "claude", "pane_id": "wA:p3"}) == "new"
+    assert context._session({"agent": "claude", "pane_id": "wA:p9"}) == ""
+    assert context._session({"agent": "codex", "pane_id": "wA:p3"}) == ""
+    assert context._session({"agent": "claude", "pane_id": "wA:p3", "agent_session": {"value": "herdr-sid"}}) == "herdr-sid"

@@ -44,7 +44,26 @@ def agent_info(name: str) -> dict[str, Any]:
 
 
 def _session(agent: dict[str, Any]) -> str:
-    return (agent.get("agent_session") or {}).get("value") or ""
+    sid = (agent.get("agent_session") or {}).get("value") or ""
+    if not sid and agent.get("agent") == "claude" and agent.get("pane_id"):
+        sid = _claude_session_for_pane(str(agent["pane_id"]))
+    return sid
+
+
+def _claude_session_for_pane(pane_id: str) -> str:
+    """Session id of the newest Claude status file the status line wrote from this Herdr pane."""
+    state_dir = Path(os.environ.get("HX_STATE_DIR", Path.home() / ".herdr-team" / "state"))
+    best: tuple[str, str] | None = None
+    for path in state_dir.glob("claude-status-*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("herdr_pane_id") == pane_id and data.get("session_id"):
+            stamp = str(data.get("timestamp") or "")
+            if best is None or stamp > best[0]:
+                best = (stamp, str(data["session_id"]))
+    return best[1] if best else ""
 
 
 def _herdr_read(name: str, lines: int = 60) -> str:
@@ -191,9 +210,12 @@ class Controller:
 
     def _agent(self, name: str) -> dict[str, Any]:
         prefix = usage.team_prefix(self.policy)
-        if name not in {prefix + kind for kind in ("codex", "opencode", "claude")}:
+        if not (name.startswith(prefix) and usage.TEAM_AGENT.fullmatch(name)):
             raise ValueError("agent is outside the configured team")
         return agent_info(name)
+
+    def _is_lead(self, name: str) -> bool:
+        return name == usage.lead_name(self.policy, usage.team_prefix(self.policy))
 
     def _task(self, name: str, task_id: str | None) -> dict[str, Any]:
         tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
@@ -295,7 +317,7 @@ class Controller:
 
     def self_compacted(self, name: str, session_id: str) -> dict[str, Any]:
         agent = self._agent(name)
-        if agent.get("agent") != "claude":
+        if not self._is_lead(name) or agent.get("agent") != "claude":
             raise ValueError("self-compacted requires a Claude lead")
         if not session_id or (_session(agent) and _session(agent) != session_id):
             raise ValueError("--session must identify the current Claude session")
@@ -313,7 +335,9 @@ class Controller:
         result: dict[str, Any] = {"action": "keep", "agent": name}
         try:
             agent = self._agent(name)
-            if agent.get("agent") == "claude":
+            if self._is_lead(name):
+                if agent.get("agent") != "claude":
+                    raise ValueError("lead self-compaction supports a Claude lead only")
                 return self._decide_lead(result, agent, session_id)
             sid = _session(agent)
             sample = telemetry(agent, self.policy)

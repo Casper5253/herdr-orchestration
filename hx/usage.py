@@ -463,7 +463,20 @@ def _herdr_agent_list() -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
-TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)(?:claude|codex|opencode|haiku|luna)")
+# A team agent is <team>-<role>, for example dev-claude or my-team-luna. Roles and models are not listed
+# anywhere: membership is the team prefix, and the provider comes from Herdr's detected agent kind.
+TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)[a-z0-9]+")
+
+
+def lead_name(policy: dict[str, Any], prefix: str) -> str:
+    """The team's lead agent: the one role the policy names (lead_role, default claude)."""
+    return prefix + str(policy.get("lead_role", "claude"))
+
+
+def team_agents(prefix: str) -> dict[str, dict[str, Any]]:
+    """Live Herdr agents on this team, by name."""
+    agents = _herdr_agent_list().get("result", {}).get("agents", [])
+    return {str(a.get("name")): a for a in agents if str(a.get("name") or "").startswith(prefix) and TEAM_AGENT.fullmatch(str(a.get("name")))}
 
 
 def team_prefix(policy: dict[str, Any]) -> str:

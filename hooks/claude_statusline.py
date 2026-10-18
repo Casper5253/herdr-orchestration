@@ -84,6 +84,8 @@ def main() -> int:
         "timestamp": _utcnow(),
         "context_window": payload.get("context_window"),
         "rate_limits": payload.get("rate_limits"),
+        # Herdr reports no session id for Claude panes, so hx finds a Claude worker's file by pane.
+        "herdr_pane_id": os.environ.get("HERDR_PANE_ID") or None,
     }
 
     target_dir = state_dir()
