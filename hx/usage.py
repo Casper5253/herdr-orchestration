@@ -137,6 +137,32 @@ def _window_deltas() -> dict[str, datetime.timedelta]:
     }
 
 
+def _dashboard_reading(
+    policy: dict[str, Any], now: datetime.datetime, deltas: dict[str, datetime.timedelta]
+) -> dict[str, Any] | None:
+    """The user's last OpenCode dashboard reading, limited to windows it still describes.
+
+    A reading of window W taken at time T stays meaningful until T + W; after that the
+    window has fully rolled over and local spend alone is the better estimate.
+    """
+    raw = policy.get("opencode_pool", {}).get("dashboard")
+    if not isinstance(raw, dict) or not raw.get("at"):
+        return None
+    at = datetime.datetime.fromisoformat(str(raw["at"]).replace("Z", "+00:00"))
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=datetime.timezone.utc)
+    if at > now:
+        return None
+    used = {
+        name: float(pct)
+        for name, pct in (raw.get("used_percent") or {}).items()
+        if name in deltas and now - at < deltas[name]
+    }
+    if not used:
+        return None
+    return {"at": at.isoformat(), "at_ms": int(at.timestamp() * 1000), "used_percent": used}
+
+
 def _is_error_message(msg: dict[str, Any]) -> str | None:
     finish = msg.get("finish")
     error = msg.get("error")
@@ -202,6 +228,8 @@ def opencode_usage(
         return unknown("opencode.db not found")
 
     cutoff_ms = int((now - max(deltas.values())).timestamp() * 1000)
+    reading = _dashboard_reading(policy, now, deltas)
+    spend_since_reading = {name: 0.0 for name in deltas}
     newest_overall_ms = 0
 
     try:
@@ -231,6 +259,9 @@ def opencode_usage(
                     if ts_ms >= int((now - delta).timestamp() * 1000):
                         windows[name]["spend"] += cost
                         state["windows"][name]["spend"] += cost
+                if reading and ts_ms >= reading["at_ms"]:
+                    for name in spend_since_reading:
+                        spend_since_reading[name] += cost
     except Exception as exc:  # pragma: no cover - defensive
         return unknown(f"database read failed: {exc}")
 
@@ -238,6 +269,11 @@ def opencode_usage(
         cap = win["cap"]
         if not isinstance(cap, (float, int)) or not math.isfinite(cap) or cap <= 0:
             return unknown("missing or invalid shared pool caps for plan " + plan_name)
+        name = next(k for k, v in windows.items() if v is win)
+        if reading and name in reading["used_percent"]:
+            # The dashboard is ground truth; local spend only adds what happened after the reading.
+            win["spend"] = cap * reading["used_percent"][name] / 100.0 + spend_since_reading[name]
+            win["calibrated_at"] = reading["at"]
         win["remaining"] = max(0.0, cap - win["spend"])
         win["utilisation"] = win["spend"] / cap
 

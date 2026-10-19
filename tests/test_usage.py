@@ -436,3 +436,37 @@ def test_claude_env_override_still_wins(
 
     assert result["status_path"] == str(explicit)
     assert result["context_window"]["used_percentage"] == 5.0
+
+
+def test_opencode_usage_dashboard_reading(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
+    db = tmp_path / "opencode.db"
+    _make_opencode_db(db, now)
+    reading_at = now - datetime.timedelta(minutes=20)
+    policy["opencode_pool"]["dashboard"] = {
+        "at": reading_at.isoformat(),
+        "used_percent": {"5h": 0, "7d": 0, "30d": 51},
+    }
+
+    pool = opencode_usage(policy, db_path=db, now=now)["pool"]["windows"]
+
+    # Only the 10- and 5-minute-old assistant messages (0.5 + 50.0) follow the reading.
+    assert pool["5h"]["spend"] == pytest.approx(50.5)
+    assert pool["7d"]["spend"] == pytest.approx(50.5)
+    assert pool["30d"]["spend"] == pytest.approx(60 * 0.51 + 50.5)
+    assert pool["7d"]["calibrated_at"] == reading_at.isoformat()
+
+
+def test_opencode_usage_dashboard_reading_expires(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
+    db = tmp_path / "opencode.db"
+    _make_opencode_db(db, now)
+    policy["opencode_pool"]["dashboard"] = {
+        "at": (now - datetime.timedelta(hours=5, minutes=30)).isoformat(),
+        "used_percent": {"5h": 0, "7d": 0},
+    }
+
+    pool = opencode_usage(policy, db_path=db, now=now)["pool"]["windows"]
+
+    assert pool["5h"]["spend"] == 51.5
+    assert "calibrated_at" not in pool["5h"]
+    assert pool["7d"]["spend"] == pytest.approx(51.5)
+    assert pool["7d"]["calibrated_at"]

@@ -14,7 +14,16 @@
       "30d": 240,
       "tag": "estimated"
     },
-    "note": "2026-10-16: shared pool across all models. Go calibrated against user dashboard (82% 5h, 90% week) and local spend ($9.70/$26.46). Go Plus is an unverified 4x estimate."
+    "note": "2026-10-16: shared pool across all models. Go calibrated against user dashboard (82% 5h, 90% week) and local spend ($9.70/$26.46). Go Plus is an unverified 4x estimate.",
+    "dashboard": {
+      "at": "2026-10-19T08:35:10+00:00",
+      "used_percent": {
+        "5h": 0,
+        "7d": 0,
+        "30d": 51
+      },
+      "note": "User's OpenCode Go dashboard reading after the weekly reset and new API key. Update with each new reading; hx uses it until each window rolls past it."
+    }
   },
   "plans": {
     "go": {
