@@ -107,6 +107,23 @@ def test_pressure_compaction_runs_for_registered_in_progress_task(controller):
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
 
 
+def test_pressure_compaction_preserves_current_persistent_task_reservation(controller):
+    controller.ledger.assign_task("t", owner="hx-codex", method="persistent", agent="hx-codex")
+    controller.ledger.set_status("t", "in_progress")
+    controller.sample["utilisation"] = .75
+
+    decision = controller.decide("hx-codex")
+    assert decision["action"] == "compact"
+
+    result = controller.compact("hx-codex")
+
+    assert result["action"] == "compacted"
+    sessions = json.loads(controller.ledger.leases_path.read_text())["sessions"]
+    assert sessions["hx-codex"]["state"] == "held"
+    assert sessions["hx-codex"]["task_id"] == "t"
+    assert "sid" not in sessions
+
+
 def test_pressure_without_registered_task_requests_task_registration(controller, tmp_path):
     controller.ledger = ledger.Ledger(
         repo_root=tmp_path,
@@ -317,6 +334,13 @@ def test_previous_session_lease_also_blocks_agent(controller):
     assert not controller.calls
 
 
+def test_reservation_for_another_task_still_blocks_agent(controller):
+    reservation = {"agent": "hx-codex", "task_id": "another-task", "state": "held"}
+    ledger._atomic_write_json(controller.ledger.leases_path, {"files": {}, "sessions": {"hx-codex": reservation}})
+    assert controller.compact("hx-codex")["action"] == "keep"
+    assert not controller.calls
+
+
 def test_other_team_never_contacted(controller, monkeypatch):
     def forbidden(name):
         pytest.fail("must not contact another team")
@@ -517,3 +541,26 @@ def test_acknowledgement_survives_tui_hard_wrapping():
     pane = "  fc8c9369 hx-claude re-\n     review of branch feature/due-dates\n"
     assert context._has_acknowledgement(pane, "fc8c9369 hx-claude re-review of branch feature/due-dates")
     assert not context._has_acknowledgement(pane, "deadbeef hx-claude re-review of branch feature/due-dates")
+
+
+def test_herdr_read_window_includes_long_wrapped_acknowledgement(monkeypatch):
+    token = "compact-token"
+    next_action = (
+        "Continue the assigned task by checking every affected module and rerunning the focused "
+        "and full test suites before reporting the verified result. " * 2
+    )
+    expected = f"{token} {next_action}"
+    wrapped = [expected[index:index + 32] for index in range(0, len(expected), 32)]
+    pane_lines = ["earlier pane output"] * 55 + wrapped
+    requested = []
+
+    def run(args, **kwargs):
+        lines = int(args[args.index("--lines") + 1])
+        requested.append(lines)
+        return subprocess.CompletedProcess(args, 0, "\n".join(pane_lines[-lines:]), "")
+
+    monkeypatch.setattr(context.subprocess, "run", run)
+    reply = context._herdr_read("hx-codex")
+
+    assert requested[0] > 60
+    assert context._has_acknowledgement(reply, expected)

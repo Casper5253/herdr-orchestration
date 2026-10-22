@@ -70,7 +70,7 @@ def _claude_session_for_pane(pane_id: str) -> str:
     return best[1] if best else ""
 
 
-def _herdr_read(name: str, lines: int = 60) -> str:
+def _herdr_read(name: str, lines: int = 200) -> str:
     """`herdr agent read` prints the pane as plain text, not JSON."""
     result = subprocess.run(
         ["herdr", "agent", "read", name, "--source", "recent-unwrapped", "--lines", str(lines)],
@@ -91,6 +91,27 @@ def _has_acknowledgement(value: Any, expected: str) -> bool:
         return any(_has_acknowledgement(item, expected) for item in value.values())
     if isinstance(value, list):
         return any(_has_acknowledgement(item, expected) for item in value)
+    return False
+
+
+def _has_blocking_session_lease(
+    sessions: dict[str, Any], sid: str, name: str, task: dict[str, Any]
+) -> bool:
+    for key, lease in sessions.items():
+        if key == sid:
+            return True
+        if not isinstance(lease, dict) or lease.get("agent") != name:
+            continue
+        is_current_task_hold = (
+            key == name
+            and lease.get("state") == "held"
+            and "token" not in lease
+            and lease.get("task_id") == task.get("id")
+            and task.get("owner") == name
+            and task.get("status") in ledger.Ledger.OPEN_STATUSES
+        )
+        if not is_current_task_hold:
+            return True
     return False
 
 
@@ -367,7 +388,7 @@ class Controller:
             with self.ledger._leases_lock():
                 leases = self.ledger._load_leases()
                 guards = ledger._load_json(self.guard_path) or {}
-                if sid in leases.get("sessions", {}) or any(item.get("agent") == name for item in leases.get("sessions", {}).values()):
+                if _has_blocking_session_lease(leases.get("sessions", {}), sid, name, task):
                     raise ValueError("session is leased; recovery required for compact-unknown")
                 guard = guards.get(sid, {})
                 task_guard = guard.get("tasks", {}).get(task["id"], {})
@@ -413,11 +434,11 @@ class Controller:
 
         def reserve(ledger_data: dict[str, Any], leases: dict[str, Any]) -> dict[str, Any]:
             sessions = leases.setdefault("sessions", {})
-            if sid in sessions or any(item.get("agent") == name for item in sessions.values()):
-                return {"action": "keep", "reason": "session already leased"}
             task = ledger_data["tasks"].get(task_id)
             if task is None or task.get("owner") != name:
                 return {"action": "keep", "reason": "task changed before reservation"}
+            if _has_blocking_session_lease(sessions, sid, name, task):
+                return {"action": "keep", "reason": "session already leased"}
             if decision.get("mid_task"):
                 if not decision.get("pressure") or task.get("status") not in ledger.Ledger.OPEN_STATUSES:
                     return {"action": "keep", "reason": "pressure task changed before reservation"}
