@@ -1,4 +1,4 @@
-"""Session-bound telemetry and protected, boundary-only native compaction."""
+"""Session-bound telemetry and protected native compaction."""
 
 from __future__ import annotations
 
@@ -221,15 +221,18 @@ class Controller:
     def _is_lead(self, name: str) -> bool:
         return name == usage.lead_name(self.policy, usage.team_prefix(self.policy))
 
-    def _task(self, name: str, task_id: str | None) -> dict[str, Any]:
+    def _task(self, name: str, task_id: str | None, allow_in_progress: bool = False) -> dict[str, Any]:
         tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
-        if any(t.get("status") not in {"done", "failed"} for t in tasks):
+        unfinished_tasks = [t for t in tasks if t.get("status") not in ledger.Ledger.CLOSED_STATUSES]
+        if unfinished_tasks and not allow_in_progress:
             raise ValueError("agent has an unfinished task")
+        if len(unfinished_tasks) > 1:
+            raise ValueError("agent has multiple unfinished tasks")
         if not tasks:
-            raise ValueError("no completed or failed task for agent")
-        task = max(tasks, key=lambda t: t.get("updated", ""))
+            raise ValueError("no task registered for agent")
+        task = unfinished_tasks[0] if unfinished_tasks else max(tasks, key=lambda t: t.get("updated", ""))
         if task_id and task["id"] != task_id:
-            raise ValueError("task is not the most recent boundary for agent")
+            raise ValueError("task is not the current task or most recent boundary for agent")
         return task
 
     def _dirty_paths(self, workdir: Path) -> set[str]:
@@ -348,11 +351,19 @@ class Controller:
             result.update(session_id=sid, telemetry=sample)
             if agent.get("agent_status") not in READY:
                 raise ValueError("agent is not idle")
-            task = self._task(name, task_id)
-            result["task_id"] = task["id"]
-            self._check_worktrees(agent, task)
             if not _fresh(sample, sid, _now()):
                 raise ValueError("session telemetry unknown or stale")
+            context_policy = self.policy.get("context", {})
+            pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
+            owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
+            if pressure and not owned_tasks:
+                result.update(action="compact-needed", reason="pressure threshold reached but no hx task is registered; register a task and checkpoint before compaction")
+                return result
+            task = self._task(name, task_id, allow_in_progress=pressure)
+            result["task_id"] = task["id"]
+            mid_task = task.get("status") in ledger.Ledger.OPEN_STATUSES
+            result.update(pressure=pressure, mid_task=mid_task)
+            self._check_worktrees(agent, task)
             with self.ledger._leases_lock():
                 leases = self.ledger._load_leases()
                 guards = ledger._load_json(self.guard_path) or {}
@@ -365,9 +376,12 @@ class Controller:
                 last = _timestamp(guard.get("last_at"))
                 if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
                     raise ValueError("minimum compaction interval")
-            if related:
+            if related and not pressure:
                 raise ValueError("next task continues the same work; retain warm context")
-            if sample["utilisation"] < self.policy.get("context", {}).get("boundary_threshold", 0.40):
+            if pressure:
+                result.update(action="compact", reason="idle under context pressure during active task" if mid_task else "idle under context pressure")
+                return result
+            if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
                 raise ValueError("below boundary threshold")
             result.update(action="compact", reason="idle at task boundary above threshold")
         except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -401,10 +415,16 @@ class Controller:
             sessions = leases.setdefault("sessions", {})
             if sid in sessions or any(item.get("agent") == name for item in sessions.values()):
                 return {"action": "keep", "reason": "session already leased"}
-            task = ledger_data["tasks"][task_id]
-            if task.get("owner") != name or task.get("status") not in {"done", "failed"}:
+            task = ledger_data["tasks"].get(task_id)
+            if task is None or task.get("owner") != name:
                 return {"action": "keep", "reason": "task changed before reservation"}
-            if any(t.get("owner") == name and t.get("status") not in {"done", "failed"}
+            if decision.get("mid_task"):
+                if not decision.get("pressure") or task.get("status") not in ledger.Ledger.OPEN_STATUSES:
+                    return {"action": "keep", "reason": "pressure task changed before reservation"}
+            elif task.get("status") not in {"done", "failed"}:
+                return {"action": "keep", "reason": "task changed before reservation"}
+            if any(t.get("owner") == name and t.get("id") != task_id
+                   and t.get("status") not in {"done", "failed"}
                    for t in ledger_data["tasks"].values()):
                 return {"action": "keep", "reason": "agent acquired unfinished work"}
             guards = ledger._load_json(self.guard_path) or {}

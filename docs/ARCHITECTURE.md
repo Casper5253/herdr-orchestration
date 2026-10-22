@@ -103,14 +103,15 @@ Utilisation per agent (deterministic):
 - Codex: last `token_count` `last_token_usage.input_tokens / model_context_window` in the newest rollout for the hx-codex cwd.
 - OpenCode persistent: latest assistant message of the hx-opencode session: `tokens.input + tokens.cache.read` / model context limit (from `opencode models --verbose` or policy).
 
-Decision `hx context decide <agent>` returns `compact | keep` with a reason:
+Decision `hx context decide <agent>` returns `compact | compact-needed | keep` with a reason:
 - `compact` at a natural boundary (agent idle, its task just went `done`, next task unrelated) when utilisation >= `boundary_threshold` (default 0.40).
-- `compact` under pressure when utilisation >= `pressure_threshold` (default 0.75) and the agent is idle.
-- `keep` when a task is `in_progress` and below the pressure threshold, or the cache is warm and the next task continues the same files (cheap cached re-reads beat a summary).
+- `compact` under pressure when utilisation >= `pressure_threshold` (default 0.75) and the agent is idle, even while its registered task remains in progress. Pressure overrides the warm-cache preference for related work.
+- `compact-needed` under pressure when the agent has no registered hx task; register a task and write a checkpoint before running `hx compact`.
+- `keep` when an agent is busy, telemetry is unknown or stale, a lease or compaction guard blocks it, or an in-progress task is below the pressure threshold.
 
 Execution `hx compact <agent>`:
 1. Guard: agent idle (`herdr agent get`), not compacted in the last `min_interval_min` (default 20), fewer than `max_per_task` (2) compactions for its current task. Guard state in `compact-guard.json`.
-2. `hx checkpoint` + `validate` for the agent's active task; the worktree has no unsaved edits by another agent (`git status` clean or all changes owned by this agent's task and recorded in the checkpoint).
+2. `hx checkpoint` + `validate` for the agent's registered task. For pressure compaction, the task may remain `in_progress`; the worktree has no unsaved edits by another agent (`git status` clean or all changes owned by this agent's task and recorded in the checkpoint).
 3. `herdr agent prompt <agent> '/compact' --wait --timeout 300000`.
 4. Verify: agent returns to idle, utilisation dropped (re-read), then prompt `[team from hx-claude] Context compacted. Resume from .hx/checkpoints/<id>.md; reply with the next action only.` and check the reply names the checkpoint's Next action.
 5. Any failure: record `compaction_failed` in the guard, do not retry this task, leave the session as is, report to the lead.
@@ -128,7 +129,7 @@ These override the sections above where they conflict.
 1. **Router is staged, not first-match.** Order: (a) attempt cap (`attempt > max_attempts` -> strong model, then stop); (b) failure cause (`missing-context|unclear|tool` -> same worker/model, fix the input); (c) pool selection (trivial/direct, review/architecture/high risk, else OpenCode); (d) model on the ladder with fallback across ladder steps and pools.
 2. **Leases.** One lease per agent session in `~/.herdr-team/state/leases.json` (under the same lock as the ledger). Dispatch to a persistent agent and compaction both acquire it; compaction re-checks session ID and idle immediately before sending `/compact`.
 3. **Checkpoints are agent-authored.** Decisions, Exact errors and Next action come from the owning agent (`hx checkpoint write --from-file`); the script only adds git facts. Validate requires the agent sections non-empty and `ledger_rev` equal to the task's current revision. Native auto-compaction is labelled *unprotected safety net*; hx-run compaction is *protected*.
-4. **Protected compaction only at boundaries in v1.** `hx compact` runs only when the agent's task is `done|failed`, its owned changes are committed (or listed in the checkpoint), and the lease is held. Completion requires the same session ID plus a post-request telemetry sample showing lower context. On timeout the lease stays in state `compact-unknown`; no dispatch to that agent until it is idle and fresh telemetry is seen. Pressure-only compaction mid-task is left to native auto-compaction.
+4. **Protected compaction runs only while the agent is idle.** At a normal task boundary, `hx compact` requires the task to be `done|failed`. Under pressure (utilisation >= `pressure_threshold`), it may compact the agent's single registered open task after that task has a valid checkpoint. The task stays open, and all ownership, lease, cooldown, per-task limit, same-session, fresh-telemetry, lower-utilisation and acknowledgement checks still apply. If no hx task is registered, `hx context decide` returns `compact-needed`; it does not authorize an unprotected compaction. On timeout the lease stays in state `compact-unknown`; no dispatch to that agent until it is idle and fresh telemetry is seen.
 5. **Ledger concurrency.** One lock (`.hx/ledger.lock`, O_EXCL create, stale after 60s) is held across read-check-mutate-replace. Ledger has a monotonically increasing `rev`. Routing log lines carry `decision_id`; outcomes reference it. Order on completion: checkpoint first, then ledger status, so a crash leaves a recoverable checkpoint.
 6. **Telemetry binds to session IDs**, not newest file: `herdr agent get` returns `agent_session.value` (Codex rollout id, OpenCode `ses_...`). Claude status line writes `claude-status-<session_id>.json`; the lead's session id is recorded in the ledger at start.
 7. **Ownership uses canonical paths** (resolved, case-folded on Windows). `--worktree` records the worktree root and is verified with `git worktree list`; overlap checks still apply within one worktree.

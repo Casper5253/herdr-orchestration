@@ -7,9 +7,11 @@ makes this the only unattended way to send a team message.
 """
 from __future__ import annotations
 
+import math
 import subprocess
+import sys
 
-from hx import usage
+from hx import context, usage
 
 def resolve(sender: str, target: str) -> str:
     """Teammate name for a role or full name; ValueError unless it is a live agent on the sender's team."""
@@ -32,9 +34,38 @@ def with_header(sender: str, message: str) -> str:
     return message
 
 
+def _warn_if_under_pressure(name: str) -> None:
+    """Warn before messaging a worker whose fresh context is above policy pressure."""
+    try:
+        policy = usage.load_policy()
+        agent = context.agent_info(name)
+        if name == usage.lead_name(policy, usage.team_prefix(policy)):
+            return
+        sample = context.telemetry(agent, policy)
+        session_id = context._session(agent)
+        value = sample.get("utilisation")
+        threshold = policy.get("context", {}).get("pressure_threshold", 0.75)
+        if (not context._fresh(sample, session_id, context._now())
+                or not isinstance(value, (int, float)) or not math.isfinite(value)
+                or not isinstance(threshold, (int, float)) or not math.isfinite(threshold)
+                or value < threshold):
+            return
+        print(
+            f"Warning: {name} context utilisation is {value:.2f} ({value:.0%}), "
+            f"at or above the {threshold:.0%} pressure threshold. "
+            f"Run `hx compact {name}` after updating its checkpoint.",
+            file=sys.stderr,
+        )
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError, OverflowError, subprocess.SubprocessError):
+        # Unknown or unavailable telemetry must not block team communication.
+        return
+
+
 def say(target: str, message: str) -> int:
     sender = usage.own_agent_name()
     if not sender:
         raise ValueError("hx say runs only in a herdr team pane (an agent named <team>-<role>)")
     name = resolve(sender, target)
-    return subprocess.run(["herdr", "agent", "prompt", name, with_header(sender, message)], timeout=60).returncode
+    text = with_header(sender, message)
+    _warn_if_under_pressure(name)
+    return subprocess.run(["herdr", "agent", "prompt", name, text], timeout=60).returncode

@@ -83,14 +83,50 @@ def test_unknown_or_stale_never_compacts(controller, sample):
     assert not controller.calls
 
 
-def test_boundary_only_and_related_work(controller):
+def test_boundary_and_pressure_decisions(controller):
     assert controller.decide("hx-codex")["action"] == "compact"
     assert controller.decide("hx-codex", related=True)["action"] == "keep"
     controller.sample["utilisation"] = .39
     assert controller.decide("hx-codex")["action"] == "keep"
-    controller.sample["utilisation"] = .99
+    controller.sample["utilisation"] = .75
     controller.ledger.set_status("t", "in_progress")
-    assert controller.compact("hx-codex")["action"] == "keep"
+    decision = controller.decide("hx-codex", related=True)
+    assert decision["action"] == "compact"
+    assert decision["pressure"] is True
+    assert decision["mid_task"] is True
+    assert decision["reason"] == "idle under context pressure during active task"
+
+
+def test_pressure_compaction_runs_for_registered_in_progress_task(controller):
+    controller.ledger.set_status("t", "in_progress")
+    controller.sample["utilisation"] = .75
+    result = controller.compact("hx-codex")
+    assert result["action"] == "compacted"
+    assert result["task_id"] == "t"
+    assert controller.ledger.get_task("t")["status"] == "in_progress"
+    assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
+
+
+def test_pressure_without_registered_task_requests_task_registration(controller, tmp_path):
+    controller.ledger = ledger.Ledger(
+        repo_root=tmp_path,
+        ledger_path=tmp_path / "empty-ledger.json",
+        leases_path=tmp_path / "empty-leases.json",
+        lock_path=tmp_path / "empty-lock",
+    )
+    controller.sample["utilisation"] = .9
+    result = controller.decide("hx-codex")
+    assert result["action"] == "compact-needed"
+    assert "no hx task is registered" in result["reason"]
+
+
+def test_pressure_compaction_keeps_task_loop_guard(controller):
+    controller.ledger.set_status("t", "in_progress")
+    controller.sample["utilisation"] = .9
+    ledger._atomic_write_json(controller.guard_path, {"sid": {"tasks": {"t": {"count": 2}}}})
+    result = controller.decide("hx-codex")
+    assert result["action"] == "keep"
+    assert "loop guard" in result["reason"]
 
 
 def test_checkpoint_failure_sends_nothing_and_blocks_retry(controller, monkeypatch):

@@ -21,6 +21,12 @@ AGENTS = {"result": {"agents": [
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
     monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
+    monkeypatch.setattr(say.context, "agent_info", lambda name: {
+        "name": name,
+        "agent": "claude" if name.endswith("-claude") else "opencode",
+        "agent_session": {"value": "sid"},
+    })
+    monkeypatch.setattr(say.context, "telemetry", lambda *args: {"session_id": "sid", "utilisation": None, "sampled_at": None})
 
     class Done:
         returncode = 0
@@ -75,3 +81,42 @@ def test_a_new_role_can_send(monkeypatch: pytest.MonkeyPatch, sent: list[list[st
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p4")
     assert main(["say", "claude", "report"]) == 0
     assert sent == [["herdr", "agent", "prompt", "dev-claude", "[team from dev-gemini] report"]]
+
+
+def test_say_warns_for_worker_above_pressure_and_still_sends(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    events: list[str] = []
+    monkeypatch.setattr(usage, "load_policy", lambda: {
+        "team_prefix": "dev-", "lead_role": "claude", "context": {"pressure_threshold": .75},
+    })
+    def telemetry(*args: object) -> dict[str, object]:
+        events.append("sample")
+        return {"session_id": "sid", "utilisation": 1.23, "sampled_at": say.context._now().isoformat()}
+    monkeypatch.setattr(say.context, "telemetry", telemetry)
+    send = say.subprocess.run
+    def record_send(*args: object, **kwargs: object) -> object:
+        events.append("send")
+        return send(*args, **kwargs)
+    monkeypatch.setattr(say.subprocess, "run", record_send)
+
+    assert main(["say", "opencode", "continue", "the", "task"]) == 0
+    warning = capsys.readouterr().err
+    assert "dev-opencode" in warning
+    assert "1.23" in warning and "123%" in warning
+    assert "hx compact dev-opencode" in warning
+    assert events == ["sample", "send"]
+    assert sent == [["herdr", "agent", "prompt", "dev-opencode", "[team from dev-codex] continue the task"]]
+
+
+def test_say_unknown_telemetry_does_not_warn_or_block(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    monkeypatch.setattr(usage, "load_policy", lambda: {
+        "team_prefix": "dev-", "lead_role": "claude", "context": {"pressure_threshold": .75},
+    })
+    monkeypatch.setattr(say.context, "telemetry", lambda *args: {
+        "session_id": "sid", "utilisation": None, "sampled_at": None,
+    })
+
+    assert main(["say", "opencode", "continue"]) == 0
+    assert capsys.readouterr().err == ""
+    assert sent == [["herdr", "agent", "prompt", "dev-opencode", "[team from dev-codex] continue"]]
