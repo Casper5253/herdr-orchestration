@@ -83,12 +83,13 @@
   "ladders": {
     "economy": [
       "gpt-6-luna",
-      "glm-5.3-flash",
       "qwen3.8-flash",
-      "mimo-v2.6-flash"
+      "mimo-v2.6-flash",
+      "glm-5.3-flash"
     ],
     "default": [
       "qwen3.7-plus",
+      "qwen3.8-flash",
       "glm-5.3-flash"
     ],
     "strong": [
@@ -100,7 +101,8 @@
     "stale_seconds": 3600,
     "pool_soft_limit_note": "2026-10-17 owner directive: spend all OpenCode allowance before falling back to Codex (was 0.85); 0.98 keeps a margin because spend is estimated."
   },
-  "persistent_opencode_model": "glm-5.3-flash",
+  "persistent_opencode_model": "qwen3.7-plus",
+  "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark.",
   "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.163.0/bin",
   "opencode_variants": {
     "deepseek-v4.1-flash": [
