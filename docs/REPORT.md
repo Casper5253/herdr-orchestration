@@ -43,7 +43,7 @@ Same bugfix task on other pools at low effort: Codex gpt-5.6-luna pass (28s), Cl
 Set at dispatch, never by reconfiguring a live session. low = discovery, mechanical edits, simple tests, docs; medium = normal implementation; high = architecture, hard bugs, review; max only after a capability failure at high. Real controls: Codex `model_reasoning_effort`, Claude subagent `effort`, OpenCode `--variant` only for models that declare variants (gpt-6-luna does). Measured: glm-5.3-flash declares variants but low vs high made no consistent difference, so for most OpenCode models effort is expressed by the tier.
 
 ## 6. Checkpointing and compaction
-Workers write checkpoints (objective, decisions, exact errors, tests, next action); `hx task done` validates before closing and releases the session reservation. `hx compact <agent>` runs only at a completed task boundary: it reserves the session, validates the checkpoint, sends `/compact` through Herdr, verifies the same session came back smaller, and makes the worker acknowledge the checkpoint's next action with a nonce. A timeout or unverifiable outcome leaves `compact-unknown` and blocks dispatch until `hx context recover`. Mid-task pressure is left to native auto-compaction. The lead is compacted by Claude itself, with the PreCompact and SessionStart(compact) hooks carrying task state.
+Workers write checkpoints (objective, decisions, exact errors, tests, next action); `hx task done` validates before closing and releases the session reservation. `hx compact <agent>` runs only at a completed task boundary: it reserves the session, validates the checkpoint, sends `/compact` through Herdr, verifies the same session came back smaller, and makes the worker acknowledge the checkpoint's next action with a nonce. A timeout or unverifiable outcome leaves `compact-unknown` and blocks dispatch until `hx context recover`. Mid-task pressure: since 7592384 (2026-10-22), `hx context decide` returns `compact` for an idle worker at or above `pressure_threshold` (0.75) even mid-task, with the same guards, and `compact-needed` when no hx task is registered; `hx say` warns when the target is above the threshold. Native auto-compaction is not a safety net for OpenCode: it fires near the 1M native window, far above hx's 200K effective limit (finding below, section 9). The lead is compacted by Claude itself, with the PreCompact and SessionStart(compact) hooks carrying task state.
 
 ## 7. Tests and outcomes
 240 unit tests pass (`python -m pytest tests -q`). Live checks:
@@ -70,6 +70,7 @@ Team Codex now runs CLI 0.163.0 with the normal elevated sandbox; 0.163.0 contai
 - The hooks swallow errors to protect the session; they should also log what they swallow.
 - hx-claude in this session predates the install, so the hooks were tested by direct invocation, not by a real Claude compaction.
 - The `.hx/` task record does not store method/model from `task assign` (null fields).
+- Compaction is still pull-only: nothing runs `hx context decide` unless the lead does. On 2026-10-22 (portfolio project) dev-opencode on glm-5.3-flash reached 245K tokens (utilisation 1.23), went idle mid-task and stopped following briefs, because the lead dispatched with `hx say` without `hx task add` and never ran `decide`. 7592384 adds the pressure rule and the `hx say` warning; it does not add an automatic watcher.
 - Single-run benchmark cells on small tasks: good for excluding broken models, weak for ranking close ones.
 
 ## 10. Next opportunities
@@ -77,3 +78,6 @@ Team Codex now runs CLI 0.163.0 with the normal elevated sandbox; 0.163.0 contai
 2. Re-benchmark on harder, multi-file tasks with 3 runs per cell; include gpt-6-luna variants low vs medium.
 3. Log swallowed hook errors; store method/model on assign.
 4. Decide on deepseek (needs the Global-regions privacy setting).
+5. Test-suite cleanup: `python -m pytest -q` from the repo root fails at collection (23 errors on 2026-10-22) because archived bench test modules share names and `e2e/todo-cli` imports its own package; only `python -m pytest -q tests` runs. Add `testpaths = ["tests"]` (or `--ignore` for `bench/` and `e2e/`) to the pytest config so the root command works, and make sure CI and the docs use it.
+6. Make compaction harder to forget: have `hx say` refuse a new task (not just warn) to a worker above `pressure_threshold` unless `--force`, or offer an opt-in `hx context watch` loop that runs `decide` and `compact` for idle workers. Measure on real use first; the warning alone may be enough.
+7. Live-verify the pressure path end to end on a real OpenCode session above 0.75 (only unit-tested so far).
