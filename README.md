@@ -3,10 +3,11 @@
 `hx`: a small control plane for a three-agent coding team (Claude Code as lead, Codex, OpenCode) running side by side in Herdr panes. It routes work by subscription headroom, picks model and effort, tracks task ownership, and compacts agent context at task boundaries. It is standard-library Python plus a few hooks and skills, with no server or database.
 
 ## What's here
-- `hx/`: the CLI. `hx usage` (budget per pool), `hx route` (worker, model, effort), `hx task` and `hx checkpoint` (ledger and handoff state), `hx context` and `hx compact` (protected compaction), `hx ocrun` (one-off worker in a visible window).
+- `hx/`: the CLI. `hx usage` (budget per pool), `hx route` (worker, model, effort), `hx task` and `hx checkpoint` (ledger and handoff state), `hx context` and `hx compact` (protected compaction), `hx ocrun` (one-off OpenCode, Codex or Devin SWE-2 worker in a visible window).
+- Devin SWE-2 worker (free until 30 Nov 2026): `hx ocrun --worker devin --model swe-2-high --cwd <repo> --prompt-file brief.md`. Design in `docs/ARCHITECTURE.md` (Devin section), evidence in `docs/audit/devin.md`, worker permissions in `team/devin-worker.config.json`, live check `python -I tests/live_devin_acceptance.py`.
 - `hooks/`: Claude Code status line, PreCompact and SessionStart(compact) hooks.
 - `skills/`: `herdr-team` (collaboration contract) and `hx-router` (lead playbook), shared by all three agents.
-- `team/`: Herdr team launcher and per-agent trust config. `install.ps1` installs it.
+- `team/`: Herdr team launcher and per-agent trust config (`-Devin` adds a Devin SWE-2 pane). `install.ps1` installs it.
 - `policy.json`: model ladders, pool caps and context limits.
 - `bench/`: five-task model benchmark with validated graders. Results in `bench/RESULTS.md`.
 - `docs/`: `REPORT.md`, `ARCHITECTURE.md`, `FINDINGS.md`, provider audits, and the article `paper/hx-paper.html`.
