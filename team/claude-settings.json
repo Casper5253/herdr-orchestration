@@ -20,11 +20,17 @@
       "Bash(hx:*)",
       "PowerShell(hx:*)",
       "Bash(python -m hx:*)",
-      "PowerShell(python -m hx:*)"
+      "PowerShell(python -m hx:*)",
+      "Bash(herdr agent prompt hx-claude:*)",
+      "PowerShell(herdr agent prompt hx-claude:*)",
+      "Bash(herdr agent prompt hx-codex:*)",
+      "PowerShell(herdr agent prompt hx-codex:*)",
+      "Bash(herdr agent prompt hx-luna:*)",
+      "PowerShell(herdr agent prompt hx-luna:*)",
+      "Bash(herdr agent prompt hx-haiku:*)",
+      "PowerShell(herdr agent prompt hx-haiku:*)"
     ],
     "ask": [
-      "Bash(herdr agent prompt:*)",
-      "PowerShell(herdr agent prompt:*)",
       "Bash(herdr agent send-keys:*)",
       "PowerShell(herdr agent send-keys:*)",
       "Bash(herdr agent start:*)",
@@ -41,6 +47,9 @@
       "PowerShell(herdr workspace close:*)",
       "Bash(herdr server:*)",
       "PowerShell(herdr server:*)"
+    ],
+    "deny": [
+      "Bash(herdr agent prompt dev-claude:*)"
     ]
   },
   "statusLine": {

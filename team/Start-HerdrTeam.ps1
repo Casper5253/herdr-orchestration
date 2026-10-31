@@ -60,6 +60,16 @@ if (-not $NoOpenCode) {
 
 # Each start returns once the agent is ready, or agent_not_ready if it shows a first-run trust prompt (answer it in that pane).
 if (-not $LeadPane) { & herdr agent start "$Team-claude" --kind claude --pane $lead --timeout 120000 -- --permission-mode auto --settings "$dir\claude-settings.json" }
+# Pre-trust repos under Documents\Projects in the team Codex profile, so Codex shows no trust prompt.
+$projRoot = Join-Path $env:USERPROFILE 'Documents\Projects'
+$full = (Resolve-Path $Project).Path
+if ($full.StartsWith($projRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    $profileToml = Join-Path $env:USERPROFILE '.codex\trusted-dev.config.toml'
+    $key = "[projects.'$($full.ToLower())']"
+    if (-not (Select-String -Path $profileToml -SimpleMatch $key -Quiet)) {
+        Add-Content -Path $profileToml -Encoding utf8 -Value "`n$key`ntrust_level = `"trusted`""
+    }
+}
 & herdr agent start "$Team-codex" --kind codex --pane $right --timeout 120000 -- -p trusted-dev
 if (-not $NoOpenCode) { & herdr agent start "$Team-opencode" --kind opencode --pane $below --timeout 120000 }
 if ($Devin) {

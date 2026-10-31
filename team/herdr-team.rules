@@ -19,7 +19,20 @@ prefix_rule(pattern=[["backend/.venv/Scripts/python.exe", "backend\\.venv\\Scrip
 prefix_rule(pattern=["git"], decision="allow")
 prefix_rule(pattern=["npm", "run", ["build", "lint", "test"]], decision="allow")
 prefix_rule(pattern=["npm.cmd", "run", ["build", "lint", "test"]], decision="allow")
-# Still prompt: push, reset, clean, rebase, checkout, restore.
+# Team Codex runs without a sandbox (owner decision 2026-10-18), so these are the hard stop for destructive git.
+# The stricter decision wins over the plain git allow above.
+prefix_rule(pattern=["git", ["push", "reset", "clean", "rebase", "filter-branch", "filter-repo", "reflog", "gc", "prune", "update-ref"]], decision="prompt")
+prefix_rule(pattern=["git", "branch", ["-D", "-d", "--delete", "-f", "--force"]], decision="prompt")
+prefix_rule(pattern=["git", "checkout", ["-f", "--force", "--", "."]], decision="prompt")
+prefix_rule(pattern=["git", "restore"], decision="prompt")
+prefix_rule(pattern=["git", "worktree", ["remove", "prune"]], decision="prompt")
+prefix_rule(pattern=["git", "stash", ["drop", "clear"]], decision="prompt")
 # hx CLI and tests (added 2026-10-16). Plain python is not reachable inside MXC, so these run unprompted outside it.
 prefix_rule(pattern=["python", "-m", ["hx", "pytest"]], decision="allow")
 prefix_rule(pattern=["hx"], decision="allow")
+# Absolute path to the Personal Finance Dashboard venv, used from worktrees (added 2026-10-16).
+prefix_rule(pattern=[["C:/Users/caspe/Documents/Projects/Personal Finance Dashboard/backend/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\Personal Finance Dashboard\\backend\\.venv\\Scripts\\python.exe", "../../backend/.venv/Scripts/python.exe", "..\\..\\backend\\.venv\\Scripts\\python.exe"]], decision="allow")
+# QuantLab venv, used from the main checkout and from worktrees (added 2026-10-17, owner request).
+prefix_rule(pattern=[["C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe", "../../quantlab/.venv/Scripts/python.exe", "..\\..\\quantlab\\.venv\\Scripts\\python.exe", "../quantlab/.venv/Scripts/python.exe", "..\\quantlab\\.venv\\Scripts\\python.exe"]], decision="allow")
+# Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request).
+prefix_rule(pattern=[["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "msedge", "msedge.exe"]], decision="allow")

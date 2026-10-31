@@ -40,3 +40,6 @@ Every agent has the pstack skills. The lead may name one in `SKILLS:` (e.g. `pot
 
 ## Routing, usage and context (hx)
 The lead routes, checks quota and manages context with the `hx` CLI; follow the `hx-router` skill. Workers: when a brief names a task id, write its checkpoint before reporting done (`python -m hx checkpoint write <id> ...`), and after a `/compact` resume from the checkpoint the lead names.
+
+## Questlog
+When the creator starts team work from Questlog, the lead reads the idea board and open items through the `questlog` MCP tools, scopes the work and assigns it as usual. The lead keeps Questlog current at task boundaries: one item per hx task, a comment when it is assigned or finished, and the item set done when the task closes. Workers do not update Questlog unless the brief says so. If Questlog does not connect, carry on and tell the creator. Global rules are in each agent's instructions under "Questlog".
