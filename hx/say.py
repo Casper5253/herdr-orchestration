@@ -11,7 +11,7 @@ import math
 import subprocess
 import sys
 
-from hx import context, usage
+from hx import context, devin, usage
 
 def resolve(sender: str, target: str) -> str:
     """Teammate name for a role or full name; ValueError unless it is a live agent on the sender's team."""
@@ -61,11 +61,29 @@ def _warn_if_under_pressure(name: str) -> None:
         return
 
 
+def _denied_line_for(name: str) -> str:
+    """The deny line for a Devin pane target, or "" for anything else.
+
+    A denied call cancels a Devin pane's turn and panes get no run preamble,
+    so the pane's own deny list rides on the message. Any failure reading the
+    agent kind or the config leaves the message unchanged.
+    """
+    try:
+        if context.agent_info(name).get("agent") != devin.PROVIDER:
+            return ""
+        return devin.pane_denied_line(name)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError, subprocess.SubprocessError):
+        return ""
+
+
 def say(target: str, message: str) -> int:
     sender = usage.own_agent_name()
     if not sender:
         raise ValueError("hx say runs only in a herdr team pane (an agent named <team>-<role>)")
     name = resolve(sender, target)
     text = with_header(sender, message)
+    line = _denied_line_for(name)
+    if line:
+        text += " " + line
     _warn_if_under_pressure(name)
     return subprocess.run(["herdr", "agent", "prompt", name, text], timeout=60).returncode

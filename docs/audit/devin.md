@@ -61,3 +61,9 @@ Questlog is reachable through the user-scope MCP entry `questlog` → `team/ques
 - Server-side concurrency limits for local CLI runs. The pricing table's "Up to 10" concurrent sessions is for cloud sessions.
 - Whether usage of free SWE-2 shows up on the account's quota page. Check app.devin.ai usage after a day of work.
 - Whether a local `-p` run can start a cloud session on its own. Docs only describe `--cloud`, `/cloud` and `/handoff`; hx never passes `--cloud`, and the worker denies `Exec(devin)`.
+
+## Interactive /compact on a pane (live check, 2026-10-31)
+
+Sent `/compact` from PowerShell (`herdr agent prompt dev-devin "/compact"`) to an idle `dev-devin` pane at 70k / 262k tokens (26%). Devin printed `Context compacted` and returned to idle in the same session. Afterwards the footer showed only `SWE-2 High · accept edits` with no `Context:` field, and the field came back on the next turn.
+
+Consequence: keep `policy.devin.compact_command` null. `hx compact` verifies "same session, fresh telemetry lower than before" before it sends the acknowledgement prompt. On Devin there is no fresh telemetry at that point, so every compaction would end as `compact-unknown` and stay reserved. Devin panes therefore use the clear-needed flow (checkpoint, `/clear`, re-brief). To enable `/compact` later, run verification after the acknowledgement turn for `agent_kind == "devin"` (the reply turn restores the footer), then set `compact_command` to `/compact`.

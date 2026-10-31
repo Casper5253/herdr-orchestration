@@ -282,6 +282,12 @@ def denied_prefixes(config: dict[str, Any]) -> tuple[list[str], list[str]]:
     return commands, other
 
 
+def _denied_lists(config: dict[str, Any]) -> tuple[str, str]:
+    """Backticked, comma-joined (Exec command prefixes, other deny rules) for prompt text."""
+    commands, other = denied_prefixes(config)
+    return ", ".join(f"`{cmd}`" for cmd in commands), ", ".join(f"`{rule}`" for rule in other)
+
+
 def denied_section(policy: dict[str, Any]) -> str:
     """The generated prompt header listing the worker config's denied rules.
 
@@ -290,7 +296,7 @@ def denied_section(policy: dict[str, Any]) -> str:
     never copied by hand.
     """
     try:
-        commands, other = denied_prefixes(_worker_config(policy))
+        commands, other = _denied_lists(_worker_config(policy))
     except Exception:
         return ""
     if not commands and not other:
@@ -299,12 +305,42 @@ def denied_section(policy: dict[str, Any]) -> str:
     if commands:
         lines.append(
             "Denied command prefixes (a denied call ends this run; never run a command starting with one): "
-            + ", ".join(f"`{cmd}`" for cmd in commands)
+            + commands
             + "."
         )
     if other:
-        lines.append("Other denied rules: " + ", ".join(f"`{rule}`" for rule in other) + ".")
+        lines.append("Other denied rules: " + other + ".")
     return "\n".join(lines) + "\n\n"
+
+
+def pane_config_template() -> Path:
+    """The shipped pane config template the launcher copies to each pane's state dir."""
+    return paths.package_root() / "team" / "devin-pane.config.json"
+
+
+def pane_denied_line(name: str) -> str:
+    """The deny list ``hx say`` appends to a message for a Devin pane, as one line.
+
+    A pane gets no run preamble, and a denied call cancels its turn, so the
+    deny list travels on the message instead. It comes from the pane's live
+    config (``<state>/<name>/config.json``, written by the launcher); the
+    shipped pane template is the fallback. ``""`` means send unchanged: a
+    message must never fail because the deny list could not be read.
+    """
+    for path in (state_dir() / name / "config.json", pane_config_template()):
+        try:
+            commands, other = _denied_lists(
+                json.loads(_strip_json_comments(path.read_text(encoding="utf-8")))
+            )
+        except Exception:
+            continue
+        if not commands and not other:
+            return ""
+        line = "Denied for you (a denied call cancels your turn): " + (commands or "no Exec prefixes")
+        if other:
+            line += ". Also denied: " + other
+        return line + "."
+    return ""
 
 
 def prepare_run(run_dir: Path, prompt: str, policy: dict[str, Any]) -> dict[str, Path]:
