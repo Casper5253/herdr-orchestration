@@ -12,7 +12,7 @@ function Install-File($from, $to) {
 }
 
 New-Item -ItemType Directory -Force (Join-Path $home_ '.herdr-team') | Out-Null
-foreach ($f in 'Start-HerdrTeam.ps1', 'claude-settings.json', 'opencode-trusted-dev.jsonc', 'README.md') {
+foreach ($f in 'Start-HerdrTeam.ps1', 'claude-settings.json', 'opencode-trusted-dev.jsonc', 'devin-pane.config.json', 'README.md') {
     Install-File (Join-Path $src $f) (Join-Path $home_ ".herdr-team\$f")
 }
 Install-File (Join-Path $src 'herdr-team.rules') (Join-Path $home_ '.codex\rules\herdr-team.rules')

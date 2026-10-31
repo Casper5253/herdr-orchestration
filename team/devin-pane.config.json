@@ -1,0 +1,112 @@
+// Devin CLI config template for a Devin team pane. `Start-HerdrTeam.ps1 -Devin` copies it to
+// ~/.herdr-team/state/<team>-devin/config.json and passes the copy with --config: --config replaces
+// %APPDATA%\devin\config.json and Devin writes setup state back into it, so this template stays
+// clean (no org id or setup state). Same as team/devin-worker.config.json except the hx deny is
+// narrowed: a pane is a teammate, not a one-off worker, so it may run `hx say` and `hx checkpoint`.
+{
+  "agent": {
+    // The launcher always passes --model too; this pin only guards a run that forgets it.
+    "model": "swe-2-high"
+  },
+  // Print mode ignores this key (export shows Normal); ocrun also passes --permission-mode.
+  "permission_mode": "accept-edits",
+  // Subagents run on agent.subagent_model (default swe-1-6-fast, a paid model), so they stay off.
+  "subagents_enabled": false,
+  // The worker gets its brief from hx and the repo's AGENTS.md, not the lead's Claude/OpenCode setup.
+  "read_config_from": {
+    "agents_standard": true,
+    "cursor": false,
+    "windsurf": false,
+    "claude": false,
+    "copilot": false,
+    "opencode": false,
+    "zed": false,
+    "cloud": false
+  },
+  "attribution": false,
+  "permissions": {
+    // Devin edits files through exec, so exec is allowed. Questlog (user-scope MCP, OpenCode token via
+    // team/questlog-mcp-opencode.cmd) is the only MCP server; print mode rejects anything that would ask.
+    "allow": ["read", "grep", "glob", "edit", "exec", "mcp__questlog__*"],
+    "deny": [
+      // String rules are guardrails against accidents, not a sandbox: an agent that writes a script
+      // and runs it can step around them. The lead's diff review is the real gate (docs/audit/devin.md).
+      "Exec(git push)",
+      "Exec(git --git-dir)",
+      "Exec(git --work-tree)",
+      "Exec(git merge)",
+      "Exec(git pull)",
+      "Exec(git fetch)",
+      "Exec(git clone)",
+      "Exec(git cherry-pick)",
+      "Exec(git revert)",
+      "Exec(git am)",
+      "Exec(git stash)",
+      "Exec(git update-ref)",
+      "Exec(git tag)",
+      "Exec(git remote)",
+      "Exec(git config)",
+      "Exec(git reset)",
+      "Exec(git clean)",
+      "Exec(git rebase)",
+      "Exec(git checkout)",
+      "Exec(git restore)",
+      "Exec(git switch)",
+      "Exec(git branch -D)",
+      "Exec(git worktree remove)",
+      "Exec(git commit)",
+      "Exec(gh)",
+      "Exec(devin)",
+      "Exec(devin.exe)",
+      "Exec(herdr)",
+      // Pane worker reports with `hx say` and writes checkpoints; the lead keeps routing and compaction.
+      "Exec(hx ocrun)",
+      "Exec(hx compact)",
+      "Exec(hx context)",
+      "Exec(hx task)",
+      "Exec(hx route)",
+      "Exec(opencode)",
+      "Exec(codex)",
+      "Exec(claude)",
+      "Exec(rm -rf)",
+      "Exec(rm -fr)",
+      "Exec(rm -r)",
+      "Exec(rm -f -r)",
+      "Exec(rm -R)",
+      "Exec(Remove-Item -Recurse)",
+      "Exec(Remove-Item -r)",
+      "Exec(ri)",
+      "Exec(curl)",
+      "Exec(wget)",
+      "Exec(Invoke-WebRequest)",
+      "Exec(iwr)",
+      "Exec(Invoke-RestMethod)",
+      "Exec(irm)",
+      "Exec(ssh)",
+      "Exec(scp)",
+      "Exec(sftp)",
+      "Exec(nc)",
+      "Exec(ftp)",
+      "Exec(rsync)",
+      "Exec(schtasks)",
+      "Exec(reg)",
+      "Exec(powershell -enc)",
+      "Exec(powershell -EncodedCommand)",
+      "Exec(pwsh -enc)",
+      "Exec(pwsh -EncodedCommand)",
+      "Exec(python -m hx)",
+      "Exec(rmdir)",
+      "Exec(rd)",
+      "Exec(del /s)",
+      "Exec(format)",
+      "Exec(npm publish)",
+      "Exec(Start-Process)",
+      "Write(.env*)",
+      "Write(**/.env*)",
+      "Read(~/.ssh/**)",
+      "Write(~/.ssh/**)",
+      "Write(**/.git/**)",
+      "Read(~/AppData/Roaming/devin/credentials.toml)"
+    ]
+  }
+}
