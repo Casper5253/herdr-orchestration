@@ -21,6 +21,9 @@ Detected silent failures and their classification (shared by both modes):
 - final step finish reason ``length`` with zero output tokens -> ``capability``
   (reasoning budget exhausted, no output).
 
+``--worker devin`` runs ``devin -p`` on a pinned SWE-2 id instead (both
+modes); its guards, export checks and failure kinds live in ``hx.devin``.
+
 Every run appends one outcome line to ``<repo>/.hx/routing.jsonl``.
 """
 
@@ -38,6 +41,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from hx import devin as devin_mod
 from hx import paths
 
 PROVIDER = "opencode-go"
@@ -777,6 +781,7 @@ def execute(
     cmd: list[str],
     cwd: Path,
     timeout: float,
+    env: dict[str, str] | None = None,
 ) -> tuple[int | None, str, str, bool, bool]:
     """Run the opencode process.
 
@@ -793,6 +798,8 @@ def execute(
             "encoding": "utf-8",
             "errors": "replace",
         }
+        if env is not None:
+            popen_kwargs["env"] = env
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(cmd, **popen_kwargs)
@@ -1128,7 +1135,277 @@ def _append_outcome_entry(
         "worker": result.get("worker", "opencode"),
         "effort": result.get("effort"),
     }
+    for key in ("provider", "models_seen"):
+        if key in result:
+            entry[key] = result[key]
     append_outcome(routing_log or default_routing_log(cwd), entry)
+
+
+DEVIN_PREAMBLE = """You are a Devin worker started by hx for the Herdr team lead. Rules for this run:
+- Work only inside {cwd}. Do not commit, push, switch branches or reset; the lead reviews and commits.
+- Never hand off to Devin Cloud. Use Questlog only when this brief asks for it.
+- Run the tests the brief names (or the obvious focused ones) before you finish.
+- End with a final message: files changed, tests run with their results, and anything left unfinished.
+
+Brief:
+"""
+
+
+def write_devin_run_script(
+    run_dir: Path,
+    cmd: list[str],
+    title: str,
+    cwd: Path,
+    banner: str,
+    files: dict[str, Path],
+) -> Path:
+    """run.ps1 for a visible Devin window.
+
+    Written with a BOM: Windows PowerShell 5.1 reads a BOM-less script as
+    ANSI, which garbles non-ASCII paths. A missing cwd stops the script with
+    an error in done.json instead of running Devin somewhere else.
+    """
+
+    def _ps(text: str) -> str:
+        return "'" + text.replace("'", "''") + "'"
+
+    done = _ps(str(run_dir / VISIBLE_DONE_FILE))
+    script = "\n".join(
+        [
+            "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
+            "clear-host",
+            "$PID | Set-Content -Encoding ascii %s" % _ps(str(files["pid"])),
+            "try { Set-Location -LiteralPath %s -ErrorAction Stop } catch {" % _ps(str(cwd)),
+            "  @{ exit_code = -1; error = 'cannot enter the run directory' } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % done,
+            "  Write-Host %s; return" % VISIBLE_DONE_MARKER,
+            "}",
+            *("Remove-Item %s -ErrorAction SilentlyContinue" % _ps("Env:" + key) for key in devin_mod.scrubbed_env_names()),
+            "Write-Host %s" % _ps(banner),
+            "& %s" % " ".join(_ps(part) for part in cmd),
+            "$code = $LASTEXITCODE",
+            "@{ exit_code = $code } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % done,
+            "Write-Host %s" % VISIBLE_DONE_MARKER,
+        ]
+    )
+    script_path = run_dir / VISIBLE_RUN_SCRIPT
+    script_path.write_text(script, encoding="utf-8-sig")
+    return script_path
+
+
+DEVIN_START_TIMEOUT_S = 60.0
+
+
+def _wait_devin_visible(
+    done_path: Path, pid_path: Path, timeout: float, start_timeout: float = DEVIN_START_TIMEOUT_S
+) -> tuple[bool, bool, bool]:
+    """Wait for done.json. Returns (finished, timed_out, terminated).
+
+    Closing the window cancels the run: its PowerShell pid disappears before
+    done.json is written. On timeout the window's process tree is killed. A
+    window that never writes its pid within ``start_timeout`` did not start.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        if done_path.exists():
+            return True, False, True
+        pid = _read_pid(pid_path)
+        if pid is None and time.monotonic() - started >= start_timeout:
+            return False, False, True
+        if pid is not None and not devin_mod.pid_alive(pid):
+            return done_path.exists(), False, True
+        if time.monotonic() >= deadline:
+            if pid is None:
+                return False, True, False
+            return False, True, devin_mod.kill_tree(pid)
+        time.sleep(POLL_INTERVAL_S)
+
+
+def _read_pid(pid_path: Path) -> int | None:
+    try:
+        return int(pid_path.read_text(encoding="utf-8-sig").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _git_dirty_files(cwd: Path) -> set[str]:
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(cwd),
+            capture_output=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
+        ).stdout
+    except Exception:
+        return set()
+    return {line[3:] for line in out.splitlines() if len(line) > 3 and not line[3:].startswith(".hx/")}
+
+
+def _fingerprints(cwd: Path, rel_paths: set[str]) -> dict[str, tuple[int, int] | None]:
+    fingerprints: dict[str, tuple[int, int] | None] = {}
+    for rel in rel_paths:
+        try:
+            stat = (cwd / rel).stat()
+            fingerprints[rel] = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            fingerprints[rel] = None
+    return fingerprints
+
+
+def _claim_run_dir(cwd: Path, title: str | None) -> Path:
+    """Create the run directory atomically so parallel runs never share one."""
+    for _ in range(100):
+        candidate = _unique_run_dir(cwd, title)
+        try:
+            candidate.mkdir(parents=True)
+            return candidate
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"no free run directory for {title}")
+
+
+def run_devin(
+    prompt: str,
+    model: str,
+    cwd: Path,
+    timeout: float = 1800.0,
+    title: str | None = None,
+    routing_log: Path | None = None,
+    task_id: str | None = None,
+    decision_id: str | None = None,
+    mode: str = "headless",
+    policy: dict[str, Any] | None = None,
+    models_lister=None,
+) -> dict[str, Any]:
+    """One Devin SWE-2 run; fails closed on any policy, price or model doubt."""
+    from hx.usage import load_policy
+
+    policy = policy if policy is not None else load_policy()
+    cwd = Path(cwd).resolve()
+    started = time.monotonic()
+    run_dir = _claim_run_dir(cwd, title)
+    run_title = run_dir.name
+    effort = model.rsplit("-", 1)[-1]
+
+    def _finish(failure, parsed=None, exit_code=None, timed_out=False, terminated=True, extra=None):
+        stats = {
+            "cost": 0.0,
+            "tokens": (parsed or {}).get("tokens") or _blank_parsed()["tokens"],
+            "tool_calls": (parsed or {}).get("tool_calls", 0),
+            "tool_errors": len((parsed or {}).get("rejected") or []),
+        }
+        result = _outcome_result(
+            failure,
+            (parsed or {}).get("session_id"),
+            stats,
+            time.monotonic() - started,
+            exit_code,
+            timed_out,
+            terminated,
+            mode,
+            run_dir,
+        )
+        result.update(
+            {
+                "worker": "devin",
+                "provider": devin_mod.PROVIDER,
+                "model": model,
+                "effort": effort,
+                "models_seen": (parsed or {}).get("models", []),
+            }
+        )
+        result.update(extra or {})
+        _append_outcome_entry(result, run_title, model, None, cwd, task_id, decision_id, routing_log)
+        return result
+
+    lister = models_lister or devin_mod.list_models
+    failure = devin_mod.preflight(policy, model, models_lister=lister)
+    if failure:
+        return _finish(failure)
+
+    conf = devin_mod.settings(policy)
+    permission_mode = conf.get("permission_mode", "accept-edits")
+    slot_info = devin_mod.new_slot_info(cwd, run_title, model)
+    slot = devin_mod.acquire_slot(int(conf.get("max_concurrent", 1)), timeout, slot_info)
+    if slot is None:
+        busy = {"kind": "busy", "reason": f"all {conf.get('max_concurrent', 1)} devin run slots are in use"}
+        return _finish(busy)
+
+    dirty_before = _git_dirty_files(cwd)
+    prints_before = _fingerprints(cwd, dirty_before)
+    output = ""
+    exit_code: int | None = None
+    timed_out, terminated = False, True
+    try:
+        files = devin_mod.prepare_run(run_dir, DEVIN_PREAMBLE.format(cwd=cwd) + prompt, policy)
+        cmd = devin_mod.build_command(
+            devin_mod.devin_bin(policy), model, files["prompt"], files["config"], files["export"], permission_mode
+        )
+        if mode == "visible":
+            banner = f"hx devin worker | provider {devin_mod.PROVIDER} | model {model} | effort {effort}"
+            script = write_devin_run_script(run_dir, cmd, run_title, cwd, banner, files)
+            if not launch_visible(script):
+                return _finish({"kind": "tool", "reason": "failed to launch visible window"})
+            done_path = run_dir / VISIBLE_DONE_FILE
+            finished, timed_out, terminated = _wait_devin_visible(done_path, files["pid"], timeout)
+            if finished:
+                try:
+                    done = json.loads(done_path.read_text(encoding="utf-8-sig"))
+                    exit_code = int(done["exit_code"])
+                except Exception:
+                    done = {}
+                if done.get("error"):
+                    return _finish({"kind": "tool", "reason": done["error"]}, exit_code=exit_code)
+            elif not timed_out:
+                reason = "worker window closed before the run finished" if _read_pid(files["pid"]) else (
+                    "worker window did not start"
+                )
+                return _finish({"kind": "cancelled" if _read_pid(files["pid"]) else "tool", "reason": reason})
+        else:
+            exit_code, out, err, timed_out, terminated = execute(cmd, cwd, timeout, env=devin_mod.run_env())
+            output = (out or "") + "\n" + (err or "")
+    except Exception as exc:
+        return _finish({"kind": "tool", "reason": f"devin run failed: {exc}"})
+    finally:
+        # A run whose kill was not confirmed may still be working: keep its
+        # slot until it expires instead of letting another run start.
+        if terminated:
+            devin_mod.release_slot(slot, slot_info["id"])
+
+    parsed = devin_mod.parse_export(files["export"])
+    failure = devin_mod.detect_failure(
+        parsed,
+        model,
+        exit_code,
+        timed_out,
+        terminated,
+        output_text=output,
+        classify=classify_error_text,
+        expected_mode=permission_mode,
+    )
+    devin_mod.record_error(failure or {}, model)
+    final_message = (parsed or {}).get("final_message") or ""
+    final_path = run_dir / "final.md"
+    try:
+        final_path.write_text(final_message, encoding="utf-8")
+    except OSError:
+        pass
+    dirty_after = _git_dirty_files(cwd)
+    extra = {
+        "final_message": final_message[:4000],
+        "final_message_file": str(final_path),
+        # New dirty paths, plus already-dirty files the run touched.
+        "changed_files": sorted(
+            (dirty_after - dirty_before)
+            | {rel for rel, fp in _fingerprints(cwd, dirty_before & dirty_after).items() if fp != prints_before.get(rel)}
+        ),
+        "dirty_before": sorted(dirty_before),
+        "export": str(files["export"]),
+        "promo_ends_at": devin_mod.promo_status(policy)["ends_at"],
+    }
+    return _finish(failure, parsed, exit_code, timed_out, terminated, extra)
 
 
 def resolve_mode(headless: bool) -> str:
@@ -1152,9 +1429,21 @@ def run(
     worker: str = "opencode",
     effort: str | None = None,
 ) -> dict[str, Any]:
-    """Run one OpenCode or Codex worker and return the run outcome."""
+    """Run one OpenCode, Codex or Devin worker and return the run outcome."""
     if cwd is None:
         cwd = _repo_root()
+    if worker == "devin":
+        return run_devin(
+            prompt,
+            model,
+            cwd=Path(cwd),
+            timeout=timeout,
+            title=title,
+            routing_log=routing_log,
+            task_id=task_id,
+            decision_id=decision_id,
+            mode=mode or "headless",
+        )
     if mode == "visible":
         return run_visible(
             {
@@ -1242,8 +1531,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--worker",
         default="opencode",
-        choices=["opencode", "codex"],
-        help="which worker runs the task (codex requires visible mode)",
+        choices=["opencode", "codex", "devin"],
+        help="which worker runs the task (codex requires visible mode; devin runs SWE-2 only)",
     )
     parser.add_argument("--cwd", default=None, help="directory to run in")
     parser.add_argument("--timeout", type=float, default=1800.0)

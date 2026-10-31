@@ -54,6 +54,36 @@ def test_add_and_get(ledger: ledger_mod.Ledger) -> None:
     assert loaded["title"] == "First task"
 
 
+def test_r1_persistent_devin_reserves_session(ledger):
+    for task_id in ("r1-a", "r1-b"):
+        ledger.add_task(task_id, task_id, "dev-devin", [], base_commit="base")
+    ledger.assign_task("r1-a", "dev-devin", method="persistent-devin", agent="dev-devin")
+    with pytest.raises(ledger_mod.SessionLeaseConflict):
+        ledger.assign_task("r1-b", "dev-devin", method="persistent-devin", agent="dev-devin")
+
+
+@pytest.mark.parametrize("state", ["compacting", "compact-unknown"])
+def test_persistent_devin_refuses_compaction_lease(ledger, state):
+    ledger.add_task("r1", "r1", "dev-devin", [], base_commit="base")
+    ledger.mutate_leases(lambda leases: leases["sessions"].update({
+        "sid": {"agent": "dev-devin", "task_id": "r1", "token": "token", "state": state}
+    }))
+    with pytest.raises(ledger_mod.SessionLeaseConflict):
+        ledger.assign_task("r1", "dev-devin", method="persistent-devin", agent="dev-devin")
+
+
+def test_persistent_devin_requires_agent_in_ledger_and_cli(ledger, monkeypatch):
+    import argparse
+    from hx import __main__ as cli
+
+    ledger.add_task("r1", "r1", "dev-devin", [], base_commit="base")
+    with pytest.raises(ValueError, match="requires --agent"):
+        ledger.assign_task("r1", "dev-devin", method="persistent-devin")
+    monkeypatch.setattr(ledger_mod, "default_ledger", lambda: ledger)
+    with pytest.raises(ValueError, match="requires --agent"):
+        cli._task_assign(argparse.Namespace(method="persistent-devin", agent=None))
+
+
 def test_conflict(ledger: ledger_mod.Ledger) -> None:
     ledger.add_task(
         "t1",
@@ -333,6 +363,19 @@ def test_persistent_assign_atomically_reserves_session(ledger: ledger_mod.Ledger
     assert lease["holder"] == "w"
     assert lease["state"] == "held"
     assert lease["task_id"] == "t1"
+
+
+def test_assign_persists_method(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="hx-opencode", files=["src/a.py"])
+    task = ledger.assign_task("t1", owner="w", method="persistent", agent="hx-opencode")
+    assert task["method"] == "persistent"
+    assert ledger.get_task("t1")["method"] == "persistent"
+
+
+def test_assign_without_method_keeps_stored_method(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="hx-opencode", files=["src/a.py"], method="ocrun")
+    ledger.assign_task("t1", owner="w")
+    assert ledger.get_task("t1")["method"] == "ocrun"
 
 
 def test_lock_files_record_pid_and_are_stolen_when_dead(

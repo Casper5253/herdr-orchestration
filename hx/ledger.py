@@ -27,6 +27,10 @@ from typing import Any, Callable
 from hx import paths
 
 
+def is_persistent_method(method: str | None) -> bool:
+    return method in {"persistent", "persistent-devin"}
+
+
 class OwnershipConflict(Exception):
     """Raised when a file is already owned by another open task."""
 
@@ -552,9 +556,9 @@ class Ledger:
                 raise TaskNotFound(task_id)
             self._verify_worktree(worktree if worktree is not None else task.get("worktree"))
             sessions = leases["sessions"]
-            if method == "persistent":
+            if is_persistent_method(method):
                 if not agent:
-                    raise ValueError("persistent assignment requires --agent")
+                    raise ValueError(f"{method} assignment requires --agent")
                 # There may be no session yet: reserve it atomically here so a
                 # concurrent dispatch cannot also claim the agent's session.
                 key, entry = self._resolve_session(sessions, agent)
@@ -606,6 +610,8 @@ class Ledger:
                     }
             if worktree is not None:
                 task["worktree"] = worktree
+            if method is not None:
+                task["method"] = method
             canonical_files = task.get("files", [])
             self._check_conflicts(
                 canonical_files,

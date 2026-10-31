@@ -175,6 +175,45 @@ def test_task_assign_persistent_requires_agent(
     assert "requires --agent" in err
 
 
+def test_task_assign_persistent_stores_method_in_ledger(
+    cli_repo: Path, capsys: pytest.CaptureFixture
+) -> None:
+    assert cli.main(["task", "add", "t1", "--title", "T", "--owner", "w", "--files", "owned.py"]) == 0
+    capsys.readouterr()
+    assert cli.main(
+        ["task", "assign", "t1", "--owner", "w", "--method", "persistent", "--agent", "hx-opencode"]
+    ) == 0
+    capsys.readouterr()
+
+    data = json.loads((cli_repo / ".hx" / "ledger.json").read_text(encoding="utf-8"))
+    assert data["tasks"]["t1"]["method"] == "persistent"
+
+
+def test_help_lists_route_and_ocrun(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "route" in out
+    assert "ocrun" in out
+
+
+def test_route_help_prints_module_help(capsys: pytest.CaptureFixture) -> None:
+    assert cli.main(["route", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "hx route" in out
+    assert "--kind" in out
+    assert "--persistent" in out
+
+
+def test_ocrun_help_prints_module_help(capsys: pytest.CaptureFixture) -> None:
+    assert cli.main(["ocrun", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "--prompt-file" in out
+    assert "--worker" in out
+    assert "--model" in out
+
+
 def test_route_subcommand_wired(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

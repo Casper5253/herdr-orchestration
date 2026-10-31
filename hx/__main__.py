@@ -18,8 +18,8 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser("say", help="Message a teammate on your own team (claude, codex or opencode).")
-    parser.add_argument("target", help="claude, codex, opencode or the full <team>-<role> name")
+    parser = subparsers.add_parser("say", help="Message a teammate on your own team.")
+    parser.add_argument("target", help="any live teammate role (claude, codex, devin, ...) or the full <team>-<role> name")
     parser.add_argument("message", nargs="+")
     parser.set_defaults(func=lambda args: say.say(args.target, " ".join(args.message)))
 
@@ -113,6 +113,16 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_task_parser(subparsers)
     _add_say_parser(subparsers)
     _add_checkpoint_parser(subparsers)
+    # route and ocrun dispatch to their own main(argv) in main() before argparse
+    # runs; these subparsers exist so `hx --help` lists them.
+    subparsers.add_parser(
+        "route",
+        help="Deterministic task router: task -> worker, model, effort, method.",
+    )
+    subparsers.add_parser(
+        "ocrun",
+        help="Headless OpenCode worker wrapper with silent-failure detection.",
+    )
     context_parser = subparsers.add_parser("context", help="Session context decisions and recovery.")
     context_sub = context_parser.add_subparsers(dest="context_command", required=True)
     decide = context_sub.add_parser("decide")
@@ -160,8 +170,8 @@ def _task_add(args: argparse.Namespace) -> None:
 
 
 def _task_assign(args: argparse.Namespace) -> None:
-    if args.method == "persistent" and not args.agent:
-        raise ValueError("task assign --method persistent requires --agent")
+    if ledger.is_persistent_method(args.method) and not args.agent:
+        raise ValueError(f"task assign --method {args.method} requires --agent")
     led = ledger.default_ledger()
     task = led.assign_task(
         args.id,

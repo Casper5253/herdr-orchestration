@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from hx import devin as hx_devin
 from hx import paths
 from hx import usage as hx_usage
 
@@ -351,7 +352,95 @@ def _prev_model_exhausted(
     if worker in ("codex", "claude"):
         status, _ = _pool_status(usage.get(worker, {}), policy)
         return status == "exhausted"
+    if worker == "devin":
+        # busy counts as unavailable: re-dispatching would only be refused.
+        return (usage.get("devin") or {}).get("status") != "available"
     return True
+
+
+def _idle_devin_pane(usage: dict[str, Any], policy: dict[str, Any]) -> str | None:
+    """The team's ``<team>-devin`` pane when the live session list shows it idle."""
+    prefix = (usage.get("agents") or {}).get("prefix") or policy.get("team_prefix", "hx-")
+    pane = f"{prefix}devin"
+    for session in (usage.get("devin") or {}).get("live_sessions") or []:
+        if (
+            isinstance(session, dict)
+            and session.get("name") == pane
+            and session.get("status") in hx_usage.READY
+        ):
+            return pane
+    return None
+
+
+def _devin_persistent_eligible(task: dict[str, Any], pane: str) -> bool:
+    """Persistent dispatch is for iterative work, or a --persistent block naming the pane."""
+    if task.get("parallel"):
+        return False
+    persistent = task.get("persistent") or {}
+    if persistent.get("name") == pane or persistent.get("agent") == pane:
+        return persistent.get("status", "idle") in hx_usage.READY
+    iterative = task.get("iterative")
+    if iterative is None:
+        iterative = task.get("size") == "large"
+    return bool(iterative)
+
+
+def _devin_decision(
+    task: dict[str, Any],
+    usage: dict[str, Any],
+    policy: dict[str, Any],
+    effort: str,
+    stages: list[str],
+    capability_failure: bool,
+) -> dict[str, Any] | None:
+    """Free SWE-2 first for implementation work; None hands over to OpenCode.
+
+    A ready pane can be reused when new sessions are capped. Unknown pane
+    data, quota errors, disabled policy and ended promotions fall through
+    to the unchanged OpenCode ladder. A capability
+    failure on the strongest SWE-2 model escalates to Codex instead of
+    retrying Devin.
+    """
+    conf = hx_devin.settings(policy)
+    if task.get("kind") not in (conf.get("kinds") or hx_devin.DEFAULT_KINDS):
+        return None
+    status = (usage.get("devin") or {}).get("status")
+    pane = _idle_devin_pane(usage, policy)
+    reuse = pane and _devin_persistent_eligible(task, pane) and (
+        (usage.get("devin") or {}).get("reuse_available", status == "available")
+    )
+    if status != "available" and not reuse:
+        stages.append(f"devin:{status or 'absent'}")
+        return None
+    prev = task.get("prev") or {}
+    strongest = hx_devin.model_for_effort("max", policy)
+    if capability_failure and prev.get("worker") == "devin" and prev.get("model") == strongest:
+        stages.append("devin:capability-at-max")
+        return {
+            "worker": "codex",
+            "model": _codex_strong_model(policy),
+            "effort": "high",
+            "method": "ocrun-codex",
+            "reason": f"capability failure on {strongest} -> codex strong",
+            "stages": stages + ["pool:codex"],
+        }
+    model = hx_devin.model_for_effort(effort, policy)
+    method = "persistent-devin" if reuse else "ocrun-devin"
+    stages.append("pool:devin")
+    decision = {
+        "worker": "devin",
+        "model": model,
+        "effort": effort,
+        "method": method,
+        "reason": (
+            f"free SWE-2 promotion until {usage['devin'].get('promo', {}).get('ends_at')} -> devin {model}"
+            + (f" via idle pane {pane}" if method == "persistent-devin" else "")
+        ),
+        "stages": stages,
+    }
+    if method == "persistent-devin":
+        decision["agent"] = pane
+    return decision
 
 
 def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
@@ -386,7 +475,12 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
     # Input repair reuses the prior worker/model/effort unless the model is
     # exhausted, but re-runs dispatch eligibility (persistent vs ocrun).
     if fix_input and prev:
-        if not _prev_model_exhausted(prev, usage, policy):
+        if prev.get("worker") == "devin":
+            retry = _devin_decision(task, usage, policy, prev.get("effort"), stages, False)
+            if retry is not None:
+                retry.update(model=prev.get("model"), reason="retry after input failure; fix the input, not the model; recheck pane eligibility")
+                return retry
+        if prev.get("worker") != "devin" and not _prev_model_exhausted(prev, usage, policy):
             chosen_worker = prev.get("worker")
             chosen_model = prev.get("model")
             chosen_effort = prev.get("effort")
@@ -479,6 +573,8 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
             "reason": "architecture -> claude subagent",
             "stages": stages,
         }
+    elif (devin_choice := _devin_decision(task, usage, policy, effort, stages, capability_failure)):
+        decision = devin_choice
     else:
         stages.append("pool:opencode")
         start_tier = _tier_for_effort(effort)

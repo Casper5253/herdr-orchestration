@@ -18,7 +18,10 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hx import paths
+from hx import devin, paths
+
+READY = frozenset({"idle", "done"})
+_AGENTS_UNSET = object()
 
 
 def _repo_root() -> Path:
@@ -499,6 +502,14 @@ def _herdr_agent_list() -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
+def herdr_agents() -> list[dict[str, Any]]:
+    """The ``herdr agent list`` agent list: the one call path to herdr."""
+    agents = _herdr_agent_list().get("result", {}).get("agents")
+    if not isinstance(agents, list) or any(not isinstance(agent, dict) for agent in agents):
+        raise ValueError("Herdr returned no valid agent list")
+    return agents
+
+
 # A team agent is <team>-<role>, for example dev-claude or my-team-luna. Roles and models are not listed
 # anywhere: membership is the team prefix, and the provider comes from Herdr's detected agent kind.
 TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)[a-z0-9]+")
@@ -511,8 +522,7 @@ def lead_name(policy: dict[str, Any], prefix: str) -> str:
 
 def team_agents(prefix: str) -> dict[str, dict[str, Any]]:
     """Live Herdr agents on this team, by name."""
-    agents = _herdr_agent_list().get("result", {}).get("agents", [])
-    return {str(a.get("name")): a for a in agents if str(a.get("name") or "").startswith(prefix) and TEAM_AGENT.fullmatch(str(a.get("name")))}
+    return {str(a.get("name")): a for a in herdr_agents() if str(a.get("name") or "").startswith(prefix) and TEAM_AGENT.fullmatch(str(a.get("name")))}
 
 
 def team_prefix(policy: dict[str, Any]) -> str:
@@ -536,7 +546,7 @@ def own_agent_name() -> str | None:
     if not pane:
         return None
     try:
-        agents = _herdr_agent_list().get("result", {}).get("agents", [])
+        agents = herdr_agents()
     except Exception:
         return None
     for agent in agents:
@@ -550,26 +560,31 @@ def agents_usage(
     policy: dict[str, Any],
     prefix: str | None = None,
     now: datetime.datetime | None = None,
+    agents: Any = _AGENTS_UNSET,
 ) -> dict[str, Any]:
     if now is None:
         now = _utcnow()
     if prefix is None:
         prefix = team_prefix(policy)
 
-    try:
-        data = _herdr_agent_list()
-    except Exception as exc:
-        return {
-            "tag": "unknown",
-            "sample_age_seconds": None,
-            "prefix": prefix,
-            "agents": [],
-            "available": "unknown",
-            "error": f"herdr agent list failed: {exc}",
-        }
+    if agents is _AGENTS_UNSET:
+        try:
+            agents = herdr_agents()
+        except Exception as exc:
+            return {
+                "tag": "unknown",
+                "sample_age_seconds": None,
+                "prefix": prefix,
+                "agents": [],
+                "available": "unknown",
+                "error": f"herdr agent list failed: {exc}",
+            }
 
-    agents = data.get("result", {}).get("agents", [])
-    team = [a for a in agents if a.get("name", "").startswith(prefix)]
+    if agents is None:
+        return {"tag": "unknown", "sample_age_seconds": None, "prefix": prefix,
+                "agents": [], "available": "unknown", "error": "Herdr agent list unavailable"}
+
+    team = [a for a in agents if str(a.get("name") or "").startswith(prefix)]
     sample_age_seconds = 0
 
     available = all(a.get("agent_status") not in ("blocked", "error") for a in team)
@@ -601,12 +616,23 @@ def usage_snapshot(
     if now is None:
         now = _utcnow()
 
+    try:
+        agents = herdr_agents()
+    except Exception:
+        agents = None
+
+    devin_block = devin.usage(policy, now=now, agents=agents)
+    if agents is not None:
+        # Keep a diagnostic snapshot; admission reads Herdr again.
+        devin.mark_live_sessions(devin.live_sessions(agents) or [], now)
+
     return {
         "timestamp": now.isoformat(),
         "opencode": opencode_usage(policy, now=now),
         "codex": codex_usage(policy, now=now),
         "claude": claude_usage(policy, now=now),
-        "agents": agents_usage(policy, now=now),
+        "devin": devin_block,
+        "agents": agents_usage(policy, now=now, agents=agents),
     }
 
 

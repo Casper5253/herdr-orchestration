@@ -103,7 +103,7 @@
   },
   "persistent_opencode_model": "qwen3.7-plus",
   "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark.",
-  "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.163.0/bin",
+  "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.166.0/bin",
   "opencode_variants": {
     "deepseek-v4.1-flash": [
       "high",
@@ -165,5 +165,39 @@
     "pressure_threshold": 0.75,
     "claude_lead_threshold": 0.6,
     "claude_lead_note": "Compact at a boundary around 240K tokens (0.6 of the 400K effective lead limit). The native window is 1M, but every turn re-reads the cached context, so cost and attention pressure start well before the window is full."
+  },
+  "devin": {
+    "enabled": true,
+    "bin": "~/AppData/Local/devin/cli/bin/devin.exe",
+    "worker_config": "team/devin-worker.config.json",
+    "kinds": [
+      "routine",
+      "investigate",
+      "feature",
+      "debug",
+      "refactor",
+      "test"
+    ],
+    "models": {
+      "low": "swe-2-high",
+      "medium": "swe-2-high",
+      "high": "swe-2-max",
+      "max": "swe-2-max"
+    },
+    "allowed_models": [
+      "swe-2-medium",
+      "swe-2-high",
+      "swe-2-max"
+    ],
+    "permission_mode": "accept-edits",
+    "max_concurrent": 2,
+    "promo": {
+      "ends_at": "2026-11-30T10:00:00Z",
+      "verified_at": "2026-10-31",
+      "source": "https://docs.devin.ai/desktop/models: 'SWE-2 is free for self-serve plans in Devin Desktop and Devin CLI through November 30, 2026; it does not apply to Devin cloud sessions.' devin models list tags swe-2-medium/high/max cost_tier Free (Devin Pro, CLI 3000.11.234).",
+      "note": "No timezone is published, so free routing ends at the end of 30 Nov in UTC+14 (the earliest reading). After that, or if the live model list stops tagging the model Free, hx refuses Devin runs. Extending ends_at needs renewed pricing verification and the user's approval."
+    },
+    "note": "2026-10-31 owner directive: SWE-2 is the primary implementation worker while free; OpenCode is the fallback. Lightning variants are paid and never allowed. models maps hx effort to a SWE-2 id: high by default, max for hard work; dispatch swe-2-medium by hand when latency matters.",
+    "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-high, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees."
   }
 }

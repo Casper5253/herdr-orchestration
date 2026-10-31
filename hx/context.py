@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -44,13 +45,18 @@ def agent_info(name: str) -> dict[str, Any]:
 
 
 # Herdr reports a finished turn as "done" and an untouched one as "idle"; both are ready for input.
-READY = {"idle", "done"}
+READY = usage.READY
 
 
 def _session(agent: dict[str, Any]) -> str:
     sid = (agent.get("agent_session") or {}).get("value") or ""
     if not sid and agent.get("agent") == "claude" and agent.get("pane_id"):
         sid = _claude_session_for_pane(str(agent["pane_id"]))
+    if not sid and agent.get("agent") == "devin":
+        # Devin exposes no provider session through Herdr; the pane is the only stable identity.
+        pane = str(agent.get("pane_id") or agent.get("name") or "")
+        if pane:
+            sid = f"devin-pane:{pane}"
     return sid
 
 
@@ -82,6 +88,39 @@ def _herdr_read(name: str, lines: int = 200) -> str:
 def _squash(text: str) -> str:
     # TUIs hard-wrap long replies (OpenCode splits "re-" / "review"), so compare without whitespace.
     return "".join(text.split())
+
+
+# Devin pane footer: "Context: 157k / 262k tokens (59%)" wide, "44k / 262k (16%)" narrow.
+_DEVIN_USAGE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*([kKmM])?\s*/\s*(\d+(?:\.\d+)?)\s*([kKmM])?\s*"
+    r"(?:tokens?\b)?\s*\(\s*(\d+(?:\.\d+)?)\s*%\s*\)"
+)
+
+_DEVIN_UNIT = {"k": 1e3, "m": 1e6}
+
+
+def _parse_devin_footer(pane_text: str) -> tuple[float, float] | None:
+    """(used, total) tokens from the last Devin footer usage line; None when absent or inconsistent."""
+    lines = (pane_text or "").rstrip().splitlines()
+    if not lines:
+        return None
+    footer = lines[-1].strip()
+    if "Context:" in footer:
+        prefix, footer = footer.rsplit("Context:", 1)
+        if prefix.strip() and not re.match(r"^SWE-2\b", prefix.strip()):
+            return None
+        footer = footer.strip()
+    match = _DEVIN_USAGE.fullmatch(footer)
+    if match is None:
+        return None
+    used = float(match[1]) * _DEVIN_UNIT.get((match[2] or "").lower(), 1.0)
+    total = float(match[3]) * _DEVIN_UNIT.get((match[4] or "").lower(), 1.0)
+    if total <= 0 or used < 0:
+        return None
+    # The footer shows its own percentage; a mismatch means the line is not what it looked like.
+    if abs(used / total * 100 - float(match[5])) > 1.5:
+        return None
+    return used, total
 
 
 def _has_acknowledgement(value: Any, expected: str) -> bool:
@@ -157,6 +196,15 @@ def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
             if data.get("session_id") == sid:
                 timestamp = data.get("timestamp") or dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat()
                 return _sample(sid, (data.get("context_window") or {}).get("used_percentage"), 100, timestamp)
+        elif agent.get("agent") == "devin":
+            try:
+                footer = _herdr_read(str(agent.get("name") or ""), lines=6)
+            except (OSError, subprocess.SubprocessError):
+                return unknown
+            parsed = _parse_devin_footer(footer)
+            if parsed is not None:
+                return _sample(sid, parsed[0], parsed[1], _now().isoformat())
+            return unknown
         elif agent.get("agent") == "opencode":
             with sqlite3.connect(usage.default_opencode_db_path().resolve().as_uri() + "?mode=ro", uri=True) as conn:
                 rows = conn.execute("SELECT time_created, data FROM message WHERE session_id = ? ORDER BY time_created DESC", (sid,))
@@ -212,6 +260,14 @@ def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
         return unknown
 
 
+def _devin_clear_steps(name: str, task_id: str) -> list[str]:
+    return [
+        f"hx checkpoint write {task_id} --owner {name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
+        f"Send /clear to the pane from Python: herdr agent prompt {name} '/clear' (never Git Bash; MSYS rewrites /clear as a Windows path)",
+        f"Re-brief the agent from .hx/checkpoints/{task_id}.md",
+    ]
+
+
 def write_lead_checkpoint(led: ledger.Ledger, **sections: str) -> Path:
     """A lead checkpoint has no worker task or ownership to update."""
     path = led.repo_root / ".hx" / "checkpoints" / "lead.md"
@@ -241,6 +297,11 @@ class Controller:
 
     def _is_lead(self, name: str) -> bool:
         return name == usage.lead_name(self.policy, usage.team_prefix(self.policy))
+
+    def _devin_compact_command(self) -> str | None:
+        # devin.compact_command defaults to null: interactive /compact is unverified for Devin.
+        value = (self.policy.get("devin") or {}).get("compact_command")
+        return str(value) if value else None
 
     def _task(self, name: str, task_id: str | None, allow_in_progress: bool = False) -> dict[str, Any]:
         tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
@@ -369,16 +430,20 @@ class Controller:
                 return self._decide_lead(result, agent, session_id)
             sid = _session(agent)
             sample = telemetry(agent, self.policy)
-            result.update(session_id=sid, telemetry=sample)
+            result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("agent"))
             if agent.get("agent_status") not in READY:
                 raise ValueError("agent is not idle")
             if not _fresh(sample, sid, _now()):
                 raise ValueError("session telemetry unknown or stale")
             context_policy = self.policy.get("context", {})
+            devin_clear = agent.get("agent") == "devin" and not self._devin_compact_command()
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
             owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
             if pressure and not owned_tasks:
-                result.update(action="compact-needed", reason="pressure threshold reached but no hx task is registered; register a task and checkpoint before compaction")
+                if devin_clear:
+                    result.update(action="clear-needed", reason="pressure threshold reached but no hx task is registered; register a task and write a checkpoint before clearing")
+                else:
+                    result.update(action="compact-needed", reason="pressure threshold reached but no hx task is registered; register a task and checkpoint before compaction")
                 return result
             task = self._task(name, task_id, allow_in_progress=pressure)
             result["task_id"] = task["id"]
@@ -400,10 +465,19 @@ class Controller:
             if related and not pressure:
                 raise ValueError("next task continues the same work; retain warm context")
             if pressure:
+                if devin_clear:
+                    reason = "idle under context pressure during active task" if mid_task else "idle under context pressure"
+                    result.update(action="clear-needed", reason=reason + "; Devin has no verified /compact, clear instead",
+                                  steps=_devin_clear_steps(name, task["id"]))
+                    return result
                 result.update(action="compact", reason="idle under context pressure during active task" if mid_task else "idle under context pressure")
                 return result
             if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
                 raise ValueError("below boundary threshold")
+            if devin_clear:
+                result.update(action="clear-needed", reason="idle at task boundary above threshold; Devin has no verified /compact, clear instead",
+                              steps=_devin_clear_steps(name, task["id"]))
+                return result
             result.update(action="compact", reason="idle at task boundary above threshold")
         except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
             result["reason"] = str(exc)
@@ -426,6 +500,8 @@ class Controller:
 
     def compact(self, name: str, task_id: str | None = None, related: bool = False) -> dict[str, Any]:
         decision = self.decide(name, task_id, related)
+        if decision.get("agent_kind") == "devin" and not self._devin_compact_command():
+            return {**decision, "action": "keep", "reason": "hx compact does not run for Devin panes: /compact is unverified for Devin. Run the clear flow instead: write a checkpoint, send /clear from Python (never Git Bash), then re-brief from the checkpoint."}
         if decision["action"] != "compact":
             return decision
         sid, task_id = decision["session_id"], decision["task_id"]
@@ -499,7 +575,8 @@ class Controller:
             if _session(current) != sid or current.get("agent_status") not in READY:
                 raise ValueError("session changed or agent became busy immediately before send")
             submitted = True
-            _herdr("prompt", name, "/compact", "--wait", "--until", "idle", "--until", "done", "--timeout", "300000", timeout=310)
+            compact_command = self._devin_compact_command() if current.get("agent") == "devin" else None
+            _herdr("prompt", name, compact_command or "/compact", "--wait", "--until", "idle", "--until", "done", "--timeout", "300000", timeout=310)
             deadline = time.monotonic() + self.policy.get("context", {}).get("verification_timeout_seconds", 10)
             while True:
                 current = self._agent(name)
