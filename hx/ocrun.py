@@ -1143,7 +1143,7 @@ def _append_outcome_entry(
 
 DEVIN_PREAMBLE = """You are a Devin worker started by hx for the Herdr team lead. Rules for this run:
 - Work only inside {cwd}. Do not commit, push, switch branches or reset; the lead reviews and commits.
-- Never hand off to Devin Cloud. Use Questlog only when this brief asks for it.
+- Never hand off to Devin Cloud. Use Questlog only when this brief asks for it. Its Review screen is for things the creator must check or decide; never set an item done without the brief saying so, and then start its notes with a plain "How to review" block (where to go, what to do, what should happen, when to accept or send back).
 - Run the tests the brief names (or the obvious focused ones) before you finish.
 - End with a final message: files changed, tests run with their results, and anything left unfinished.
 
