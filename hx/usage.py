@@ -463,7 +463,8 @@ def claude_usage(
         }
 
     sample_age_seconds = int((now - mtime).total_seconds())
-    if sample_age_seconds > 3600:
+    stale_seconds = int(policy.get("thresholds", {}).get("stale_seconds", 3600))
+    if sample_age_seconds > stale_seconds:
         return {
             "tag": "unknown",
             "sample_age_seconds": sample_age_seconds,
@@ -471,7 +472,7 @@ def claude_usage(
             "context_window": status.get("context_window"),
             "rate_limits": status.get("rate_limits"),
             "available": "unknown",
-            "error": "Claude status file is older than 1 hour",
+            "error": f"Claude status file is stale ({sample_age_seconds}s old; freshness limit {stale_seconds}s)",
         }
 
     context_window = status.get("context_window", {})

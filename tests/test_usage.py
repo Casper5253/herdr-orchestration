@@ -240,7 +240,24 @@ def test_claude_usage_stale(tmp_path: Path, policy: dict, now: datetime.datetime
 
     result = claude_usage(policy, status_path=status, now=now)
     assert result["tag"] == "unknown"
-    assert "older than 1 hour" in result["error"]
+    assert "stale" in result["error"]
+    assert "7200s" in result["error"]
+
+
+def test_claude_usage_stale_honours_policy_limit(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
+    status = tmp_path / "claude-status.json"
+    status.write_text(json.dumps({"context_window": {"used_percentage": 40.0}}), encoding="utf-8")
+    mtime = (now - datetime.timedelta(minutes=30)).timestamp()
+    os.utime(status, (mtime, mtime))
+
+    tight = {**policy, "thresholds": {**policy.get("thresholds", {}), "stale_seconds": 60}}
+    result = claude_usage(tight, status_path=status, now=now)
+    assert result["tag"] == "unknown"
+    assert "stale" in result["error"]
+    assert "60s" in result["error"]
+
+    measured = claude_usage(policy, status_path=status, now=now)
+    assert measured["tag"] == "measured"
 
 
 def test_agents_usage(monkeypatch: pytest.MonkeyPatch, policy: dict, now: datetime.datetime) -> None:
