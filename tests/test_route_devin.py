@@ -33,6 +33,7 @@ def policy() -> dict:
             "architecture": "high",
         },
         "default_effort": "medium",
+        "routing_order": ["devin", "opencode"],
         "devin": {
             "enabled": True,
             "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test"],
@@ -137,7 +138,7 @@ def _task(**overrides) -> dict:
     ],
 )
 def test_implementation_kinds_go_to_devin(policy: dict, kind: str, effort: str) -> None:
-    """Free SWE-2 is the primary implementation worker: low/medium -> swe-2-high."""
+    """With devin first in routing_order: low/medium -> swe-2-high."""
     result = route(_task(kind=kind), _make_usage(), policy)
     assert result["worker"] == "devin"
     assert result["model"] == "swe-2-high"
@@ -288,3 +289,50 @@ def test_fix_input_retry_reselects_when_devin_busy(policy: dict) -> None:
     assert result["worker"] == "opencode"
     assert result["model"] == "minimax-m3"
     assert "devin:busy" in result["stages"]
+
+
+# ---------- routing order: OpenCode first, Devin as fallback ----------
+
+
+def _with_order(policy: dict, order: list[str] | None) -> dict:
+    copy = dict(policy)
+    if order is None:
+        copy.pop("routing_order", None)
+    else:
+        copy["routing_order"] = list(order)
+    return copy
+
+
+def test_default_order_picks_opencode_deepseek_first(policy: dict) -> None:
+    """policy.routing_order defaults to opencode before devin."""
+    result = route(_task(kind="test"), _make_usage(), _with_order(policy, None))
+    assert result["worker"] == "opencode"
+    assert result["model"] == "deepseek-v4.1-flash"
+    assert result["method"] == "ocrun"
+    assert "pool:devin" not in result["stages"]
+
+
+def test_devin_chosen_when_opencode_exhausted(policy: dict) -> None:
+    """Devin is the fallback when the shared OpenCode pool is spent."""
+    usage = _make_usage()
+    usage["opencode"]["pool"]["windows"]["7d"]["utilisation"] = 0.9
+    result = route(_task(kind="feature"), usage, _with_order(policy, ["opencode", "devin"]))
+    assert result["worker"] == "devin"
+    assert result["model"] == "swe-2-high"
+    assert result["method"] == "ocrun-devin"
+    assert "pool:opencode" in result["stages"]
+
+
+def test_routing_order_read_from_policy(policy: dict) -> None:
+    """The order is data: swapping it swaps the first worker."""
+    usage = _make_usage()
+    opencode_first = route(
+        _task(kind="test"), usage, _with_order(policy, ["opencode", "devin"])
+    )
+    devin_first = route(
+        _task(kind="test"), usage, _with_order(policy, ["devin", "opencode"])
+    )
+    assert opencode_first["worker"] == "opencode"
+    assert opencode_first["model"] == "deepseek-v4.1-flash"
+    assert devin_first["worker"] == "devin"
+    assert devin_first["model"] == "swe-2-high"

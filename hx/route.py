@@ -385,6 +385,68 @@ def _devin_persistent_eligible(task: dict[str, Any], pane: str) -> bool:
     return bool(iterative)
 
 
+def _routing_order(policy: dict[str, Any]) -> list[str]:
+    """Pool order for implementation work, data-driven from ``policy.routing_order``.
+
+    ``opencode`` is the default first choice, with free ``devin`` as the
+    fallback. A caller asks for Devin explicitly by putting ``devin`` first.
+    """
+    raw = policy.get("routing_order")
+    if isinstance(raw, list):
+        order: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            name = item.strip().lower()
+            if name and name not in order:
+                order.append(name)
+        if order:
+            return order
+    return ["opencode", "devin"]
+
+
+def _devin_covers(kind: str | None, policy: dict[str, Any]) -> bool:
+    conf = hx_devin.settings(policy)
+    return kind in (conf.get("kinds") or hx_devin.DEFAULT_KINDS)
+
+
+def _opencode_decision(
+    task: dict[str, Any],
+    usage: dict[str, Any],
+    policy: dict[str, Any],
+    effort: str,
+    stages: list[str],
+) -> dict[str, Any] | None:
+    """Pick the first capable model on the ladder; None when the ladder is spent."""
+    stages.append("pool:opencode")
+    start_tier = _tier_for_effort(effort)
+    stages.append(f"tier:{start_tier}")
+    model_id, status, util, tried = _pick_opencode(
+        start_tier, usage.get("opencode", {}), policy
+    )
+    if model_id is None:
+        for t in tried:
+            stages.append(f"tried:{t}")
+        return None
+    stages.append(f"model:{model_id}")
+    method = _decide_method(task, model_id, effort, policy)
+    variant, tier_reason = _task_variant(
+        {"model": model_id, "effort": effort}, policy
+    )
+    return {
+        "worker": "opencode",
+        "model": model_id,
+        "effort": effort,
+        "variant": variant,
+        "method": method,
+        "reason": (
+            f"opencode ladder ({start_tier}) -> {model_id} "
+            f"({status}, max util {util:.2f})" + tier_reason
+        ),
+        "stages": stages,
+    }
+
+
 def _devin_decision(
     task: dict[str, Any],
     usage: dict[str, Any],
@@ -529,7 +591,6 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
 
     # Stage 3: pool selection.
     kind = task.get("kind")
-    oc = usage.get("opencode", {})
     decision: dict[str, Any]
 
     if kind == "trivial":
@@ -573,35 +634,25 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
             "reason": "architecture -> claude subagent",
             "stages": stages,
         }
-    elif (devin_choice := _devin_decision(task, usage, policy, effort, stages, capability_failure)):
-        decision = devin_choice
-    else:
-        stages.append("pool:opencode")
-        start_tier = _tier_for_effort(effort)
-        stages.append(f"tier:{start_tier}")
-        model_id, status, util, tried = _pick_opencode(start_tier, oc, policy)
-        if model_id is None:
-            for t in tried:
-                stages.append(f"tried:{t}")
+    elif _devin_covers(kind, policy):
+        # OpenCode is the go-to worker; Devin is the fallback unless policy
+        # order says otherwise. Whichever pool is spent hands over to the next.
+        decision = None
+        for pool in _routing_order(policy):
+            if pool == "opencode":
+                decision = _opencode_decision(task, usage, policy, effort, stages)
+            elif pool == "devin":
+                decision = _devin_decision(
+                    task, usage, policy, effort, stages, capability_failure
+                )
+            if decision is not None:
+                break
+        if decision is None:
             decision = _fallback_decision(usage, policy, effort, stages)
-        else:
-            stages.append(f"model:{model_id}")
-            method = _decide_method(task, model_id, effort, policy)
-            variant, tier_reason = _task_variant(
-                {"model": model_id, "effort": effort}, policy
-            )
-            decision = {
-                "worker": "opencode",
-                "model": model_id,
-                "effort": effort,
-                "variant": variant,
-                "method": method,
-                "reason": (
-                    f"opencode ladder ({start_tier}) -> {model_id} "
-                    f"({status}, max util {util:.2f})" + tier_reason
-                ),
-                "stages": stages,
-            }
+    else:
+        decision = _opencode_decision(task, usage, policy, effort, stages)
+        if decision is None:
+            decision = _fallback_decision(usage, policy, effort, stages)
 
     if fix_input:
         decision["reason"] = (

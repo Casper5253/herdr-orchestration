@@ -196,6 +196,7 @@ def route_policy() -> dict:
         "codex": {"economy_model": "gpt-6-luna", "strong_model": "gpt-6.1-sol"},
         "effort_by_kind": {"feature": "medium", "routine": "low", "debug": "medium"},
         "default_effort": "medium",
+        "routing_order": ["devin", "opencode"],
         "devin": {
             "enabled": True,
             "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test"],

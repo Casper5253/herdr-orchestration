@@ -80,6 +80,11 @@
     "architecture": "high"
   },
   "default_effort": "medium",
+  "routing_order": [
+    "opencode",
+    "devin"
+  ],
+  "routing_order_note": "2026-11-06 creator decision: perform implementation work on OpenCode (deepseek-v4.1-flash first on the ladder) and use free Devin SWE-2 only when the OpenCode pool is spent. Put \"devin\" first to ask for Devin explicitly.",
   "ladders": {
     "economy": [
       "deepseek-v4.1-flash",
@@ -198,7 +203,7 @@
       "source": "https://docs.devin.ai/desktop/models: 'SWE-2 is free for self-serve plans in Devin Desktop and Devin CLI through November 30, 2026; it does not apply to Devin cloud sessions.' devin models list tags swe-2-medium/high/max cost_tier Free (Devin Pro, CLI 3000.11.234).",
       "note": "No timezone is published, so free routing ends at the end of 30 Nov in UTC+14 (the earliest reading). After that, or if the live model list stops tagging the model Free, hx refuses Devin runs. Extending ends_at needs renewed pricing verification and the user's approval."
     },
-    "note": "2026-10-31 owner directive: SWE-2 is the primary implementation worker while free; OpenCode is the fallback. Lightning variants are paid and never allowed. models maps hx effort to a SWE-2 id: high by default, max for hard work; dispatch swe-2-medium by hand when latency matters.",
+    "note": "2026-11-06 creator decision: OpenCode with deepseek-v4.1-flash first is the go-to implementation worker; free Devin SWE-2 is the fallback when the OpenCode pool is exhausted or the caller puts devin first in routing_order. Lightning variants are paid and never allowed. models maps hx effort to a SWE-2 id: high by default, max for hard work; dispatch swe-2-medium by hand when latency matters.",
     "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-high, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees."
   }
 }
