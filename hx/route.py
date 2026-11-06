@@ -1,9 +1,11 @@
 """hx.route: deterministic task router.
 
 Staged routing: attempt cap -> failure cause -> pool -> model ladder.
-``route(task, usage, policy)`` is a pure function. ``decide(task)`` loads
-``policy.json``, snapshots ``hx.usage`` and appends one JSON line to
-``.hx/routing.jsonl``. ``main(argv)`` parses CLI flags and prints the result.
+While ``policy.routing_balance`` is active the pool stage balances Devin and
+OpenCode (idle first, then fewer recent decision lines). ``route(task, usage,
+policy)`` is a pure function. ``decide(task)`` loads ``policy.json``, snapshots
+``hx.usage`` and appends one JSON line to ``.hx/routing.jsonl``. ``main(argv)``
+parses CLI flags and prints the result.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import json
 import math
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,8 @@ from hx import usage as hx_usage
 
 DEFAULT_MAX_ATTEMPTS = 3
 RATE_LIMIT_WINDOW_SECONDS = 30 * 60
+DEFAULT_BALANCE_WINDOW_SECONDS = 24 * 60 * 60
+BALANCED_WORKERS: tuple[str, ...] = ("devin", "opencode")
 DEFAULT_CODEX_ECONOMY_MODEL = "gpt-6-luna"
 DEFAULT_CODEX_STRONG_MODEL = "gpt-6.1-sol"
 CODEX_STRONG_MODEL = DEFAULT_CODEX_STRONG_MODEL
@@ -410,6 +414,256 @@ def _devin_covers(kind: str | None, policy: dict[str, Any]) -> bool:
     return kind in (conf.get("kinds") or hx_devin.DEFAULT_KINDS)
 
 
+def _parse_ts(text: Any) -> datetime | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else None
+
+
+def _balance_plan(policy: dict[str, Any], now: datetime | None = None) -> dict[str, Any] | None:
+    """The active routing plan from ``policy.routing_balance``, or None.
+
+    While the window is open the plan is ``balanced`` between its workers.
+    At/after ``until`` it collapses to ``then`` (OpenCode), so Devin is not
+    routed once the promotion ends.
+    """
+    raw = policy.get("routing_balance")
+    if not isinstance(raw, dict) or str(raw.get("mode", "")).lower() != "balanced":
+        return None
+    workers: list[str] = []
+    for item in raw.get("workers") or BALANCED_WORKERS:
+        if not isinstance(item, str):
+            continue
+        name = item.strip().lower()
+        if name in BALANCED_WORKERS and name not in workers:
+            workers.append(name)
+    if not workers:
+        workers = list(BALANCED_WORKERS)
+    now = now or _now()
+    until = _parse_ts(raw.get("until"))
+    window = raw.get("window_seconds")
+    if not isinstance(window, (int, float)) or window <= 0:
+        window = DEFAULT_BALANCE_WINDOW_SECONDS
+    if until is not None and now >= until:
+        then = str(raw.get("then") or "opencode").strip().lower()
+        if then not in BALANCED_WORKERS:
+            then = "opencode"
+        return {
+            "mode": "single",
+            "workers": workers,
+            "until": until,
+            "then": then,
+            "window_seconds": int(window),
+        }
+    return {
+        "mode": "balanced",
+        "workers": workers,
+        "until": until,
+        "window_seconds": int(window),
+    }
+
+
+def recent_route_counts(
+    path: Path, window_seconds: int, now: datetime | None = None
+) -> dict[str, int]:
+    """Count decision lines per balanced worker in the recent window."""
+    now = now or _now()
+    cutoff = now - timedelta(seconds=window_seconds)
+    counts = {worker: 0 for worker in BALANCED_WORKERS}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return counts
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("kind") != "decision":
+            continue
+        ts = _parse_ts(record.get("ts"))
+        if ts is None or ts < cutoff:
+            continue
+        result = record.get("result")
+        if not isinstance(result, dict):
+            continue
+        worker = result.get("worker")
+        if isinstance(worker, str) and worker in counts:
+            counts[worker] += 1
+    return counts
+
+
+def _recent_route_counts(
+    policy: dict[str, Any], now: datetime | None = None
+) -> dict[str, int]:
+    raw = policy.get("routing_balance") or {}
+    window = raw.get("window_seconds") if isinstance(raw, dict) else None
+    if not isinstance(window, (int, float)) or window <= 0:
+        window = DEFAULT_BALANCE_WINDOW_SECONDS
+    return recent_route_counts(
+        _repo_root() / ".hx" / "routing.jsonl", int(window), now
+    )
+
+
+def _provided_route_counts(usage: dict[str, Any]) -> dict[str, int]:
+    raw = (usage.get("routing") or {}).get("recent")
+    counts = {worker: 0 for worker in BALANCED_WORKERS}
+    if isinstance(raw, dict):
+        for worker in BALANCED_WORKERS:
+            value = raw.get(worker)
+            if isinstance(value, int) and value >= 0:
+                counts[worker] = value
+    return counts
+
+
+def _opencode_idle(
+    task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any], effort: str
+) -> bool:
+    """A ladder model is available now; the persistent pane only changes method."""
+    model_id, _, _, _ = _pick_opencode(
+        _tier_for_effort(effort), usage.get("opencode", {}), policy
+    )
+    return model_id is not None
+
+
+def _devin_idle(
+    task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]
+) -> bool:
+    """A free one-off slot or an idle team pane can take Devin work now."""
+    block = usage.get("devin") or {}
+    status = block.get("status")
+    pane = _idle_devin_pane(usage, policy)
+    reuse = bool(
+        pane
+        and _devin_persistent_eligible(task, pane)
+        and block.get("reuse_available", status == "available")
+    )
+    return status == "available" or reuse
+
+
+def _devin_capability_escalation(
+    task: dict[str, Any], policy: dict[str, Any], stages: list[str]
+) -> dict[str, Any] | None:
+    """A capability failure on the strongest SWE-2 model still goes to Codex."""
+    prev = task.get("prev") or {}
+    strongest = hx_devin.model_for_effort("max", policy)
+    if (
+        task.get("last_failure") == "capability"
+        and prev.get("worker") == "devin"
+        and prev.get("model") == strongest
+    ):
+        stages.append("devin:capability-at-max")
+        return {
+            "worker": "codex",
+            "model": _codex_strong_model(policy),
+            "effort": "high",
+            "method": "ocrun-codex",
+            "reason": f"capability failure on {strongest} -> codex strong",
+            "stages": stages + ["pool:codex"],
+        }
+    return None
+
+
+def _dispatch_worker(
+    worker: str,
+    task: dict[str, Any],
+    usage: dict[str, Any],
+    policy: dict[str, Any],
+    effort: str,
+    stages: list[str],
+    capability_failure: bool,
+) -> dict[str, Any] | None:
+    if worker == "devin":
+        return _devin_decision(task, usage, policy, effort, stages, capability_failure)
+    if worker == "opencode":
+        return _opencode_decision(task, usage, policy, effort, stages)
+    return None
+
+
+def _balanced_decision(
+    task: dict[str, Any],
+    usage: dict[str, Any],
+    policy: dict[str, Any],
+    effort: str,
+    stages: list[str],
+    capability_failure: bool,
+    plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Balance the workers, preferring idle, then fewer recent routes."""
+    escalation = _devin_capability_escalation(task, policy, stages)
+    if escalation is not None:
+        return escalation
+
+    workers = list(plan["workers"])
+    previous_worker = (task.get("prev") or {}).get("worker")
+    if capability_failure and previous_worker in workers:
+        retry = _dispatch_worker(
+            previous_worker, task, usage, policy, effort, stages, capability_failure
+        )
+        if retry is not None:
+            retry["reason"] = f"capability retry on prior worker {previous_worker}; {retry['reason']}"
+            return retry
+
+    idle = {
+        worker: (
+            _devin_idle(task, usage, policy)
+            if worker == "devin"
+            else _opencode_idle(task, usage, policy, effort)
+        )
+        for worker in workers
+    }
+    idle_workers = [worker for worker in workers if idle[worker]]
+    stages.append("balance:" + ("both-idle" if len(idle_workers) == len(workers) else "partial"))
+    if not idle_workers:
+        stages.append("balance:none-idle")
+        return None
+
+    counts = _provided_route_counts(usage)
+    if len(idle_workers) == 1:
+        chosen = idle_workers[0]
+        reason = (
+            f"balanced: {', '.join(w for w in workers if w != chosen)} busy or unavailable; "
+            f"{chosen} idle"
+        )
+    else:
+        chosen = min(idle_workers, key=lambda w: (counts.get(w, 0), workers.index(w)))
+        hours = max(1, round(plan.get("window_seconds", DEFAULT_BALANCE_WINDOW_SECONDS) / 3600))
+        tally = f"{counts['devin']} devin vs {counts['opencode']} opencode in the last {hours}h"
+        if counts[chosen] < min(counts[w] for w in idle_workers if w != chosen):
+            reason = f"balanced: both idle; {chosen} has fewer recent routes ({tally})"
+        else:
+            reason = (
+                f"balanced: both idle with equal recent routes ({tally}); "
+                f"policy order puts {chosen} first"
+            )
+
+    decision = _dispatch_worker(
+        chosen, task, usage, policy, effort, stages, capability_failure
+    )
+    if decision is None:
+        remaining = [worker for worker in idle_workers if worker != chosen]
+        for alt in remaining:
+            decision = _dispatch_worker(
+                alt, task, usage, policy, effort, stages, capability_failure
+            )
+            if decision is not None:
+                reason = f"balanced: {chosen} refused; {alt} idle"
+                chosen = alt
+                break
+    if decision is None:
+        return None
+    decision["reason"] = f"{reason}; {decision.get('reason', '')}"
+    decision["stages"] = list(decision.get("stages", stages)) + [f"balance:chosen:{chosen}"]
+    return decision
+
+
 def _opencode_decision(
     task: dict[str, Any],
     usage: dict[str, Any],
@@ -465,6 +719,10 @@ def _devin_decision(
     """
     conf = hx_devin.settings(policy)
     if task.get("kind") not in (conf.get("kinds") or hx_devin.DEFAULT_KINDS):
+        return None
+    plan = _balance_plan(policy)
+    if plan is not None and plan["mode"] == "single" and plan["then"] != "devin":
+        stages.append("devin:balance-period-ended")
         return None
     status = (usage.get("devin") or {}).get("status")
     pane = _idle_devin_pane(usage, policy)
@@ -635,20 +893,48 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
             "stages": stages,
         }
     elif _devin_covers(kind, policy):
-        # OpenCode is the go-to worker; Devin is the fallback unless policy
-        # order says otherwise. Whichever pool is spent hands over to the next.
-        decision = None
-        for pool in _routing_order(policy):
-            if pool == "opencode":
-                decision = _opencode_decision(task, usage, policy, effort, stages)
-            elif pool == "devin":
-                decision = _devin_decision(
-                    task, usage, policy, effort, stages, capability_failure
+        plan = _balance_plan(policy)
+        if plan is not None and plan["mode"] == "balanced":
+            # While free SWE-2 lasts, keep Devin and OpenCode about even.
+            decision = _balanced_decision(
+                task, usage, policy, effort, stages, capability_failure, plan
+            )
+            if decision is None:
+                decision = _fallback_decision(usage, policy, effort, stages)
+        elif plan is not None and plan["mode"] == "single":
+            # The balance window is over: OpenCode is the default, Devin is off.
+            escalation = _devin_capability_escalation(task, policy, stages)
+            if escalation is not None:
+                return escalation
+            chosen = plan["then"]
+            stages.append(f"balance:ended:{chosen}")
+            decision = _dispatch_worker(
+                chosen, task, usage, policy, effort, stages, capability_failure
+            )
+            if decision is None:
+                decision = _fallback_decision(usage, policy, effort, stages)
+            else:
+                decision["reason"] = (
+                    f"balanced period ended (then={chosen}); "
+                    + decision.get("reason", "")
                 )
-            if decision is not None:
-                break
-        if decision is None:
-            decision = _fallback_decision(usage, policy, effort, stages)
+                decision["stages"] = list(decision.get("stages", stages)) + [
+                    f"balance:then:{chosen}"
+                ]
+        else:
+            # No balance policy: fall back to the declared pool order.
+            decision = None
+            for pool in _routing_order(policy):
+                if pool == "opencode":
+                    decision = _opencode_decision(task, usage, policy, effort, stages)
+                elif pool == "devin":
+                    decision = _devin_decision(
+                        task, usage, policy, effort, stages, capability_failure
+                    )
+                if decision is not None:
+                    break
+            if decision is None:
+                decision = _fallback_decision(usage, policy, effort, stages)
     else:
         decision = _opencode_decision(task, usage, policy, effort, stages)
         if decision is None:
@@ -667,6 +953,9 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
 def decide(task: dict[str, Any]) -> dict[str, Any]:
     policy = hx_usage.load_policy()
     snapshot = hx_usage.usage_snapshot(policy=policy)
+    if isinstance(snapshot, dict):
+        snapshot = dict(snapshot)
+        snapshot["routing"] = {"recent": _recent_route_counts(policy)}
     result = route(task, snapshot, policy)
 
     decision_id = str(uuid.uuid4())

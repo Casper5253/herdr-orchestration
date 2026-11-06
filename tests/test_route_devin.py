@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from hx import route as route_pkg
 from hx.route import route
 
 
@@ -336,3 +337,173 @@ def test_routing_order_read_from_policy(policy: dict) -> None:
     assert opencode_first["model"] == "deepseek-v4.1-flash"
     assert devin_first["worker"] == "devin"
     assert devin_first["model"] == "swe-2-high"
+
+
+# ---------- routing_balance: Devin and OpenCode equally until the promo ends ----------
+
+
+def _with_balance(policy: dict, until: str = "2999-01-01T00:00:00Z") -> dict:
+    copy = dict(policy)
+    copy.pop("routing_order", None)
+    copy["routing_balance"] = {
+        "mode": "balanced",
+        "workers": ["devin", "opencode"],
+        "until": until,
+        "then": "opencode",
+        "window_seconds": 86400,
+    }
+    return copy
+
+
+def _with_counts(usage: dict, devin: int, opencode: int) -> dict:
+    copy = dict(usage)
+    copy["routing"] = {"recent": {"devin": devin, "opencode": opencode}}
+    return copy
+
+
+def test_balance_both_idle_more_devin_routes_picks_opencode(policy: dict) -> None:
+    usage = _with_counts(_make_usage(), devin=5, opencode=1)
+    result = route(_task(kind="test"), usage, _with_balance(policy))
+    assert result["worker"] == "opencode"
+    assert result["model"] == "deepseek-v4.1-flash"
+    assert result["method"] == "ocrun"
+    assert "fewer recent routes" in result["reason"]
+    assert "opencode" in result["reason"]
+    assert "balance:chosen:opencode" in result["stages"]
+
+
+def test_balance_both_idle_more_opencode_routes_picks_devin(policy: dict) -> None:
+    usage = _with_counts(_make_usage(), devin=1, opencode=5)
+    result = route(_task(kind="feature"), usage, _with_balance(policy))
+    assert result["worker"] == "devin"
+    assert result["model"] == "swe-2-high"
+    assert result["method"] == "ocrun-devin"
+    assert "fewer recent routes" in result["reason"]
+    assert "devin" in result["reason"]
+    assert "balance:chosen:devin" in result["stages"]
+
+
+def test_balance_devin_busy_picks_opencode(policy: dict) -> None:
+    usage = _with_counts(_make_usage(devin_status="busy"), devin=0, opencode=9)
+    result = route(_task(kind="test"), usage, _with_balance(policy))
+    assert result["worker"] == "opencode"
+    assert result["model"] == "deepseek-v4.1-flash"
+    assert "devin busy or unavailable" in result["reason"]
+
+
+def test_balance_opencode_unavailable_picks_devin(policy: dict) -> None:
+    usage = _make_usage()
+    for window in ("5h", "7d", "30d"):
+        usage["opencode"]["pool"]["windows"][window]["utilisation"] = 0.9
+    usage = _with_counts(usage, devin=9, opencode=0)
+    result = route(_task(kind="feature"), usage, _with_balance(policy))
+    assert result["worker"] == "devin"
+    assert result["model"] == "swe-2-high"
+    assert "opencode busy or unavailable" in result["reason"]
+
+
+def test_balance_after_until_picks_opencode(policy: dict) -> None:
+    usage = _with_counts(_make_usage(), devin=0, opencode=9)
+    result = route(
+        _task(kind="test"), usage, _with_balance(policy, until="2020-01-01T00:00:00Z")
+    )
+    assert result["worker"] == "opencode"
+    assert result["model"] == "deepseek-v4.1-flash"
+    assert "balanced period ended" in result["reason"]
+    assert "balance:then:opencode" in result["stages"]
+
+
+def test_decide_counts_recent_log_routes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, policy: dict
+) -> None:
+    """decide() reads .hx/routing.jsonl, so the tie-break sees real history."""
+    import json
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(route_pkg, "_repo_root", lambda: tmp_path)
+    log = tmp_path / ".hx" / "routing.jsonl"
+    log.parent.mkdir(parents=True)
+    now = datetime.now(timezone.utc).isoformat()
+    with open(log, "w", encoding="utf-8") as fh:
+        for _ in range(3):
+            fh.write(json.dumps({"kind": "decision", "ts": now, "result": {"worker": "devin"}}) + "\n")
+        fh.write(json.dumps({"kind": "decision", "ts": now, "result": {"worker": "opencode"}}) + "\n")
+    monkeypatch.setattr(route_pkg.hx_usage, "load_policy", lambda: _with_balance(policy))
+    monkeypatch.setattr(
+        route_pkg.hx_usage, "usage_snapshot", lambda policy=None, now=None: _make_usage()
+    )
+    result = route_pkg.decide(_task(kind="feature"))
+    assert result["worker"] == "opencode"
+
+
+def test_balance_keeps_capability_escalation_to_codex(policy: dict) -> None:
+    """Balancing does not swallow the SWE-2 max capability escalation."""
+    prev = {
+        "worker": "devin",
+        "model": "swe-2-max",
+        "effort": "high",
+        "method": "ocrun-devin",
+        "capability_failures": 0,
+    }
+    usage = _with_counts(_make_usage(), devin=0, opencode=9)
+    task = _task(kind="feature", attempt=2, last_failure="capability", prev=prev)
+    result = route(task, usage, _with_balance(policy))
+    assert result["worker"] == "codex"
+    assert result["model"] == policy["codex"]["strong_model"]
+    assert "devin:capability-at-max" in result["stages"]
+
+
+def test_balance_keeps_capability_retry_on_devin_before_max(policy: dict) -> None:
+    prev = {"worker": "devin", "model": "swe-2-high", "effort": "medium"}
+    result = route(
+        _task(kind="feature", attempt=1, last_failure="capability", prev=prev),
+        _with_counts(_make_usage(), devin=9, opencode=0),
+        _with_balance(policy),
+    )
+    assert (result["worker"], result["model"]) == ("devin", "swe-2-max")
+
+
+def test_balance_end_blocks_input_retry_with_pre_cutoff_snapshot(policy: dict) -> None:
+    prev = {"worker": "devin", "model": "swe-2-high", "effort": "medium"}
+    result = route(
+        _task(kind="feature", attempt=1, last_failure="tool", prev=prev),
+        _make_usage(),
+        _with_balance(policy, until="2020-01-01T00:00:00Z"),
+    )
+    assert result["worker"] == "opencode"
+    assert "balanced period ended" in result["reason"]
+
+
+@pytest.mark.parametrize("result", ["incomplete record", ["partial"], {"worker": []}])
+def test_balance_log_ignores_invalid_result_shape(tmp_path, result) -> None:
+    import json
+    from datetime import datetime, timezone
+
+    log = tmp_path / "routing.jsonl"
+    log.write_text(json.dumps({
+        "kind": "decision", "ts": datetime.now(timezone.utc).isoformat(),
+        "result": result,
+    }) + "\n", encoding="utf-8")
+    assert route_pkg.recent_route_counts(log, 86400) == {"devin": 0, "opencode": 0}
+
+
+def test_balance_keeps_opencode_capability_retry(policy: dict) -> None:
+    prev = {"worker": "opencode", "model": "deepseek-v4.1-flash", "effort": "low"}
+    result = route(
+        _task(kind="test", attempt=1, last_failure="capability", prev=prev),
+        _with_counts(_make_usage(), devin=0, opencode=9),
+        _with_balance(policy),
+    )
+    assert (result["worker"], result["model"], result["effort"]) == (
+        "opencode", "minimax-m3", "medium",
+    )
+
+
+def test_balance_end_keeps_max_capability_escalation(policy: dict) -> None:
+    prev = {"worker": "devin", "model": "swe-2-max", "effort": "high"}
+    result = route(
+        _task(kind="feature", attempt=1, last_failure="capability", prev=prev),
+        _make_usage(devin_status="expired"),
+        _with_balance(policy, until="2020-01-01T00:00:00Z"),
+    )
+    assert (result["worker"], result["model"]) == ("codex", policy["codex"]["strong_model"])
