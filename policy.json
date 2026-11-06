@@ -82,12 +82,14 @@
   "default_effort": "medium",
   "ladders": {
     "economy": [
+      "deepseek-v4.1-flash",
       "gpt-6-luna",
       "qwen3.8-flash",
       "mimo-v2.6-flash",
       "glm-5.3-flash"
     ],
     "default": [
+      "deepseek-v4.1-flash",
       "qwen3.7-plus",
       "qwen3.8-flash",
       "glm-5.3-flash"
@@ -101,8 +103,8 @@
     "stale_seconds": 3600,
     "pool_soft_limit_note": "2026-10-17 owner directive: spend all OpenCode allowance before falling back to Codex (was 0.85); 0.98 keeps a margin because spend is estimated."
   },
-  "persistent_opencode_model": "qwen3.7-plus",
-  "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark.",
+  "persistent_opencode_model": "deepseek-v4.1-flash",
+  "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark. 2026-11-06 creator executive decision: deepseek-v4.1-flash is the go-to model, first in every ladder and the persistent OpenCode model (Global regions enabled; smoke test passed).",
   "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.166.0/bin",
   "opencode_variants": {
     "deepseek-v4.1-flash": [
@@ -145,8 +147,7 @@
   },
   "opencode_variants_note": "Declared --variant choices per model from opencode models --verbose (2026-10-16). glm-5.3-flash ignores an effort that is not one of these; route/ocrun must not send it.",
   "excluded_models": {
-    "deepseek-v4.1-flash": "APIError: requires Global regions (workspace privacy setting); docs/FINDINGS.md 5",
-    "deepseek-v4-pro": "same provider restriction assumed; untested",
+    "deepseek-v4-pro": "untested; Global regions are now enabled (2026-11-06), benchmark before use",
     "minimax-m3": "Exhausts its fixed 32K reasoning budget with ~no output on multi-file edits after ~35K context: 4 of 6 real tasks on 2026-10-16 (docs/FINDINGS.md 7, 9). No variants to lower it."
   },
   "context_limits": {
