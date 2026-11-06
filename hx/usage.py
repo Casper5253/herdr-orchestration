@@ -140,13 +140,35 @@ def _window_deltas() -> dict[str, datetime.timedelta]:
     }
 
 
+def _month_start(now: datetime.datetime) -> datetime.datetime:
+    """The OpenCode Go monthly allowance resets at the start of the month."""
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _window_start(name: str, now: datetime.datetime) -> datetime.datetime:
+    """Start of a usage window: 5h and 7d roll; the monthly 30d window is calendar."""
+    if name == "30d":
+        return _month_start(now)
+    return now - _window_deltas()[name]
+
+
+# A dashboard percentage is a point-in-time snapshot of a rolling window. It
+# cannot be carried forward as a flat baseline: the spend that produced it
+# starts rolling out immediately, so an old snapshot overstates the current
+# window. Local spend is the rolling measurement; keep the snapshot only long
+# enough to correct a recent local-cost drift.
+MAX_DASHBOARD_AGE = datetime.timedelta(hours=24)
+
+
 def _dashboard_reading(
     policy: dict[str, Any], now: datetime.datetime, deltas: dict[str, datetime.timedelta]
 ) -> dict[str, Any] | None:
-    """The user's last OpenCode dashboard reading, limited to windows it still describes.
+    """The user's last OpenCode dashboard reading, if it is still fresh enough.
 
-    A reading of window W taken at time T stays meaningful until T + W; after that the
-    window has fully rolled over and local spend alone is the better estimate.
+    A reading of window W is only a calibration point. The local spend is a
+    rolling sum, so a reading older than MAX_DASHBOARD_AGE is ignored rather
+    than added on top of later spend; otherwise the old baseline would keep
+    inflating a window after its spend had rolled out.
     """
     raw = policy.get("opencode_pool", {}).get("dashboard")
     if not isinstance(raw, dict) or not raw.get("at"):
@@ -154,12 +176,12 @@ def _dashboard_reading(
     at = datetime.datetime.fromisoformat(str(raw["at"]).replace("Z", "+00:00"))
     if at.tzinfo is None:
         at = at.replace(tzinfo=datetime.timezone.utc)
-    if at > now:
+    if at > now or now - at > MAX_DASHBOARD_AGE:
         return None
     used = {
         name: float(pct)
         for name, pct in (raw.get("used_percent") or {}).items()
-        if name in deltas and now - at < deltas[name]
+        if name in deltas and at >= _window_start(name, now)
     }
     if not used:
         return None
@@ -230,7 +252,7 @@ def opencode_usage(
     if not db_path.exists():
         return unknown("opencode.db not found")
 
-    cutoff_ms = int((now - max(deltas.values())).timestamp() * 1000)
+    cutoff_ms = min(int(_window_start(name, now).timestamp() * 1000) for name in deltas)
     reading = _dashboard_reading(policy, now, deltas)
     spend_since_reading = {name: 0.0 for name in deltas}
     newest_overall_ms = 0
@@ -258,8 +280,8 @@ def opencode_usage(
                 if error_text and now.timestamp() * 1000 - ts_ms <= 24 * 3600 * 1000:
                     state["last_error"] = {"text": error_text,
                         "age_seconds": int((now.timestamp() * 1000 - ts_ms) / 1000)}
-                for name, delta in deltas.items():
-                    if ts_ms >= int((now - delta).timestamp() * 1000):
+                for name in deltas:
+                    if ts_ms >= int(_window_start(name, now).timestamp() * 1000):
                         windows[name]["spend"] += cost
                         state["windows"][name]["spend"] += cost
                 if reading and ts_ms >= reading["at_ms"]:

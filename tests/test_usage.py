@@ -131,7 +131,7 @@ def test_shared_pool_dashboard_calibration_includes_models_outside_ladders(tmp_p
         conn.execute("CREATE TABLE message (time_created INTEGER, data TEXT)")
         for model, cost, ago in [("old-model", 9.70, datetime.timedelta(hours=1)),
                                  ("excluded-model", 16.76, datetime.timedelta(days=6)),
-                                 ("old-model", 1, datetime.timedelta(days=20))]:
+                                 ("old-model", 1, datetime.timedelta(days=10))]:
             conn.execute("INSERT INTO message VALUES (?, ?)",
                          (int((now - ago).timestamp() * 1000),
                           json.dumps({"role": "assistant", "modelID": model, "cost": cost})))
@@ -471,6 +471,43 @@ def test_opencode_usage_dashboard_reading(tmp_path: Path, policy: dict, now: dat
     assert pool["7d"]["spend"] == pytest.approx(50.5)
     assert pool["30d"]["spend"] == pytest.approx(60 * 0.51 + 50.5)
     assert pool["7d"]["calibrated_at"] == reading_at.isoformat()
+
+
+def test_opencode_usage_monthly_window_is_calendar_month(tmp_path: Path, policy: dict) -> None:
+    now = datetime.datetime(2026, 11, 6, 12, 0, tzinfo=datetime.timezone.utc)
+    db = tmp_path / "opencode.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE message (time_created INTEGER, data TEXT)")
+        for cost, ago in [(2.0, datetime.timedelta(hours=1)),
+                          (10.0, datetime.timedelta(days=6)),
+                          (3.0, datetime.timedelta(days=5))]:
+            conn.execute(
+                "INSERT INTO message VALUES (?, ?)",
+                (int((now - ago).timestamp() * 1000),
+                 json.dumps({"role": "assistant", "modelID": "model", "cost": cost})),
+            )
+
+    pool = opencode_usage(policy, db_path=db, now=now)["pool"]["windows"]
+
+    # 31 Oct spend belongs to the previous monthly allowance; 1 Nov and later count.
+    assert pool["30d"]["spend"] == pytest.approx(5.0)
+    assert pool["7d"]["spend"] == pytest.approx(15.0)
+
+
+def test_opencode_usage_ignores_stale_dashboard_reading(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
+    db = tmp_path / "opencode.db"
+    _make_opencode_db(db, now)
+    policy["opencode_pool"]["dashboard"] = {
+        "at": (now - datetime.timedelta(days=18)).isoformat(),
+        "used_percent": {"5h": 0, "7d": 0, "30d": 51},
+    }
+
+    pool = opencode_usage(policy, db_path=db, now=now)["pool"]["windows"]
+
+    # The rolling 30d window must be local spend alone; an 18-day-old 51%
+    # snapshot would otherwise add 60 * 0.51 on top of it.
+    assert pool["30d"]["spend"] == pytest.approx(57.5)
+    assert "calibrated_at" not in pool["30d"]
 
 
 def test_opencode_usage_dashboard_reading_expires(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
