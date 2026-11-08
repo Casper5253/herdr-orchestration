@@ -170,9 +170,13 @@
     "minimax-m3": 200000,
     "qwen3.7-plus": 200000,
     "kimi-k2.7-code": 200000,
-    "gpt-6-luna": 200000
+    "gpt-6-luna": 200000,
+    "gpt-6.1-sol": 200000,
+    "swe-2-medium": 200000,
+    "swe-2-high": 200000,
+    "swe-2-max": 200000
   },
-  "context_limits_note": "Effective worker limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code). DeepSeek v4.1 Flash native context is 1000000 per OpenCode models.json opencode-go metadata (models.dev, verified 2026-11-08); its effective budget follows the same 200K cap.",
+  "context_limits_note": "Effective worker limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code). DeepSeek v4.1 Flash native context is 1000000 per OpenCode models.json opencode-go metadata (models.dev, verified 2026-11-08); its effective budget follows the same 200K cap. gpt-6.1-sol native context is 475000 measured in the live usage event model_context_window (docs/audit/codex.md:52; a cached record read 500000). The swe-2 ids show a 262144 denominator on the dev-devin pane footer (docs/audit/devin.md:67). Both take the same 200K effective cap.",
   "context": {
     "boundary_threshold": 0.4,
     "pressure_threshold": 0.75,
