@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Greats gap analysis</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --fg: #1f2328;
+    --muted: #5b6470;
+    --card: #ffffff;
+    --border: #d9dee5;
+    --accent: #0b6bcb;
+    --weak: #9a5b00;
+    --missing: #b42318;
+    --chip: #eef3f9;
+    --fault: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418;
+      --fg: #e6edf3;
+      --muted: #9aa4af;
+      --card: #171b21;
+      --border: #2b323b;
+      --accent: #6cb6ff;
+      --weak: #f0b45b;
+      --missing: #ff8b82;
+      --chip: #1e2833;
+      --fault: #ff8b82;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.55rem; line-height: 1.2; margin: 0 0 .35rem; }
+  h2 { font-size: 1.1rem; margin: 1.4rem 0 .45rem; }
+  .small { color: var(--muted); font-size: .84rem; margin: 0 0 .9rem; }
+  ul.findings { margin: .6rem 0 1rem; padding-left: 1.15rem; }
+  ul.findings li { margin: .28rem 0; font-size: .95rem; }
+  .wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; min-width: 760px; }
+  th, td { padding: .55rem .6rem; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left; }
+  th { background: var(--chip); font-size: .74rem; letter-spacing: .03em; text-transform: uppercase; }
+  tr:last-child td { border-bottom: 0; }
+  .verdict-weaker { color: var(--weak); font-weight: 650; white-space: nowrap; }
+  .verdict-missing { color: var(--missing); font-weight: 650; white-space: nowrap; }
+  .fix { color: var(--muted); font-size: .8rem; white-space: nowrap; }
+  .fault { color: var(--fault); font-size: .74rem; font-weight: 650; text-transform: uppercase; letter-spacing: .03em; }
+  ol.fixes { padding-left: 1.25rem; margin: .35rem 0 0; }
+  ol.fixes li { margin: .3rem 0; font-size: .9rem; }
+  details {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .55rem .75rem;
+    margin: .45rem 0;
+  }
+  summary { cursor: pointer; font-weight: 600; font-size: .92rem; }
+  details p { margin: .45rem 0; font-size: .88rem; color: var(--muted); }
+  details p strong { color: var(--fg); }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .84em; background: var(--chip); padding: .04em .28em; border-radius: 4px; }
+  @media (max-width: 620px) {
+    body { padding: 12px; }
+    h1 { font-size: 1.3rem; }
+    th, td { padding: .45rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Greats gap analysis</h1>
+<p class="small">Phase 3 of Q-199. Measured from the 14-day baseline; verdicts and fixes from the Codex and Devin diffs. Corrections: review is 40 requested pane rounds, not 3; agentmem has domain evals, so the missing piece is evals for shared skills and prompts.</p>
+
+<ul class="findings">
+  <li>11 of 13 capabilities are weaker and 2 are missing; none is implemented as they do it.</li>
+  <li>Native context recovery works (967,737 → 41,893 tokens), but the early boundary decision is not closed: 13 decisions and 2 refused attempts.</li>
+  <li>Real runners are habitual; shared skills and prompts have no promotion eval, while agentmem has domain evals.</li>
+  <li>9 of 21 routed outcomes failed (43%), all tool-permission denials; same-cause retries are not pre-empted.</li>
+  <li>Review is active (40 requested rounds found real defects), but no acceptance record binds a verdict to the accepted snapshot.</li>
+</ul>
+
+<h2>The matrix</h2>
+<div class="wrap">
+<table>
+  <thead>
+    <tr><th scope="col">Capability</th><th scope="col">Their way</th><th scope="col">Our way, measured</th><th scope="col">Verdict</th><th scope="col">Fix, size</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1. Context management and handoff</td><td>Fresh owner or compaction before the budget is spent; handoff is portable, compaction is capacity.</td><td>Native recovery at 967,737 → 41,893; 13 decisions and 2 refused attempts; completion does not call the controller.</td><td class="verdict-weaker">weaker</td><td class="fix">C1 M</td></tr>
+    <tr><td>2. Verification</td><td>A control skill drives the app and a maintained feature map proves each journey.</td><td>339 Vitest, 296 <code>npm run check</code>, 56 E2E; no generated verify skill or feature map in the audited scope.</td><td class="verdict-weaker">weaker</td><td class="fix">C2 M</td></tr>
+    <tr><td>3. Evals for skills and prompts</td><td>Blinded comparison of installed vs candidate skill or prompt, separate judge, repeated cases.</td><td>0 shared skill/prompt evals; agentmem has frozen domain evals.</td><td class="verdict-missing">missing</td><td class="fix">C3 M</td></tr>
+    <tr><td>4. Planning and project workflow (I-6)</td><td>Spec → plan → tasks → thin slices → verify → commit often.</td><td>165 briefs; 1 <code>plan.md</code>; no ADR chain; amendments live in chat.</td><td class="verdict-weaker">weaker</td><td class="fix">C9 M</td></tr>
+    <tr><td>5. Delegation and parallel agents</td><td>Staged trust, isolated workers, bounded contracts and independent review.</td><td>9/21 routed outcomes failed (43%); all 9 are tool-permission denials; two tasks retried the same cause.</td><td class="verdict-weaker">weaker</td><td class="fix">C4 M + C5 L</td></tr>
+    <tr><td>6. Review</td><td>Fresh reviewer gets artifact + contract; findings classified; small units; explicit acceptance.</td><td>40 requested review rounds, real defects found; no acceptance record or snapshot binding.</td><td class="verdict-weaker">weaker</td><td class="fix">C6 M + C7 S</td></tr>
+    <tr><td>7. Memory and knowledge</td><td>Durable handoff, wiki, rules or git; a fresh agent resumes from the artifact.</td><td>Memory skill 2×, Obsidian 4×, 10 vault commits in 14 days; no handoff habit.</td><td class="verdict-weaker">weaker</td><td class="fix">C10 S</td></tr>
+    <tr><td>8. Skills and prompt design</td><td>Small, versioned, composable skills with eval-gated promotion.</td><td>75 skill calls; 78% in 3 skills; the entire leaf layer at 0; subagents 0.</td><td class="verdict-weaker">weaker</td><td class="fix">C3 M</td></tr>
+    <tr><td>9. Safety</td><td>Do not combine private data, untrusted content and egress; isolate execution.</td><td>Command rules and redaction only; OpenCode arbitrary bash by default; Codex danger-full-access; no incident found.</td><td class="verdict-weaker">weaker</td><td class="fix">C5 L</td></tr>
+    <tr><td>10. Ambition, autonomy and taste</td><td>Judgment is scarce: ambition, autonomy slider, taste and comprehension.</td><td>Roles and gates exist; 0 WHY lines, no discard accounting, ticket-scale work.</td><td class="verdict-weaker">weaker</td><td class="fix">C11 S</td></tr>
+    <tr><td>11. Harness and environment design</td><td>Model plus harness as one versioned artifact, with a doctor and recovery.</td><td>Shared sync works; Qwen vs DeepSeek drift, review text in notes; no executable behavior gate.</td><td class="verdict-weaker">weaker</td><td class="fix">C8 M</td></tr>
+    <tr><td>12. Code shape and constraints</td><td>Hard checks: types, lint, import boundaries, and review → rule.</td><td>Strict TS, zod, eslint; <code>AGENTS.md</code> 2 lines; 0 <code>correct</code> invocations.</td><td class="verdict-weaker">weaker</td><td class="fix">C7 S</td></tr>
+    <tr><td>13. Model training and research loops</td><td>Autoresearch: one editable file, fixed budget, metric keep/discard.</td><td>No training surface; the loop shape is absent.</td><td class="verdict-missing">missing</td><td class="fix">C12 M</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Ranked fixes</h2>
+<ol class="fixes">
+  <li><strong>C4 M</strong> — Admission preflight before dispatch. <span class="fault">fault</span> 9/21 routed outcomes failed on tool denials.</li>
+  <li><strong>C1 M</strong> — Boundary context and recovery lifecycle. <span class="fault">fault</span> 13 decisions, 2 refused, no completion trigger.</li>
+  <li><strong>C3 M</strong> — Shared skill/prompt promotion eval. <span class="fault">fault</span> 0 shared evals.</li>
+  <li><strong>C7 S</strong> — <code>correct</code> as the review-to-hard-rule ratchet. <span class="fault">fault</span> 0 invocations.</li>
+  <li><strong>C11 S</strong> — WHY line and discard accounting. <span class="fault">fault</span> 0 WHY, discards invisible.</li>
+  <li><strong>C2 M</strong> — Reusable control skill and feature map.</li>
+  <li><strong>C10 S</strong> — Portable handoff and memory note.</li>
+  <li><strong>C6 M</strong> — Review operation with an acceptance record.</li>
+  <li><strong>C9 M</strong> — Project workflow skill for I-6.</li>
+  <li><strong>C8 M</strong> — Single policy source and hx doctor.</li>
+  <li><strong>C5 L</strong> — Execution profiles and capability boundary.</li>
+  <li><strong>C12 M</strong> — Metric-loop <code>program-md</code> template and pilot.</li>
+</ol>
+
+<h2>Details</h2>
+<p class="small">Each capability is collapsed. Evidence links point to the diff sections and measured sources.</p>
+<details>
+  <summary>1. Context management and handoff - <span class="verdict-weaker">weaker</span> - C1 M</summary>
+  <p><strong>Theirs.</strong> Fresh owner or compaction before the budget is spent; a portable handoff switches session or harness, while compaction reduces an existing session. <strong>Ours.</strong> Native recovery works at 967,737 → 41,893 tokens, but there were 13 decisions and 2 refused attempts, and task completion does not call the controller. The 89% pressure example still delivered another assignment.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#1-context-management-and-handoff">Codex §1</a>; <a href="../../research/greats/context-management.md#2-what-hx-actually-implements">context audit §2</a>; <a href="../../research/greats/context-management.md#3-measured-execution-records">measured records</a>; <a href="../../research/greats/baseline.md">baseline</a>.</p>
+</details>
+
+<details>
+  <summary>2. Verification - <span class="verdict-weaker">weaker</span> - C2 M</summary>
+  <p><strong>Theirs.</strong> A control skill drives the real app and a maintained feature map proves each user journey. <strong>Ours.</strong> Real runners are habitual (339 Vitest, 296 check, 56 E2E), but no generated verification skill or feature map appears in the audited scope; hx success is a run-protocol check, not acceptance of the user contract.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#2-verification">Codex §2</a>; <a href="../../research/greats/baseline.md">baseline</a>; <a href="../../research/greats/lauren-tan.md#verification-skills--the-feature-map">Lauren's verification method</a>.</p>
+</details>
+
+<details>
+  <summary>3. Evals for skills and prompts - <span class="verdict-missing">missing</span> - C3 M</summary>
+  <p><strong>Theirs.</strong> Blinded comparison of the installed skill or prompt with a candidate, a separate judge, repeated cases and a promotion decision. <strong>Ours.</strong> No shared skill/prompt eval artifacts or gate; agentmem does have frozen domain evals, so the missing subject is the shared skill and prompt layer, not all evals.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#3-evals-for-shared-skills-and-prompts">Codex §3</a>; <a href="../../research/greats/diff-codex.md#evidence-rules-and-baseline-corrections">baseline correction on agentmem evals</a>; <a href="../../research/greats/diff-devin.md#8-skills-and-prompt-design">Devin §8</a>; <a href="../../research/greats/baseline.md">baseline</a>.</p>
+</details>
+
+<details>
+  <summary>4. Planning and project workflow (I-6) - <span class="verdict-weaker">weaker</span> - C9 M</summary>
+  <p><strong>Theirs.</strong> A written chain from spec to plan to tasks to thin slices, with review and revision. <strong>Ours.</strong> 165 briefs show plan-first is real, but there is one <code>plan.md</code>, no ADR habit, and amendments travel as chat messages rather than versioned artifacts.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-devin.md#4-planning-and-the-project-workflow-i-6">Devin §4</a>; <a href="../../research/greats/baseline.md">baseline</a>; <a href="../../research/greats/capabilities.md#4-planning-and-the-project-workflow-i-6">capability 4</a>.</p>
+</details>
+
+<details>
+  <summary>5. Delegation and parallel agents - <span class="verdict-weaker">weaker</span> - C4 M + C5 L</summary>
+  <p><strong>Theirs.</strong> Staged trust, isolated workers, bounded contracts and independent review. <strong>Ours.</strong> 9 of 21 routed outcomes failed (43%), and every failure is a tool-permission denial; two tasks retried the same cause. The control is real, but prerequisites are not settled before dispatch.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#5-delegation-and-parallel-agents">Codex §5</a>; <a href="../../research/greats/baseline.md">baseline</a>; <a href="../../research/greats/capabilities.md#5-delegation-and-parallel-agents">capability 5</a>.</p>
+</details>
+
+<details>
+  <summary>6. Review - <span class="verdict-weaker">weaker</span> - C6 M + C7 S</summary>
+  <p><strong>Theirs.</strong> Fresh reviewer gets artifact plus contract, not the author's claim; findings are classified, units are small, and acceptance is explicit. <strong>Ours.</strong> There are 40 requested review rounds and real defects were found, but no durable acceptance record binds a verdict to the accepted snapshot. Coverage is unknown, not single-digit percent.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#6-review">Codex §6</a>; <a href="../../research/greats/diff-codex.md#appendix-review-recount-and-reproducibility">40-round recount</a>; <a href="../../research/greats/baseline.md">baseline</a>.</p>
+</details>
+
+<details>
+  <summary>7. Memory and knowledge - <span class="verdict-weaker">weaker</span> - C10 S</summary>
+  <p><strong>Theirs.</strong> Durable artifacts: handoff, wiki, rules or git, so a fresh agent resumes without the old thread. <strong>Ours.</strong> The memory store exists, but the habit is near zero: memory skill 2×, Obsidian 4×, 10 vault commits in 14 days, and no handoff habit.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-devin.md#7-memory-and-knowledge">Devin §7</a>; <a href="../../research/greats/context-management.md#2-what-hx-actually-implements">context audit §2</a>; <a href="../../research/greats/baseline.md">baseline</a>.</p>
+</details>
+
+<details>
+  <summary>8. Skills and prompt design - <span class="verdict-weaker">weaker</span> - C3 M</summary>
+  <p><strong>Theirs.</strong> Small, versioned, composable skills with clear invocation and an eval gate. <strong>Ours.</strong> 75 skill calls in 14 days, 78% in three skills; the entire leaf layer and all subagent sessions invoked zero. The inventory is strong; trigger fidelity and regression discipline are not.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-devin.md#8-skills-and-prompt-design">Devin §8</a>; <a href="../../research/greats/baseline.md">baseline</a>; <a href="../../research/greats/capabilities.md#8-skills-and-prompt-design">capability 8</a>.</p>
+</details>
+
+<details>
+  <summary>9. Safety - <span class="verdict-weaker">weaker</span> - C5 L</summary>
+  <p><strong>Theirs.</strong> Do not combine private data, untrusted content and egress in one execution principal; isolate and scope credentials. <strong>Ours.</strong> Command rules and redaction protect particular paths, but OpenCode allows arbitrary bash by default and the Codex trusted profile uses danger-full-access. No actual incident or successful adversarial test was established.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#9-safety">Codex §9</a>; <a href="../../research/greats/capabilities.md#9-safety-untrusted-input-secrets">capability 9</a>.</p>
+</details>
+
+<details>
+  <summary>10. Ambition, autonomy and taste - <span class="verdict-weaker">weaker</span> - C11 S</summary>
+  <p><strong>Theirs.</strong> Judgment is the scarce input: ambition, an autonomy slider, taste and comprehension. <strong>Ours.</strong> Roles and human gates are well placed, but there are 0 WHY lines, no discard accounting, and no deliberately larger task in the window. Comprehension debt and reject-without-guilt are unpracticed.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-devin.md#10-ambition-autonomy-and-taste">Devin §10</a>; <a href="../../research/greats/baseline.md">baseline</a>; <a href="../../research/greats/capabilities.md#10-ambition-autonomy-and-taste">capability 10</a>.</p>
+</details>
+
+<details>
+  <summary>11. Harness and environment design - <span class="verdict-weaker">weaker</span> - C8 M</summary>
+  <p><strong>Theirs.</strong> Treat model plus harness as one versioned artifact with one policy, a doctor and recovery. <strong>Ours.</strong> Shared sync works, but the adapters drift: Qwen is pinned in the launch overlay while policy defaults to DeepSeek, and the Devin prompt still puts review text in notes. A file-tree sync is not a behavior test.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-codex.md#11-harness-and-environment-design">Codex §11</a>; <a href="../../research/greats/capabilities.md#11-harness-and-environment-design">capability 11</a>.</p>
+</details>
+
+<details>
+  <summary>12. Code shape and constraints - <span class="verdict-weaker">weaker</span> - C7 S</summary>
+  <p><strong>Theirs.</strong> Hard checks: types, lint, import boundaries, and every repeated review comment becomes a rule. <strong>Ours.</strong> The generic base is strong (strict TS, zod, eslint, <code>npm run check</code>), but <code>AGENTS.md</code> is two lines, there is no <code>CONSTRAINTS.md</code>, and <code>correct</code> has 0 invocations. The compounding meta-rule has never run.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-devin.md#12-code-shape-and-constraints">Devin §12</a>; <a href="../../research/greats/baseline.md">baseline</a>; <a href="../../research/greats/capabilities.md#12-code-shape-and-constraints">capability 12</a>.</p>
+</details>
+
+<details>
+  <summary>13. Model training and research loops - <span class="verdict-missing">missing</span> - C12 M</summary>
+  <p><strong>Theirs.</strong> Autoresearch: one editable file, a fixed budget, a metric and keep/discard. <strong>Ours.</strong> No shared layer has a training surface or an experiment loop. The training-literal half does not fit; the transferable loop shape is the gap, with the trading backtests as the closest pilot surface.</p>
+  <p><strong>Evidence.</strong> <a href="../../research/greats/diff-devin.md#13-model-training-and-research-loops">Devin §13</a>; <a href="../../research/greats/capabilities.md#13-model-training-and-research-loops">capability 13</a>.</p>
+</details>
+
+</main>
+</body>
+</html>
