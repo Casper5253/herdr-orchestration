@@ -25,7 +25,8 @@ Don't block on long work with `--wait`. Send the brief, carry on or end your tur
 `[team from dev-X] TASK: … FILES: <files or worktree you own> ACCEPT: <test command> SKILLS: <optional pstack skill or poteto-mode playbook> REPORT TO: dev-X`
 
 ## Report (assignee to lead, one prompt, ≤6 lines)
-`[team report from dev-Y] STATUS: done|blocked. CHANGED: files. TESTS: command → result. NOTES: …`
+`[team report from dev-Y] STATUS: done|blocked|discarded. WHY: intent, risk, how it was verified. CHANGED: files. TESTS: command → result. NOTES: …`
+WHY is one line the lead and reviewer read first: what the change is for, what could break, and the evidence that it works. Use `discarded` when an approach was tried and dropped; say what was learned in NOTES, so the next attempt does not repeat it.
 Reviewers report findings as `file:line: problem`, or `no findings`. Never paste diffs, files or transcripts: the reader runs `git diff` / `git log -p` itself.
 A report is never a new task. The lead decides on corrections; at most 2 correction rounds per task, then the lead escalates to the user.
 
