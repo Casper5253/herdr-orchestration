@@ -239,15 +239,41 @@ def _codex_profile() -> dict[str, Any]:
     }
 
 
-def worker_profile(worker: str | None, policy: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """The capability profile for one worker kind, or None for workers without one."""
+def worker_profile(
+    worker: str | None,
+    policy: dict[str, Any] | None = None,
+    profile_name: str | None = None,
+) -> dict[str, Any] | None:
+    """The capability profile for one worker kind, or None for workers without one.
+
+    With ``profile_name`` the named execution profile (policy.json ``profiles``)
+    supplies the exec rules and write scope instead of the worker's static
+    config; the base deny-path rules (secrets) and denied tools stay.
+    """
     if worker == "devin":
-        return _devin_profile(policy)
-    if worker == "opencode":
-        return _opencode_profile()
-    if worker == "codex":
-        return _codex_profile()
-    return None
+        profile = _devin_profile(policy)
+    elif worker == "opencode":
+        profile = _opencode_profile()
+    elif worker == "codex":
+        profile = _codex_profile()
+    else:
+        return None
+    if profile_name is not None:
+        from hx import profile as profile_mod
+
+        named = profile_mod.get(profile_name, policy)
+        if named is None:
+            profile["profile_error"] = f"unknown profile {profile_name}"
+            return profile
+        profile["profile_name"] = profile_name
+        profile["lead_only"] = bool(named.get("lead_only"))
+        if not named.get("lead_only"):
+            profile["seq_rules"] = profile_mod.seq_rules(named)
+            profile["allow_seq_rules"] = profile_mod.allow_seq_rules(named)
+            profile["bash_rules"] = list(profile_mod.render_opencode_permission(named)["bash"].items())
+            profile["writable_roots"] = [r for r in named.get("write_roots") or [] if r != "cwd"]
+            profile["writes_outside_cwd"] = bool(named.get("write_roots"))
+    return profile
 
 
 def _tokens(text: str) -> list[str]:
@@ -310,12 +336,23 @@ def denied_exec(profile: dict[str, Any], command: str) -> str | None:
         segment = segment.strip()
         if not segment:
             continue
+        tokens = _tokens(segment)
+        allowed = False
+        for words in profile.get("allow_seq_rules") or []:
+            if (
+                tokens
+                and len(words) <= len(tokens)
+                and _word_eq(words[0], tokens[0])
+                and _is_subsequence(words[1:], tokens[1:])
+            ):
+                allowed = True
+        if allowed:
+            continue
         if profile["worker"] == "opencode":
             rule = _opencode_denied(profile, segment)
             if rule is not None:
                 return rule
             continue
-        tokens = _tokens(segment)
         for words in profile.get("seq_rules") or []:
             if (
                 tokens
@@ -534,16 +571,22 @@ def prompt_findings(
     prompt: str,
     cwd: Path,
     policy: dict[str, Any] | None = None,
+    profile_name: str | None = None,
 ) -> list[dict[str, Any]]:
     """Every denied command or out-of-scope write path the brief asks to run.
 
     Pass one marks lines that prohibit or discuss denials and harvests the
     commands they name as suppressed. Pass two evaluates only what a worker
-    would execute and drops suppressed findings.
+    would execute and drops suppressed findings. With ``profile_name`` the
+    named execution profile governs, not the static worker list.
     """
-    profile = worker_profile(worker, policy)
+    profile = worker_profile(worker, policy, profile_name)
     if profile is None:
         return []
+    if profile.get("profile_error"):
+        return [{"kind": "profile", "command": profile_name, "rule": profile["profile_error"], "line": 0}]
+    if profile.get("lead_only"):
+        return [{"kind": "profile", "command": profile_name, "rule": f"profile {profile_name} is lead-only", "line": 0}]
     lines = prompt.splitlines()
     skipped: set[int] = set()
     suppressed_rules: set[str] = set()

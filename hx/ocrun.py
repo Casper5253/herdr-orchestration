@@ -1279,6 +1279,7 @@ def run_devin(
     mode: str = "headless",
     policy: dict[str, Any] | None = None,
     models_lister=None,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     """One Devin SWE-2 run; fails closed on any policy, price or model doubt."""
     from hx.usage import load_policy
@@ -1340,7 +1341,7 @@ def run_devin(
     exit_code: int | None = None
     timed_out, terminated = False, True
     try:
-        files = devin_mod.prepare_run(run_dir, DEVIN_PREAMBLE.format(cwd=cwd) + prompt, policy)
+        files = devin_mod.prepare_run(run_dir, DEVIN_PREAMBLE.format(cwd=cwd) + prompt, policy, profile=profile)
         cmd = devin_mod.build_command(
             devin_mod.devin_bin(policy), model, files["prompt"], files["config"], files["export"], permission_mode
         )
@@ -1416,6 +1417,27 @@ def resolve_mode(headless: bool) -> str:
     return "visible" if os.environ.get("HERDR_ENV") == "1" else "headless"
 
 
+def _profile_env(
+    worker: str, profile: str | None, cwd: Path, policy: dict[str, Any] | None
+) -> dict[str, str] | None:
+    """OPENCODE_CONFIG env pointing at the rendered permission block, or None."""
+    if worker != "opencode" or profile is None:
+        return None
+    from hx import profile as profile_mod
+
+    named = profile_mod.get(profile, policy)
+    if named is None or named.get("lead_only"):
+        return None
+    target = Path(cwd) / ".hx" / "profiles" / f"opencode-{profile}.jsonc"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(profile_mod.render("opencode", named), indent=2) + "\n", encoding="utf-8"
+    )
+    env = dict(os.environ)
+    env["OPENCODE_CONFIG"] = str(target)
+    return env
+
+
 def run(
     prompt: str,
     model: str,
@@ -1431,12 +1453,13 @@ def run(
     effort: str | None = None,
     allow_preflight_risk: bool = False,
     policy: dict[str, Any] | None = None,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     """Run one OpenCode, Codex or Devin worker and return the run outcome."""
     if cwd is None:
         cwd = _repo_root()
     if not allow_preflight_risk:
-        findings = capability.prompt_findings(worker, prompt, Path(cwd), policy)
+        findings = capability.prompt_findings(worker, prompt, Path(cwd), policy, profile_name=profile)
         if findings:
             reason = capability.format_refusal(worker, findings)
             result = _outcome_result(
@@ -1469,6 +1492,7 @@ def run(
             decision_id=decision_id,
             mode=mode or "headless",
             policy=policy,
+            profile=profile,
         )
     if mode == "visible":
         return run_visible(
@@ -1490,7 +1514,8 @@ def run(
         raise ValueError(f"worker {worker} supports visible mode only")
     started = time.monotonic()
     cmd = build_command(prompt, model, variant, cwd, title)
-    execute_result = execute(cmd, cwd, timeout)
+    env = _profile_env(worker, profile, cwd, policy)
+    execute_result = execute(cmd, cwd, timeout, env=env) if env is not None else execute(cmd, cwd, timeout)
     if len(execute_result) == 4:
         exit_code, out, _err, timed_out = execute_result
         terminated = True
@@ -1575,6 +1600,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="launch even when the admission preflight finds denied commands or out-of-scope write paths",
     )
+    parser.add_argument(
+        "--profile",
+        help="named execution profile (policy.json profiles): renders the worker config and preflights against it",
+    )
     args = parser.parse_args(argv)
 
     if args.prompt_file:
@@ -1601,6 +1630,7 @@ def main(argv: list[str] | None = None) -> int:
         worker=args.worker,
         effort=args.effort,
         allow_preflight_risk=args.allow_preflight_risk,
+        profile=args.profile,
     )
     print(json.dumps(result, indent=2))
     failure = result.get("failure") or {}

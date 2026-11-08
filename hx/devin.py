@@ -343,12 +343,30 @@ def pane_denied_line(name: str) -> str:
     return ""
 
 
-def prepare_run(run_dir: Path, prompt: str, policy: dict[str, Any]) -> dict[str, Path]:
+def prepare_run(
+    run_dir: Path,
+    prompt: str,
+    policy: dict[str, Any],
+    profile: str | None = None,
+) -> dict[str, Path]:
     run_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = run_dir / "prompt.md"
-    prompt_path.write_text(denied_section(policy) + prompt, encoding="utf-8")
     config_path = run_dir / CONFIG_FILE
-    shutil.copyfile(worker_config_template(policy), config_path)
+    if profile is not None:
+        from hx import profile as profile_mod
+
+        named = profile_mod.get(profile, policy)
+        if named is None:
+            raise ValueError(f"unknown profile {profile}")
+        deny_text = "Denied for you (a denied call ends this run): " + ", ".join(
+            f"`{rule}`" for rule in named.get("deny") or []
+        ) + ".\n\n"
+        prompt_path.write_text(deny_text + prompt, encoding="utf-8")
+        rendered = profile_mod.render_devin_config(named, _worker_config(policy))
+        config_path.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
+    else:
+        prompt_path.write_text(denied_section(policy) + prompt, encoding="utf-8")
+        shutil.copyfile(worker_config_template(policy), config_path)
     return {
         "prompt": prompt_path,
         "config": config_path,

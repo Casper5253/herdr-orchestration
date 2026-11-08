@@ -216,5 +216,33 @@
     },
     "note": "2026-11-06 creator correction: leverage free Devin SWE-2 and OpenCode equally while the promotion lasts, then OpenCode with deepseek-v4.1-flash first is the default and Devin is not routed. routing_balance holds the rule; Lightning variants are paid and never allowed. models maps hx effort to a SWE-2 id: high by default, max for hard work; dispatch swe-2-medium by hand when latency matters.",
     "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-high, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees."
-  }
+  },
+  "profiles": {
+    "research": {
+      "note": "read-only plus web: the report is the final message; writes are refused",
+      "deny": ["Exec(git add)", "Exec(git commit)", "Exec(git push)", "Exec(git pull)", "Exec(git fetch)", "Exec(git merge)", "Exec(git rebase)", "Exec(git checkout)", "Exec(git switch)", "Exec(git restore)", "Exec(git clone)", "Exec(git stash)", "Exec(git tag)", "Exec(git remote)", "Exec(git reset)", "Exec(git clean)", "Exec(git rm)", "Exec(git mv)", "Exec(git cherry-pick)", "Exec(git revert)", "Exec(git am)", "Exec(git update-ref)", "Exec(git config)", "Exec(git worktree)", "Exec(gh)", "Exec(devin)", "Exec(opencode)", "Exec(codex)", "Exec(claude)", "Exec(herdr)", "Exec(hx ocrun)", "Exec(hx compact)", "Exec(hx context)", "Exec(hx task)", "Exec(hx route)", "Exec(python -m hx)", "Exec(curl)", "Exec(wget)", "Exec(Invoke-WebRequest)", "Exec(iwr)", "Exec(Invoke-RestMethod)", "Exec(irm)", "Exec(ssh)", "Exec(scp)", "Exec(sftp)", "Exec(nc)", "Exec(ftp)", "Exec(rsync)", "Exec(rm)", "Exec(rmdir)", "Exec(rd)", "Exec(del)", "Exec(Remove-Item)", "Exec(format)", "Exec(npm publish)", "Exec(schtasks)", "Exec(reg)", "Exec(Start-Process)"],
+      "allow": ["Exec(git status)", "Exec(git diff)", "Exec(git log)", "Exec(git show)", "Exec(git ls-files)", "Exec(git blame)", "Exec(hx usage)", "Exec(hx say)", "Exec(hx checkpoint)", "Exec(hx doctor)", "Exec(hx handoff)", "Exec(hx review)", "Exec(python -m pytest)", "Exec(python -m unittest)", "Exec(npm test)"],
+      "write_roots": []
+    },
+    "review": {
+      "note": "read-only code review; may run the test suite",
+      "deny": ["Exec(git add)", "Exec(git commit)", "Exec(git push)", "Exec(git pull)", "Exec(git fetch)", "Exec(git merge)", "Exec(git rebase)", "Exec(git checkout)", "Exec(git switch)", "Exec(git restore)", "Exec(git clone)", "Exec(git stash)", "Exec(git tag)", "Exec(git remote)", "Exec(git reset)", "Exec(git clean)", "Exec(git rm)", "Exec(git mv)", "Exec(git cherry-pick)", "Exec(git revert)", "Exec(git am)", "Exec(git update-ref)", "Exec(git config)", "Exec(git worktree)", "Exec(gh)", "Exec(devin)", "Exec(opencode)", "Exec(codex)", "Exec(claude)", "Exec(herdr)", "Exec(hx ocrun)", "Exec(hx compact)", "Exec(hx context)", "Exec(hx task)", "Exec(hx route)", "Exec(python -m hx)", "Exec(curl)", "Exec(wget)", "Exec(Invoke-WebRequest)", "Exec(iwr)", "Exec(Invoke-RestMethod)", "Exec(irm)", "Exec(ssh)", "Exec(scp)", "Exec(sftp)", "Exec(nc)", "Exec(ftp)", "Exec(rsync)", "Exec(rm)", "Exec(rmdir)", "Exec(rd)", "Exec(del)", "Exec(Remove-Item)", "Exec(format)", "Exec(npm publish)", "Exec(schtasks)", "Exec(reg)", "Exec(Start-Process)"],
+      "allow": ["Exec(git status)", "Exec(git diff)", "Exec(git log)", "Exec(git show)", "Exec(git ls-files)", "Exec(git blame)", "Exec(hx usage)", "Exec(hx say)", "Exec(hx checkpoint)", "Exec(hx doctor)", "Exec(hx handoff)", "Exec(hx review)", "Exec(python -m pytest)", "Exec(python -m unittest)", "Exec(npm test)"],
+      "write_roots": []
+    },
+    "implement": {
+      "note": "writes in its worktree, runs tests, owns its branch; never commit, push, reset or clone",
+      "deny": ["Exec(git commit)", "Exec(git push)", "Exec(git pull)", "Exec(git fetch)", "Exec(git merge)", "Exec(git rebase)", "Exec(git reset)", "Exec(git clean)", "Exec(git stash)", "Exec(git tag)", "Exec(git remote)", "Exec(git clone)", "Exec(git rm)", "Exec(git mv)", "Exec(git cherry-pick)", "Exec(git revert)", "Exec(git am)", "Exec(git update-ref)", "Exec(git config)", "Exec(git worktree)", "Exec(git checkout)", "Exec(git switch)", "Exec(git restore)", "Exec(gh)", "Exec(devin)", "Exec(opencode)", "Exec(codex)", "Exec(claude)", "Exec(herdr)", "Exec(hx ocrun)", "Exec(hx compact)", "Exec(hx context)", "Exec(hx task)", "Exec(hx route)", "Exec(python -m hx)", "Exec(curl)", "Exec(wget)", "Exec(Invoke-WebRequest)", "Exec(iwr)", "Exec(Invoke-RestMethod)", "Exec(irm)", "Exec(ssh)", "Exec(scp)", "Exec(sftp)", "Exec(nc)", "Exec(ftp)", "Exec(rsync)", "Exec(rm -rf)", "Exec(rm -fr)", "Exec(rm -r)", "Exec(Remove-Item -Recurse)", "Exec(rmdir)", "Exec(rd)", "Exec(del /s)", "Exec(format)", "Exec(npm publish)", "Exec(schtasks)", "Exec(reg)", "Exec(Start-Process)"],
+      "allow": ["Exec(git status)", "Exec(git diff)", "Exec(git log)", "Exec(git show)", "Exec(git ls-files)", "Exec(git blame)", "Exec(git add)", "Exec(git checkout -b)", "Exec(git switch)", "Exec(hx usage)", "Exec(hx say)", "Exec(hx checkpoint)", "Exec(hx doctor)", "Exec(hx handoff)", "Exec(hx review)", "Exec(hx boundary)", "Exec(python -m pytest)", "Exec(python -m unittest)", "Exec(npm test)", "Exec(herdr-app check)"],
+      "write_roots": ["cwd"]
+    },
+    "release": {
+      "note": "lead only: workers are never launched with this profile",
+      "lead_only": true,
+      "deny": [],
+      "allow": [],
+      "write_roots": []
+    }
+  },
+  "profiles_note": "C5 named execution profiles: deny lists are self-contained Exec rules matched like the static deny list; allow rules carve out of deny (checked first). write_roots scopes Write() path checks; 'cwd' resolves to the run directory."
 }
