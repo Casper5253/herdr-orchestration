@@ -23,9 +23,9 @@
   },
   "attribution": false,
   "permissions": {
-    // Devin edits files through exec, so exec is allowed. Questlog (user-scope MCP, OpenCode token via
+    // Devin edits files through exec, so exec is allowed. Jotarium (user-scope MCP `jotarium`, OpenCode token via
     // team/questlog-mcp-opencode.cmd) is the only MCP server; print mode rejects anything that would ask.
-    "allow": ["read", "grep", "glob", "edit", "exec", "mcp__questlog__*"],
+    "allow": ["read", "grep", "glob", "edit", "exec", "mcp__jotarium__*"],
     "deny": [
       // String rules are guardrails against accidents, not a sandbox: an agent that writes a script
       // and runs it can step around them. The lead's diff review is the real gate (docs/audit/devin.md).
