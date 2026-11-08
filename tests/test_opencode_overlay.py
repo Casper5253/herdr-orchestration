@@ -40,3 +40,8 @@ def test_hc_mutations_ask_and_reads_are_free():
     assert bash.get("hc *") == "ask"
     for read in ("hc ls*", "hc get *", "hc read *", "hc wait *"):
         assert bash.get(read) == "allow", read
+
+
+def test_worker_can_report_to_the_lead():
+    # A brief ends with `hc send <lead> "[team report ...]"`; a prompt here means the lead never hears back.
+    assert _overlay()["permission"]["bash"].get("hc send *") == "allow"

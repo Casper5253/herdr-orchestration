@@ -17,8 +17,10 @@
       "herdr pane read *": "allow",
       "herdr status*": "allow",
       "herdr --skill*": "allow",
-      // Herdr app (herdr-core): reading the team's terminals is free; typing into or ending one asks.
+      // Herdr app (herdr-core): reading terminals and reporting to the lead with `hc send` are free;
+      // starting, ending or pressing keys in a terminal asks.
       "hc *": "ask",
+      "hc send *": "allow",
       "hc ls*": "allow",
       "hc get *": "allow",
       "hc read *": "allow",
