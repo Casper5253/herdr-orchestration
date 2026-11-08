@@ -89,7 +89,7 @@ def test_prepare_run_renders_profiled_devin_config(tmp_path: Path) -> None:
 
 _BASE = {
     "permissions": {
-        "allow": ["read", "grep", "glob", "edit", "exec", "mcp__questlog__*"],
+        "allow": ["read", "grep", "glob", "edit", "exec", "mcp__jotarium__*"],
         "deny": ["Write(.env*)", "Exec(git push)", "Read(~/.ssh/**)"],
     }
 }
