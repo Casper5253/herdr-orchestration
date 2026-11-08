@@ -66,6 +66,53 @@ def test_cross_family_verdict_then_stale_on_edit(tmp_path: Path) -> None:
     assert review.status("q-206", led=led)["state"] == "stale"
 
 
+def test_untracked_content_edit_marks_verdict_stale(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    led = _led(tmp_path)
+    new_file = repo / "untracked.py"
+    new_file.write_text("value = 1\n", encoding="utf-8")
+    review.open_review("q-206", repo, led=led, policy=POLICY)
+    review.verdict("q-206", "dev-devin", "ship", [], led=led, policy=POLICY)
+    assert review.status("q-206", led=led)["state"] == "valid"
+
+    new_file.write_text("value = 2\n", encoding="utf-8")
+    assert review.status("q-206", led=led)["state"] == "stale"
+
+
+def test_reviewer_model_family_is_recorded(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    led = _led(tmp_path)
+    review.open_review("q-206", repo, led=led, policy=POLICY)
+    review.verdict(
+        "q-206",
+        "dev-devin",
+        "ship",
+        [],
+        led=led,
+        policy=POLICY,
+        model="claude-opus-4.5",
+    )
+    report = review.status("q-206", led=led)
+    assert report["verdict"]["reviewer"]["family"] == "claude"
+    assert report["verdict"]["reviewer"]["model"] == "claude-opus-4.5"
+
+
+def test_actual_model_family_beats_declared_agent(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    led = _led(tmp_path)
+    review.open_review("q-206", repo, led=led, policy=POLICY)
+    with pytest.raises(ValueError, match="same-family"):
+        review.verdict(
+            "q-206",
+            "dev-devin",
+            "ship",
+            [],
+            led=led,
+            policy=POLICY,
+            model="gpt-5-codex",
+        )
+
+
 def test_finding_dispositions(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     led = _led(tmp_path)

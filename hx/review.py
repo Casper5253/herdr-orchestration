@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -54,21 +55,85 @@ def _family(agent: str, policy: dict[str, Any] | None) -> str:
     return name.split("-")[0]
 
 
+_PROVIDER_FAMILIES = {
+    "opencode": "opencode",
+    "opencode-go": "opencode",
+    "anthropic": "claude",
+    "openai": "codex",
+    "codex": "codex",
+    "devin": "devin",
+}
+
+_MODEL_PREFIX_FAMILIES = (
+    ("swe-", "devin"),
+    ("claude", "claude"),
+    ("gpt-", "codex"),
+    ("codex", "codex"),
+    ("deepseek", "opencode"),
+    ("qwen", "opencode"),
+    ("glm", "opencode"),
+    ("kimi", "opencode"),
+    ("mimo", "opencode"),
+    ("minimax", "opencode"),
+)
+
+
+def _model_family(model: str | None) -> str | None:
+    """The family a model id actually belongs to, when the id reveals it."""
+    if not model:
+        return None
+    text = model.strip().lower()
+    if "/" in text:
+        provider, name = text.split("/", 1)
+        if provider in _PROVIDER_FAMILIES:
+            return _PROVIDER_FAMILIES[provider]
+    else:
+        name = text
+    for prefix, family in _MODEL_PREFIX_FAMILIES:
+        if name.startswith(prefix):
+            return family
+    return None
+
+
+def _resolve_family(agent: str, model: str | None, policy: dict[str, Any] | None) -> str:
+    """Prefer the actual model family; fall back to the declared agent family."""
+    return _model_family(model) or _family(agent, policy)
+
+
+def _run_git_raw(args: list[str], cwd: Path) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd)] + args, capture_output=True, text=True, timeout=30
+    )
+    return proc.returncode, proc.stdout
+
+
 def artifact(repo: Path) -> dict[str, Any]:
-    """The reviewable snapshot: branch head plus a digest of working-tree diff."""
+    """The reviewable snapshot: branch head plus a digest of working-tree content."""
     code, head = _run_git(["rev-parse", "HEAD"], repo)
     if code != 0:
         raise ValueError(f"{repo} is not a git repository")
     _, branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo)
-    _, porcelain = _run_git(["status", "--porcelain"], repo)
+    _, porcelain = _run_git_raw(["status", "--porcelain=v1", "-z", "-uall"], repo)
     digest = None
     if porcelain:
         hasher = hashlib.sha256()
         _, unstaged = _run_git(["diff"], repo)
         _, staged = _run_git(["diff", "--cached"], repo)
-        for part in (porcelain, unstaged, staged):
+        for part in (unstaged, staged):
             hasher.update(part.encode("utf-8"))
             hasher.update(b"\0")
+        for entry in porcelain.split("\0"):
+            if not entry:
+                continue
+            hasher.update(entry.encode("utf-8"))
+            hasher.update(b"\0")
+            if entry[:2] == "??":
+                try:
+                    content = (repo / entry[3:]).read_bytes()
+                except OSError:
+                    hasher.update(b"unreadable\0")
+                else:
+                    hasher.update(hashlib.sha256(content).digest())
         digest = hasher.hexdigest()[:16]
     return {
         "repo": str(repo),
@@ -107,6 +172,7 @@ def open_review(
     author: str | None = None,
     led: ledger_mod.Ledger | None = None,
     policy: dict[str, Any] | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Record the artifact, author family and acceptance contract on the task."""
     led = led or ledger_mod.Ledger(repo_root=_repo_root())
@@ -116,10 +182,15 @@ def open_review(
     snap = artifact(repo)
     snap["base"] = base
     agent = author or task.get("owner") or "unknown"
+    author_model = model or task.get("model")
     review = {
         "opened_at": _now(),
         "artifact": snap,
-        "author": {"agent": agent, "family": _family(agent, policy)},
+        "author": {
+            "agent": agent,
+            "family": _resolve_family(agent, author_model, policy),
+            "model": author_model,
+        },
         "contract": _contract_from_brief(brief),
         "verdict": None,
         "findings": [],
@@ -135,6 +206,7 @@ def verdict(
     findings: list[str],
     led: ledger_mod.Ledger | None = None,
     policy: dict[str, Any] | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Record the verdict on the current snapshot; refuse same-family review."""
     led = led or ledger_mod.Ledger(repo_root=_repo_root())
@@ -142,7 +214,8 @@ def verdict(
     review = (task or {}).get("review")
     if review is None:
         raise ValueError(f"{task_id} has no open review; run hx review open first")
-    reviewer_family = _family(reviewer, policy)
+    reviewer_model = model or os.environ.get("HX_REVIEWER_MODEL")
+    reviewer_family = _resolve_family(reviewer, reviewer_model, policy)
     if reviewer_family == review["author"]["family"]:
         raise ValueError(
             f"same-family review refused: reviewer {reviewer} is {reviewer_family}, "
@@ -167,7 +240,11 @@ def verdict(
         )
     review["verdict"] = {
         "at": _now(),
-        "reviewer": {"agent": reviewer, "family": reviewer_family},
+        "reviewer": {
+            "agent": reviewer,
+            "family": reviewer_family,
+            "model": reviewer_model,
+        },
         "verdict": value,
         "artifact": snap,
     }
@@ -236,9 +313,12 @@ def _summary(report: dict[str, Any]) -> str:
     lines = [f"review {report['task']}: {report['state']} — {report['reason']}"]
     verdict_rec = report.get("verdict")
     if verdict_rec:
+        model = verdict_rec["reviewer"].get("model")
+        by = f" by {verdict_rec['reviewer']['agent']}"
         lines.append(
-            f"  verdict: {verdict_rec['verdict']} by {verdict_rec['reviewer']['agent']} "
-            f"({verdict_rec['reviewer']['family']}) at {verdict_rec['at']}"
+            f"  verdict: {verdict_rec['verdict']}{by} "
+            f"({verdict_rec['reviewer']['family']}{', ' + model if model else ''}) "
+            f"at {verdict_rec['at']}"
         )
     for index, finding in enumerate(report.get("findings") or [], 1):
         note = f" [{finding['status']}]" if finding.get("status") != "open" else ""
@@ -256,12 +336,17 @@ def main(argv: list[str] | None = None) -> int:
     open_p.add_argument("--base", default="main")
     open_p.add_argument("--brief", type=Path)
     open_p.add_argument("--author")
+    open_p.add_argument("--model", help="the author's actual model id, if known")
 
     verdict_p = sub.add_parser("verdict", help="record a cross-family verdict with findings")
     verdict_p.add_argument("task")
     verdict_p.add_argument("--reviewer", required=True)
     verdict_p.add_argument("--verdict", required=True, choices=["ship", "fix"])
     verdict_p.add_argument("--finding", action="append", default=[], dest="findings")
+    verdict_p.add_argument(
+        "--model",
+        help="the reviewer's actual model id (for OpenCode, its model id); defaults to HX_REVIEWER_MODEL",
+    )
 
     status_p = sub.add_parser("status", help="show the verdict and whether it is still valid")
     status_p.add_argument("task")
@@ -276,11 +361,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.cmd == "open":
-            review = open_review(args.task, args.repo, args.base, args.brief, args.author)
+            review = open_review(args.task, args.repo, args.base, args.brief, args.author, model=args.model)
             print(f"review opened on {args.task}: {review['artifact']['mode']} snapshot, author {review['author']['agent']} ({review['author']['family']})")
             return 0
         if args.cmd == "verdict":
-            review = verdict(args.task, args.reviewer, args.verdict, args.findings)
+            review = verdict(args.task, args.reviewer, args.verdict, args.findings, model=args.model)
             print(f"verdict recorded on {args.task}: {args.verdict} by {args.reviewer}; {len(review['findings'])} findings")
             return 0
         if args.cmd == "resolve":

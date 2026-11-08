@@ -100,6 +100,37 @@ def test_handoff_hard_cap_and_redaction(tmp_path: Path) -> None:
     assert "[redacted]" in text
 
 
+def test_redacts_authorization_bearer_and_secret_assignments(tmp_path: Path) -> None:
+    checkpoints = tmp_path / "checkpoints"
+    checkpoints.mkdir()
+    planted = [
+        "sk-live-bearer-123",
+        "op-secret-456",
+        "ghp-secret-789",
+        "aws-secret-abc",
+        "hunter2",
+        "sk-secret-xyz",
+    ]
+    body = (
+        "## Objective\n"
+        "Authorization: Bearer sk-live-bearer-123\n"
+        "OPENCODE_API_KEY=op-secret-456\n"
+        "GH_TOKEN=ghp-secret-789\n"
+        "AWS_SECRET_ACCESS_KEY=aws-secret-abc\n"
+        "password: hunter2\n"
+        "api_key = sk-secret-xyz\n"
+        "\n## Next action\na\n"
+    )
+    (checkpoints / "s.md").write_text(body, encoding="utf-8")
+    path = handoff.write_handoff(
+        "a", "s", root=tmp_path, checkpoints_dir=checkpoints, routing_log=tmp_path / "none.jsonl"
+    )
+    text = path.read_text(encoding="utf-8")
+    for secret in planted:
+        assert secret not in text
+    assert text.count("[redacted]") >= len(planted)
+
+
 def test_brief_prints_pointer_with_next_action(tmp_path: Path) -> None:
     plant = _plant(tmp_path)
     path = handoff.write_handoff("a", "q-77", root=tmp_path, checkpoints_dir=plant["checkpoints"], routing_log=plant["routing"])

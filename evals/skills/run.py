@@ -191,19 +191,22 @@ def run_votes(
 ) -> dict:
     votes = {"before": 0, "after": 0}
     errors = []
+    failures = 0
     for rep in range(repeat):
         order = [("before", before), ("after", after)]
         random.Random(f"{skill}:{case['id']}:{rep}").shuffle(order)
         for label, path in order:
             try:
                 output = run_model(path, case["prompt"], model, timeout)
-                ok, why = grade(case, output)
             except EvalError as error:
-                ok, why = False, str(error)
+                failures += 1
+                errors.append(f"{label} run {rep + 1}: runner error: {error}")
+                continue
+            ok, why = grade(case, output)
             votes[label] += int(ok)
             if not ok:
                 errors.append(f"{label} run {rep + 1}: {why}")
-    return {"before": votes["before"], "after": votes["after"], "errors": errors}
+    return {"before": votes["before"], "after": votes["after"], "errors": errors, "runner_failures": failures}
 
 
 def run_pair(
@@ -217,6 +220,7 @@ def run_pair(
 ) -> tuple[int, dict]:
     before_passed = 0
     after_passed = 0
+    runner_failures = 0
     records = []
     for case in cases:
         result = run_votes(skill, case, before, after, model, timeout, repeat)
@@ -224,6 +228,7 @@ def run_pair(
         after_ok = result["after"] * 2 > repeat
         before_passed += int(before_ok)
         after_passed += int(after_ok)
+        runner_failures += result["runner_failures"]
         print(
             f"{case['id']}: before={'PASS' if before_ok else 'FAIL'} ({result['before']}/{repeat}) "
             f"after={'PASS' if after_ok else 'FAIL'} ({result['after']}/{repeat})"
@@ -236,11 +241,24 @@ def run_pair(
                 "before": result["before"],
                 "after": result["after"],
                 "repeat": repeat,
+                "runner_failures": result["runner_failures"],
+                "errors": result["errors"],
             }
         )
     total = len(cases)
-    verdict = "promote" if after_passed >= before_passed else "hold"
     print(f"before {before_passed}/{total}; after {after_passed}/{total}")
+    if runner_failures:
+        print(f"error: {runner_failures} runner failure(s); no verdict is trusted")
+        return 1, {
+            "skill": skill,
+            "cases": records,
+            "before_passed": before_passed,
+            "after_passed": after_passed,
+            "total": total,
+            "runner_failures": runner_failures,
+            "verdict": "error",
+        }
+    verdict = "promote" if after_passed >= before_passed else "hold"
     print(f"verdict: {verdict}")
     if verdict == "hold":
         print("hold reason: the candidate passes fewer cases than the installed skill")
@@ -250,6 +268,7 @@ def run_pair(
         "before_passed": before_passed,
         "after_passed": after_passed,
         "total": total,
+        "runner_failures": 0,
         "verdict": verdict,
     }
 
@@ -276,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--repeat must be at least 1")
         check_frozen()
         selected = SKILLS if args.skill == "all" else (args.skill,)
-        worst = 0
+        codes = []
         results = []
         for skill in selected:
             cases = load_cases(skill)
@@ -289,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"== {skill} ==")
             code, result = run_pair(skill, cases, before, after, args.model, args.timeout, args.repeat)
             results.append(result)
-            worst = max(worst, code)
+            codes.append(code)
         if args.out:
             artifact = {
                 "created": datetime.now(timezone.utc).isoformat(),
@@ -302,7 +321,11 @@ def main(argv: list[str] | None = None) -> int:
             }
             Path(args.out).write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
             print(f"wrote {args.out}")
-        return worst
+        if 1 in codes:
+            return 1
+        if 2 in codes:
+            return 2
+        return 0
     except EvalError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

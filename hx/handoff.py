@@ -30,9 +30,11 @@ from hx import paths
 MAX_BYTES = 4096
 MAX_SECTION_LINES = 8
 
-_SECRET_RE = re.compile(
-    r"(?i)\b(token|secret|api[_-]?key|password|credential)\b[^\n]*[:=]\s*\S+"
+_SECRET_ASSIGN_RE = re.compile(
+    r"(?i)(?<!\w)(?P<name>[*\w-]*(?:token|secret|api[_-]?key|passw(?:or)?d|credential)[*\w-]*)"
+    r"\s*[:=]\s*\S+"
 )
+_AUTH_RE = re.compile(r"(?i)(?<!\w)(?P<name>authorization)\s*[:=]\s*[^\n]*")
 
 
 def _repo_root() -> Path:
@@ -40,7 +42,8 @@ def _repo_root() -> Path:
 
 
 def _redact(text: str) -> str:
-    return _SECRET_RE.sub(lambda m: m.group(0)[: m.group(0).find(m.group(1))] + m.group(1) + ": [redacted]", text)
+    text = _AUTH_RE.sub(lambda m: f"{m.group('name')}: [redacted]", text)
+    return _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group('name')}: [redacted]", text)
 
 
 def _truncate(text: str) -> str:
