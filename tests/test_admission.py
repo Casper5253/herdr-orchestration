@@ -251,6 +251,22 @@ def test_all_todays_briefs_give_zero_findings(tmp_path: Path) -> None:
         assert capability.prompt_findings("devin", text, tmp_path) == [], name
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Finish by running git checkout -b feat/y and starting the work.",
+        "Then execute git checkout -b feat/y and move on.",
+        "Then invoke git checkout -b feat/y to switch over.",
+        "Next start git checkout -b feat/y from the worktree.",
+        "Then try git checkout -b feat/y if the branch exists.",
+    ],
+)
+def test_run_phrase_verbs_catch_denied_command(line: str, tmp_path: Path) -> None:
+    """C12 it1: bare-prose run/execute/invoke/start/try phrasing still flags."""
+    rules = {f["rule"] for f in capability.prompt_findings("devin", line, tmp_path)}
+    assert "Exec(git checkout)" in rules
+
+
 def test_documented_denial_cases_still_caught(tmp_path: Path) -> None:
     """The q196 clone line and a checkout instruction are real instructions."""
     q196 = "Vendor Triage for review: `git clone --depth 1 https://github.com/sgomez/herdr-triage herdr-app/vendor/herdr-triage`."

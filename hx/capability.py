@@ -424,7 +424,9 @@ def _writable_scope(profile: dict[str, Any], cwd: Path) -> list[str]:
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 _FENCE_RE = re.compile(r"^\s*```")
 _INDENTED_CODE_RE = re.compile(r"^(?:    |\t)\S")
-_RUN_PHRASE_RE = re.compile(r"(?i)\brun\s+((?:[\w`~./\\:-]+\s*)+)")
+_RUN_PHRASE_RE = re.compile(
+    r"(?i)\b(?:run|runs|running|execute|executes|invoke|invokes|start|starts|try|tries)\s+((?:[\w`~./\\:-]+\s*)+)"
+)
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 
 # A code span is a command only where a command would be given: line start,
