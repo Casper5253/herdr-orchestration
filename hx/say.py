@@ -41,8 +41,7 @@ def _under_pressure(name: str) -> bool:
         agent = context.agent_info(name)
         if name == usage.lead_name(policy, usage.team_prefix(policy)):
             return False
-        sample = context.telemetry(agent, policy)
-        session_id = context._session(agent)
+        session_id, sample = context.session_telemetry(agent, policy)
         value = sample.get("utilisation")
         threshold = policy.get("context", {}).get("pressure_threshold", 0.75)
         if (not context._fresh(sample, session_id, context._now())

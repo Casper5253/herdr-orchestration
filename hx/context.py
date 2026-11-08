@@ -226,6 +226,9 @@ def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
                     if data.get("role") != "assistant":
                         continue
                     tokens = data.get("tokens") or {}
+                    if (tokens.get("input") == 0 and (tokens.get("cache") or {}).get("read", 0) == 0
+                            and not data.get("finish") and not (data.get("time") or {}).get("completed")):
+                        continue
                     model = data.get("modelID")
                     limit = policy.get("context_limits", {}).get(model)
                     timestamp = dt.datetime.fromtimestamp(created / 1000, dt.timezone.utc).isoformat()
@@ -233,6 +236,15 @@ def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
     except (OSError, ValueError, TypeError, sqlite3.Error):
         pass
     return unknown
+
+
+def session_telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Pin the provider session once before reading its counters."""
+    sid = _session(agent)
+    if not sid:
+        return sid, {"session_id": sid, "utilisation": None, "sampled_at": None}
+    bound = {**agent, "agent_session": {"value": sid}}
+    return sid, telemetry(bound, policy)
 
 
 def _fresh(sample: dict[str, Any], sid: str, now: dt.datetime, after: dt.datetime | None = None) -> bool:
@@ -489,8 +501,7 @@ class Controller:
                 if agent.get("agent") != "claude":
                     raise ValueError("lead self-compaction supports a Claude lead only")
                 return self._decide_lead(result, agent, session_id, task_id, work_item)
-            sid = _session(agent)
-            sample = telemetry(agent, self.policy)
+            sid, sample = session_telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("agent"))
             if agent.get("agent_status") not in READY:
                 raise _DeferredContext("agent is not idle")
