@@ -6,19 +6,16 @@ from pathlib import Path
 OVERLAY = Path(__file__).resolve().parents[1] / "team" / "opencode-trusted-dev.jsonc"
 HOME = "C:\\Users\\caspe\\"
 
-READ_WITHOUT_ASKING = [
-    ".agents\\*",
-    ".claude\\skills\\*",
+HERDR_FOLDERS = [
     ".config\\herdr-app\\*",
     "AppData\\Local\\herdr-core\\*",
-    "AppData\\Local\\Temp\\*",
+    "AppData\\Roaming\\herdr-core\\*",
+    "AppData\\Roaming\\herdr\\*",
+    "AppData\\Local\\Programs\\herdr-core\\*",
+    "AppData\\Local\\Programs\\herdr-app\\*",
 ]
-NEVER_EDIT = [
-    ".agents\\*",
-    ".claude\\skills\\*",
-    ".config\\herdr-app\\*",
-    "AppData\\Local\\herdr-core\\*",
-]
+READ_WITHOUT_ASKING = [".agents\\*", ".claude\\skills\\*", "AppData\\Local\\Temp\\*", *HERDR_FOLDERS]
+NEVER_EDIT = [".agents\\*", ".claude\\skills\\*", *HERDR_FOLDERS]
 
 
 def _overlay() -> dict:

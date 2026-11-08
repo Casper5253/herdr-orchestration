@@ -38,6 +38,10 @@
       "C:\\Users\\caspe\\.claude\\skills\\*": "allow",
       "C:\\Users\\caspe\\.config\\herdr-app\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\*": "allow",
+      "C:\\Users\\caspe\\AppData\\Roaming\\herdr-core\\*": "allow",
+      "C:\\Users\\caspe\\AppData\\Roaming\\herdr\\*": "allow",
+      "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-core\\*": "allow",
+      "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "allow",
       // Scratch space for long command output and temp files.
       "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow"
     },
@@ -47,7 +51,11 @@
       "C:\\Users\\caspe\\.agents\\*": "deny",
       "C:\\Users\\caspe\\.claude\\skills\\*": "deny",
       "C:\\Users\\caspe\\.config\\herdr-app\\*": "deny",
-      "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\*": "deny"
+      "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\*": "deny",
+      "C:\\Users\\caspe\\AppData\\Roaming\\herdr-core\\*": "deny",
+      "C:\\Users\\caspe\\AppData\\Roaming\\herdr\\*": "deny",
+      "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-core\\*": "deny",
+      "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "deny"
     }
   }
 }
