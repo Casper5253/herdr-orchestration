@@ -38,6 +38,27 @@ def get(name: str, policy: dict[str, Any] | None) -> dict[str, Any] | None:
     return dict(profile, name=name)
 
 
+def validate(profile: dict[str, Any]) -> str | None:
+    """Why a profile cannot define a boundary, or None when it can.
+
+    Profiles fail closed: deny, allow and write_roots must all be present as
+    string lists. An empty or malformed profile is an error, never a run with
+    no denies.
+    """
+    name = profile.get("name", "?")
+    for key in ("deny", "allow", "write_roots"):
+        value = profile.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return f"profile {name} has a missing or malformed {key!r} list"
+    return None
+
+
+def _require_valid(profile: dict[str, Any]) -> None:
+    error = validate(profile)
+    if error:
+        raise ValueError(error)
+
+
 def seq_rules(profile: dict[str, Any]) -> list[list[str]]:
     return [m.group(1).split() for cmd in profile.get("deny") or [] if (m := _EXEC_RE.match(cmd))]
 
@@ -46,24 +67,108 @@ def allow_seq_rules(profile: dict[str, Any]) -> list[list[str]]:
     return [m.group(1).split() for cmd in profile.get("allow") or [] if (m := _EXEC_RE.match(cmd))]
 
 
+# Write() deny globs approximating "nowhere outside the run cwd" for a
+# write-capable profile. Devin's deny always wins over allow, so the scope
+# cannot be expressed as allow-minus-deny; these cover the usual escapes.
+_OUTSIDE_CWD_WRITES = ("Write(~/**)", "Write(*:/**)", "Write(//**)", "Write(../**)", "Write(**/../**)")
+
+# Secret paths the rendered configs always exclude, mirroring the deny-path
+# rules the Devin worker template carries.
+_SECRET_WRITE_GLOBS = (".env*", "**/.env*", "**/.git/**", "**/.ssh/**", "**/credentials.toml")
+_SECRET_READ_GLOBS = (
+    ".env*",
+    "**/.env*",
+    "**/.ssh/**",
+    "**/credentials.toml",
+    "~/.ssh/**",
+    "~/AppData/Roaming/devin/credentials.toml",
+)
+
+
 def render_devin_config(profile: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
-    """The worker config for one profiled run: profile denies plus the secret
-    path rules the base template carries, so .env/.ssh stay forbidden."""
-    deny = [rule for rule in (base.get("permissions") or {}).get("deny") or [] if not _EXEC_RE.match(rule)]
+    """The worker config for one profiled run, failing closed.
+
+    The base secret-path denies stay. Devin's deny always wins over allow, so
+    a profile deny an allow rule covers (``Exec(git checkout)`` with
+    ``Exec(git checkout -b)`` allowed) moves to ask, where the more specific
+    allow carves out. A read-only profile (empty write_roots) loses the edit
+    tool, gets ``Write(**)`` denied and its exec surface shrinks to the
+    profile's allow list through an ``exec`` ask.
+    """
+    _require_valid(profile)
     config = json.loads(json.dumps(base))
-    config.setdefault("permissions", {})["deny"] = deny + list(profile.get("deny") or [])
+    perms = config.setdefault("permissions", {})
+    base_allow = [rule for rule in perms.get("allow") or []]
+    deny = [rule for rule in perms.get("deny") or [] if not _EXEC_RE.match(rule)]
+    ask = list(perms.get("ask") or [])
+    allow = [rule for rule in base_allow if not _EXEC_RE.match(rule)]
+
+    writable = bool(profile["write_roots"])
+    if writable:
+        if set(profile["write_roots"]) == {"cwd"}:
+            deny += [rule for rule in _OUTSIDE_CWD_WRITES if rule not in deny]
+    else:
+        allow = [tool for tool in allow if tool not in ("edit", "exec")]
+        deny += ["edit", "Write(**)"]
+        ask.append("exec")
+
+    allow_words = allow_seq_rules(profile)
+    for rule in profile["deny"]:
+        match = _EXEC_RE.match(rule)
+        covered = match is not None and any(
+            a[: len(match.group(1).split())] == match.group(1).split() for a in allow_words
+        )
+        (ask if covered else deny).append(rule)
+    allow += [f"Exec({' '.join(words)})" for words in allow_words]
+
+    perms["allow"] = allow
+    perms["deny"] = deny
+    if ask:
+        perms["ask"] = ask
     return config
 
 
 def render_opencode_permission(profile: dict[str, Any]) -> dict[str, Any]:
-    """The permission block: default deny, profile denies, allows last so the
-    last matching rule wins for the carved-out commands."""
+    """The permission block, default deny and scoped to the profile.
+
+    Bash: ``*`` denies, profile denies and allows follow so the last matching
+    rule wins for the carved-out commands. Edit: ``deny`` when the profile
+    grants no write roots, else allows inside the worktree only and always
+    denies the secret paths. ``external_directory`` stays denied unless a
+    write root lives outside the run directory.
+    """
+    _require_valid(profile)
     bash: dict[str, str] = {"*": "deny"}
     for words in seq_rules(profile):
         bash[" ".join(words) + "*"] = "deny"
     for words in allow_seq_rules(profile):
         bash[" ".join(words) + "*"] = "allow"
-    return {"bash": bash, "edit": "deny" if not profile.get("write_roots") else "allow"}
+
+    roots = [root for root in profile["write_roots"]]
+    permission: dict[str, Any] = {
+        "bash": bash,
+        "read": {"*": "allow", **{glob: "deny" for glob in _SECRET_READ_GLOBS}},
+    }
+    if not roots:
+        permission["edit"] = "deny"
+        permission["external_directory"] = "deny"
+        return permission
+
+    edit: dict[str, str] = {"*": "deny"}
+    external: dict[str, str] = {"*": "deny"}
+    for root in roots:
+        if root == "cwd":
+            # opencode runs with --dir <cwd>: the project dir is the worktree.
+            edit["**"] = "allow"
+        else:
+            glob = root.replace("\\", "/").rstrip("/")
+            edit[glob + "/**"] = "allow"
+            external[glob + "/**"] = "allow"
+    for glob in _SECRET_WRITE_GLOBS + ("~/.ssh/**", "~/AppData/Roaming/devin/credentials.toml"):
+        edit[glob] = "deny"
+    permission["edit"] = edit
+    permission["external_directory"] = "deny" if external == {"*": "deny"} else external
+    return permission
 
 
 def render(
@@ -73,6 +178,7 @@ def render(
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The rendered worker config for one profiled run."""
+    _require_valid(profile)
     if worker == "devin":
         return render_devin_config(profile, base or devin_mod._worker_config(policy))
     if worker == "opencode":
@@ -99,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if profile.get("lead_only"):
         print(f"profile {args.name} is lead-only: no worker config is rendered", file=sys.stderr)
+        return 2
+    error = validate(profile)
+    if error:
+        print(error, file=sys.stderr)
         return 2
     print(json.dumps(render(args.worker, profile, policy=load_policy()), indent=2))
     return 0

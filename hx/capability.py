@@ -31,9 +31,11 @@ instruction position (line start, after ``:``/``;``, or after a verb like
 ``run``/``with``/``via``), fenced or indented code blocks, and explicit
 "run X" phrases. Bare prose is never scanned: ``Herdr``, ``Devin`` and
 ``format`` are product names, not commands. Lines that prohibit or discuss
-denials (``do not``, ``don't``, ``never``, ``no``, ``denied``…) are skipped,
-and any denied command they name suppresses the same rule everywhere in the
-brief, because "X is denied for you" cancels a stale instruction to run X.
+denials (``do not``, ``don't``, ``never``, ``no``, ``denied``…) skip path
+scanning, and a denied command named in a prohibition's own sentence
+suppresses that instruction alone: an unrelated "no X" phrase or a denial
+disclosure in another sentence never cancels a real instruction on the
+same line or elsewhere in the brief.
 
 ``--allow-preflight-risk`` overrides the refusal.
 """
@@ -265,14 +267,22 @@ def worker_profile(
         if named is None:
             profile["profile_error"] = f"unknown profile {profile_name}"
             return profile
+        error = profile_mod.validate(named)
+        if error is not None:
+            profile["profile_error"] = error
+            return profile
         profile["profile_name"] = profile_name
         profile["lead_only"] = bool(named.get("lead_only"))
         if not named.get("lead_only"):
+            roots = list(named["write_roots"])
             profile["seq_rules"] = profile_mod.seq_rules(named)
             profile["allow_seq_rules"] = profile_mod.allow_seq_rules(named)
             profile["bash_rules"] = list(profile_mod.render_opencode_permission(named)["bash"].items())
-            profile["writable_roots"] = [r for r in named.get("write_roots") or [] if r != "cwd"]
-            profile["writes_outside_cwd"] = bool(named.get("write_roots"))
+            profile["writable_roots"] = [r for r in roots if r != "cwd"]
+            # 'cwd' is a real root: writes are allowed inside it, nowhere else.
+            # An empty write_roots means no writable scope at all.
+            profile["cwd_writable"] = "cwd" in roots
+            profile["writes_outside_cwd"] = False
     return profile
 
 
@@ -415,7 +425,7 @@ def _path_rule_denied(rule: tuple[str, str], path_norm: str, home_norm: str, is_
 
 
 def _writable_scope(profile: dict[str, Any], cwd: Path) -> list[str]:
-    roots = [_norm(str(cwd))]
+    roots = [_norm(str(cwd))] if profile.get("cwd_writable", True) else []
     for raw in profile.get("writable_roots") or []:
         roots.append(_norm(raw))
     return roots
@@ -441,11 +451,23 @@ _EXEC_TRIGGERS = frozenset(
     }
 )
 
-# Lines that prohibit or discuss denials are skipped, and the denied commands
-# they name suppress the same rules elsewhere in the brief.
+# Lines that prohibit or discuss denials are skipped for path scanning, and
+# the denied commands the prohibition names suppress only the sentence it
+# speaks in: "denied: X" and "X is denied" scope to the same instruction, but
+# another command in a different sentence on the same line or elsewhere in
+# the brief is still evaluated.
 _SKIP_RE = re.compile(
     r"\b(?:do\s+not|don'?t|never|must\s+not|denied|denial|deny|no)\b", re.IGNORECASE
 )
+_SENTENCE_END_RE = re.compile(r"[.!?]")
+
+
+def _prohibition_scope(line: str, match: re.Match) -> str:
+    """The sentence a prohibition speaks in, around the negation."""
+    before = line[: match.start()]
+    start = max(before.rfind("."), before.rfind("!"), before.rfind("?")) + 1
+    end = _SENTENCE_END_RE.search(line, match.end())
+    return line[start : end.start() if end else len(line)]
 
 
 def _exec_position(before: str) -> bool:
@@ -578,9 +600,12 @@ def prompt_findings(
     """Every denied command or out-of-scope write path the brief asks to run.
 
     Pass one marks lines that prohibit or discuss denials and harvests the
-    commands they name as suppressed. Pass two evaluates only what a worker
-    would execute and drops suppressed findings. With ``profile_name`` the
-    named execution profile governs, not the static worker list.
+    commands each prohibition's sentence names into a same-line suppressed
+    set. Pass two evaluates only what a worker would execute and drops
+    findings suppressed on their own line: a prohibition covers its own
+    instruction, never a command in another sentence or another line. With
+    ``profile_name`` the named execution profile governs, not the static
+    worker list.
     """
     profile = worker_profile(worker, policy, profile_name)
     if profile is None:
@@ -591,23 +616,23 @@ def prompt_findings(
         return [{"kind": "profile", "command": profile_name, "rule": f"profile {profile_name} is lead-only", "line": 0}]
     lines = prompt.splitlines()
     skipped: set[int] = set()
-    suppressed_rules: set[str] = set()
-    suppressed_tools: set[str] = set()
+    suppressed: dict[int, tuple[set[str], set[str]]] = {}
     for lineno, line in enumerate(lines, 1):
-        if _SKIP_RE.search(line):
+        for match in _SKIP_RE.finditer(line):
             skipped.add(lineno)
-            _harvest_suppressed(profile, line, suppressed_rules, suppressed_tools)
+            rules, tools = suppressed.setdefault(lineno, (set(), set()))
+            _harvest_suppressed(profile, _prohibition_scope(line, match), rules, tools)
     findings: list[dict[str, Any]] = []
     for lineno, candidate in _command_candidates(lines):
-        if lineno not in skipped:
-            _eval_candidate(profile, candidate, lineno, findings)
+        _eval_candidate(profile, candidate, lineno, findings)
     for lineno, line in enumerate(lines, 1):
         if lineno not in skipped:
             _scan_paths(profile, line, lineno, cwd, findings)
     kept: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for finding in findings:
-        if finding["rule"] in suppressed_rules or finding["command"] in suppressed_tools:
+        rules, tools = suppressed.get(finding["line"], ((), ()))
+        if finding["rule"] in rules or finding["command"] in tools:
             continue
         key = (finding["kind"], finding["rule"], finding["command"])
         if key in seen:
@@ -621,7 +646,9 @@ def format_refusal(worker: str, findings: list[dict[str, Any]]) -> str:
     """The refusal text: each problem, and the fix the brief prescribes."""
     lines = [f"admission preflight refused {worker} launch:"]
     for finding in findings:
-        if finding["kind"] == "outside-cwd":
+        if finding["kind"] == "profile":
+            lines.append(f"- {finding['rule']} (--profile {finding['command']}).")
+        elif finding["kind"] == "outside-cwd":
             lines.append(
                 f"- `{finding['command']}` is a write path outside the {worker} "
                 f"workspace roots ({finding['rule']}, line {finding['line']})."
