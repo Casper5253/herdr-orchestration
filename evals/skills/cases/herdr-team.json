@@ -1,0 +1,56 @@
+{
+  "skill": "herdr-team",
+  "cases": [
+    {
+      "id": "H1-brief-format",
+      "description": "A brief names a worktree, the no-git rule and the team fields in ten lines or fewer.",
+      "prompt": "You are the lead. Write a herdr-team brief to dev-opencode for a small task in `C:\\repo`. The worker must use its own worktree at `../repo-c3`, may only edit `src/a.py`, and must not commit or push. Use the team brief format. Return only the brief.",
+      "checks": {
+        "must": [
+          "task:",
+          "files:",
+          "accept:",
+          "report to:",
+          "worktree",
+          "no git|no commit|do not commit|no push|do not push"
+        ],
+        "max_nonempty_lines": 10
+      }
+    },
+    {
+      "id": "H2-report-format",
+      "description": "A worker report uses STATUS, CHANGED, TESTS and NOTES.",
+      "prompt": "You are the worker. You finished the task: changed `src/a.py`; `pytest` passes. Write the report to the lead using the team report format. Return only the report.",
+      "checks": {
+        "must": [
+          "status:\\s*done",
+          "changed:",
+          "tests:",
+          "notes:"
+        ]
+      }
+    },
+    {
+      "id": "H3-blocked-target",
+      "description": "A blocked target is waiting for the user; never send keys, tell the lead.",
+      "prompt": "A target agent is blocked waiting for the user. What do you do? One sentence.",
+      "checks": {
+        "must": [
+          "tell the lead|report (it )?to the lead|notify the lead|escalate",
+          "never send|do not send|don.t send|leave .{0,20}alone|wait for the user|blocked|do not interact|don.t interact|stop and wait"
+        ]
+      }
+    },
+    {
+      "id": "H4-no-redelegate",
+      "description": "An assignee does not re-delegate a brief; it reports back.",
+      "prompt": "You are an assignee and you received a [team from dev-claude] brief. May you delegate it to another teammate? One sentence.",
+      "checks": {
+        "must": [
+          "\\bno\\b|never re-delegate|do not re-delegate",
+          "report back|do it yourself|inside|yourself"
+        ]
+      }
+    }
+  ]
+}

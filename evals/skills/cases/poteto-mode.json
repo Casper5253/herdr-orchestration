@@ -1,0 +1,49 @@
+{
+  "skill": "poteto-mode",
+  "cases": [
+    {
+      "id": "P1-final-report",
+      "description": "A finished Feature task opens the final reply with the user's goal, then impact and verification.",
+      "prompt": "You are a poteto-mode lead. You just finished a small Feature task: you added a nil guard in `src/a.py`, and the tests pass. Write the final reply to the user. Follow the skill's rules for a final report. Return only the reply.",
+      "checks": {
+        "must": [
+          "caller|user|consumer|maintainer|next engineer|inherit",
+          "test|suite|verif|passes"
+        ],
+        "must_in_opening": [
+          "\\bgoal\\b|you wanted|you asked|aim|trying to"
+        ],
+        "must_not": []
+      }
+    },
+    {
+      "id": "P2-investigation-route",
+      "description": "A read-only how-does-X-work question routes to Investigation and does not write code.",
+      "prompt": "A user asks: 'How does the checkpoint flow work?' You are a poteto-mode lead. State the playbook you use and whether it writes code. Return one short paragraph.",
+      "checks": {
+        "must": [
+          "\\binvestigation\\b",
+          "read[ -]?only|no (code|pr|edits)|does not write|writes no code"
+        ],
+        "must_not": [
+          "(?<!not )(?<!never )(?<!no )(?<!doesn.t )(?<!don.t )\\bwrites? (the )?code\\b",
+          "(?<!not )(?<!never )(?<!doesn.t )(?<!don.t )\\bopen(s|ed)? (a )?PR\\b",
+          "(?<!not )(?<!never )\\bwrite the change\\b",
+          "(?<!not )(?<!never )\\btreat(s|ed)? (it )?as a Feature\\b"
+        ]
+      }
+    },
+    {
+      "id": "P3-bug-fix-start",
+      "description": "A clear bug report starts with Bug fix / TDD and a reproduction.",
+      "prompt": "A bug report arrives with a cheap, clear reproduction. You are a poteto-mode lead. Which playbook do you start with, and what is the first step? One short paragraph.",
+      "checks": {
+        "must": [
+          "\\b(bug[ -]?fix|tdd)\\b",
+          "reproduc|failing|\\btest|runtime evidence|confirm"
+        ],
+        "must_not": []
+      }
+    }
+  ]
+}

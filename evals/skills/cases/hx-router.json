@@ -1,0 +1,47 @@
+{
+  "skill": "hx-router",
+  "cases": [
+    {
+      "id": "X1-trivial-direct",
+      "description": "A trivial, fully specified change is direct work, not a delegation.",
+      "prompt": "You are the hx lead. A task is a one-line typo fix in one file, fully specified. What dispatch method should the router choose, and should you delegate? One sentence.",
+      "checks": {
+        "must": [
+          "\\bdirect\\b",
+          "yourself|do it yourself|no delegation|not delegate"
+        ]
+      }
+    },
+    {
+      "id": "X2-input-failure",
+      "description": "An unclear brief is fixed at the input; only capability failure escalates.",
+      "prompt": "A worker fails because the brief was unclear. What should the hx lead do? One sentence.",
+      "checks": {
+        "must": [
+          "\\bfix(ing|es)?\\b.{0,25}\\b(brief|input|context)|clarify|rewrite|tighten",
+          "(not|never|rather than|instead of|no need to|don.t)\\s+(by\\s+)?escalat|not (a )?(bigger|larger|stronger|different) model|same (tier|model)|capability"
+        ]
+      }
+    },
+    {
+      "id": "X3-boundary-command",
+      "description": "At a task boundary, the command is `hx context decide`.",
+      "prompt": "At a completed task boundary, what command does the hx lead run for every worker? One line.",
+      "checks": {
+        "must": [
+          "hx context decide"
+        ]
+      }
+    },
+    {
+      "id": "X4-headroom-command",
+      "description": "Pool headroom is checked with `hx usage`.",
+      "prompt": "Before delegating, how does the hx lead check pool headroom? One line.",
+      "checks": {
+        "must": [
+          "hx usage"
+        ]
+      }
+    }
+  ]
+}

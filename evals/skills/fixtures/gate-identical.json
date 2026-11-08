@@ -1,0 +1,103 @@
+{
+  "created": "2026-11-08T07:32:39.595349+00:00",
+  "harness": "evals/skills/run.py",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "repeat": 3,
+  "before": "C:\\Users\\caspe\\.claude\\skills",
+  "after": "C:\\Users\\caspe\\.claude\\skills",
+  "results": [
+    {
+      "skill": "poteto-mode",
+      "cases": [
+        {
+          "id": "P1-final-report",
+          "before": 2,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "P2-investigation-route",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "P3-bug-fix-start",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        }
+      ],
+      "before_passed": 3,
+      "after_passed": 3,
+      "total": 3,
+      "verdict": "promote"
+    },
+    {
+      "skill": "herdr-team",
+      "cases": [
+        {
+          "id": "H1-brief-format",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "H2-report-format",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "H3-blocked-target",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "H4-no-redelegate",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        }
+      ],
+      "before_passed": 4,
+      "after_passed": 4,
+      "total": 4,
+      "verdict": "promote"
+    },
+    {
+      "skill": "hx-router",
+      "cases": [
+        {
+          "id": "X1-trivial-direct",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "X2-input-failure",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "X3-boundary-command",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "X4-headroom-command",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        }
+      ],
+      "before_passed": 4,
+      "after_passed": 4,
+      "total": 4,
+      "verdict": "promote"
+    }
+  ]
+}

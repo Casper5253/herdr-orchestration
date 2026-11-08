@@ -1,0 +1,37 @@
+{
+  "created": "2026-11-08T07:02:37.370433+00:00",
+  "harness": "evals/skills/run.py",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "repeat": 3,
+  "before": "C:\\Users\\caspe\\.claude\\skills\\poteto-mode\\SKILL.md",
+  "after": "C:\\Users\\caspe\\.claude\\skills\\poteto-mode\\SKILL.md",
+  "results": [
+    {
+      "skill": "poteto-mode",
+      "cases": [
+        {
+          "id": "P1-final-report",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "P2-investigation-route",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        },
+        {
+          "id": "P3-bug-fix-start",
+          "before": 3,
+          "after": 3,
+          "repeat": 3
+        }
+      ],
+      "before_passed": 3,
+      "after_passed": 3,
+      "total": 3,
+      "verdict": "promote"
+    }
+  ]
+}
