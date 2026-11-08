@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, context, doctor, ledger, ocrun, route, say, usage
+from hx import checkpoint, context, doctor, handoff, ledger, ocrun, route, say, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -132,6 +132,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Headless OpenCode worker wrapper with silent-failure detection.",
     )
     subparsers.add_parser("doctor", help="Read-only drift report: policy vs live adapters.")
+    subparsers.add_parser("handoff", help="Write a portable handoff file and print its re-brief line.")
     context_parser = subparsers.add_parser("context", help="Session context decisions and recovery.")
     context_sub = context_parser.add_subparsers(dest="context_command", required=True)
     decide = context_sub.add_parser("decide")
@@ -282,8 +283,13 @@ def _checkpoint_validate(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:]) if argv is None else list(argv)
-    if args_list and args_list[0] in {"route", "ocrun", "doctor"}:
-        handler = {"route": route.main, "ocrun": ocrun.main, "doctor": doctor.main}[args_list[0]]
+    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff"}:
+        handler = {
+            "route": route.main,
+            "ocrun": ocrun.main,
+            "doctor": doctor.main,
+            "handoff": handoff.main,
+        }[args_list[0]]
         try:
             return int(handler(args_list[1:]) or 0)
         except SystemExit as exc:

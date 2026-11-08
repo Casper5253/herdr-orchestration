@@ -517,8 +517,11 @@ class Controller:
                 if devin_clear:
                     handoff = self.ledger.repo_root / ".hx" / "handoffs" / f"{name}.md"
                     result.update(action="handoff-needed", reason="no hx task is registered; use a fresh-owner handoff because native Devin compaction is unverified", steps=[
-                        f"Write a handoff to {handoff}: objective, constraints, decisions, exact errors, tests, artifact references and next action.",
-                        "Have the lead start a fresh owner in the same repository and re-brief from that handoff; do not clear the current owner until its state is saved.",
+                        "Register the work with hx task add and checkpoint it, then run "
+                        f"`hx handoff write {name} --task <id>` (writes {handoff.parent}).",
+                        "Have the lead start a fresh owner in the same repository and send it "
+                        "the line `hx handoff brief <file>` prints; do not clear the current "
+                        "owner until its state is saved.",
                         f"Run hx boundary {name} after the fresh owner acknowledges the next action.",
                     ])
                 else:
