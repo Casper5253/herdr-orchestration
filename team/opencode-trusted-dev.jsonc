@@ -17,6 +17,18 @@
       "herdr pane read *": "allow",
       "herdr status*": "allow",
       "herdr --skill*": "allow"
+    },
+    // Skills live outside every repo (poteto-mode reads pstack leaves by path), so asking here stalled each brief.
+    "external_directory": {
+      "*": "ask",
+      "C:\\Users\\caspe\\.agents\\*": "allow",
+      "C:\\Users\\caspe\\.claude\\skills\\*": "allow"
+    },
+    // Reading skills is fine; changing them goes through ~/.agents and sync.py, never a worker.
+    "edit": {
+      "*": "allow",
+      "C:\\Users\\caspe\\.agents\\*": "deny",
+      "C:\\Users\\caspe\\.claude\\skills\\*": "deny"
     }
   }
 }
