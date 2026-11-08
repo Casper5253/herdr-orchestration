@@ -25,3 +25,4 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.delenv("HERDR_PANE_ID", raising=False)
     monkeypatch.delenv("HX_HERDR_PREFIX", raising=False)
     monkeypatch.setenv("HX_OPENCODE_AUTH", str(tmp_path / "missing-opencode-auth.json"))
+    monkeypatch.setenv("HX_CONTEXT_RESETS_PATH", str(tmp_path / "context-resets.json"))

@@ -1,5 +1,6 @@
 """Use provider-session identity and measured rows, not in-flight zero counters."""
 
+import datetime as dt
 import json
 import sqlite3
 
@@ -15,6 +16,7 @@ def pane(tmp_path, monkeypatch):
     with sqlite3.connect(db) as conn:
         conn.execute('CREATE TABLE message (session_id TEXT, time_created INTEGER, data TEXT)')
     monkeypatch.setenv('HX_OPENCODE_DB', str(db))
+    monkeypatch.setenv('HX_CONTEXT_RESETS_PATH', str(tmp_path / 'context-resets.json'))
     monkeypatch.setenv('HERDR_PANE_ID', 'sender-pane')
     monkeypatch.setattr(usage, '_herdr_agent_list', lambda: {'result': {'agents': [
         {'name': 'dev-codex', 'pane_id': 'sender-pane'},
@@ -30,7 +32,8 @@ def pane(tmp_path, monkeypatch):
     controller = context.Controller(led, policy)
     monkeypatch.setattr(cli.context, 'Controller', lambda: controller)
     sent = []
-    monkeypatch.setattr(cli.say.subprocess, 'run', lambda args, **kw: sent.append(args) or type('Result', (), {'returncode': 0})())
+    monkeypatch.setattr(cli.say.subprocess, 'run', lambda args, **kw: sent.append(args) or type(
+        'Result', (), {'returncode': 0, 'stdout': '{"result": {}}'})())
     created = int(context._now().timestamp()*1000) - 1000
 
     def append(sid, tokens, *, complete=True):
@@ -105,3 +108,53 @@ def test_session_lookup_is_pinned_during_a_telemetry_read(tmp_path, monkeypatch)
     assert sid == sample['session_id'] == 'first'
     assert sample['utilisation'] == .2
     assert looked_up == ['pane']
+
+
+def test_recorded_reset_clears_the_hold_before_the_new_session_exists(pane, capsys):
+    agent, append, sent = pane
+    append('old', 598000)
+    assert cli.main(['say', 'opencode', 'first assignment']) == 1
+    assert sent == []
+    assert '299%' in capsys.readouterr().err
+    assert cli.main(['boundary', 'dev-opencode', '--reset-sent']) == 0
+    recorded = json.loads(capsys.readouterr().out)
+    assert recorded['action'] == 'keep'
+    assert recorded['reset_pending'] is True
+    assert recorded['reset']['session_id'] == 'old'
+    assert cli.main(['say', 'opencode', 'start the new session']) == 0
+    assert len(sent) == 1
+    assert 'Held:' not in capsys.readouterr().err
+
+
+def test_fake_reset_holds_again_after_the_grace_window(pane, capsys, monkeypatch):
+    agent, append, sent = pane
+    append('old', 598000)
+    usage.load_policy()['context'] = {'reset_grace_min': 5}
+    assert cli.main(['boundary', 'dev-opencode', '--reset-sent']) == 0
+    recorded = json.loads(capsys.readouterr().out)
+    reset_at = dt.datetime.fromisoformat(recorded['reset']['reset_at'])
+    monkeypatch.setattr(context, '_now', lambda: reset_at + dt.timedelta(minutes=6))
+    assert cli.main(['say', 'opencode', 'too late']) == 1
+    assert sent == []
+    assert '299%' in capsys.readouterr().err
+
+
+def test_hx_reset_sends_new_then_records_it(pane, capsys):
+    agent, append, sent = pane
+    append('old', 598000)
+    assert cli.main(['reset', 'dev-opencode']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['action'] == 'reset-sent'
+    assert result['command'] == '/new'
+    assert result['session_id'] == 'old'
+    assert sent == [['herdr', 'agent', 'prompt', 'dev-opencode', '/new']]
+    assert cli.main(['say', 'opencode', 'first message of the new session']) == 0
+    assert len(sent) == 2
+
+
+def test_hx_reset_refuses_a_busy_agent(pane, capsys):
+    agent, append, sent = pane
+    agent['agent_status'] = 'working'
+    assert cli.main(['reset', 'dev-opencode']) == 1
+    assert sent == []
+    assert 'not idle' in capsys.readouterr().err
