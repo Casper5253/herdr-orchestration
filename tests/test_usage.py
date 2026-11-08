@@ -504,8 +504,8 @@ def test_opencode_usage_ignores_stale_dashboard_reading(tmp_path: Path, policy: 
 
     pool = opencode_usage(policy, db_path=db, now=now)["pool"]["windows"]
 
-    # The rolling 30d window must be local spend alone; an 18-day-old 51%
-    # snapshot would otherwise add 60 * 0.51 on top of it.
+    # The monthly window must be local spend alone; an 18-day-old 51%
+    # snapshot from the previous month would otherwise add 60 * 0.51.
     assert pool["30d"]["spend"] == pytest.approx(57.5)
     assert "calibrated_at" not in pool["30d"]
 

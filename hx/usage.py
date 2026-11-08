@@ -18,7 +18,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hx import devin, paths
+from hx import devin, opencode_go, paths
 
 READY = frozenset({"idle", "done"})
 _AGENTS_UNSET = object()
@@ -216,6 +216,28 @@ def _ladder_models(policy: dict[str, Any]) -> list[str]:
 
 
 def opencode_usage(
+    policy: dict[str, Any],
+    db_path: Path | None = None,
+    now: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """Prefer provider quota; retain local spend estimates on API failure."""
+    now = now or _utcnow()
+    local = _local_opencode_usage(policy, db_path, now)
+    auth_path = _env_path("HX_OPENCODE_AUTH", (db_path or default_opencode_db_path()).with_name("auth.json"))
+    windows = opencode_go.fetch_usage(auth_path)
+    if windows is None:
+        return local
+    result = {**local, "tag": "measured", "sample_age_seconds": 0,
+              "sampled_at": now.isoformat(), "source": opencode_go.ENDPOINT,
+              "pool": {"tag": "measured", "source": opencode_go.ENDPOINT, "windows": windows},
+              "models_tag": local["tag"], "local_estimate": local["pool"],
+              "available": all(w["utilisation"] < policy.get("thresholds", {}).get("pool_soft_limit", .85)
+                               for w in windows.values())}
+    result.pop("error", None)
+    return result
+
+
+def _local_opencode_usage(
     policy: dict[str, Any],
     db_path: Path | None = None,
     now: datetime.datetime | None = None,

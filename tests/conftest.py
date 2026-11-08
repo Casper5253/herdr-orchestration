@@ -15,7 +15,7 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_env(monkeypatch: pytest.MonkeyPatch):
+def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     # Tests must never inherit the agent session's HERDR_ENV=1, which flips
     # ocrun's default launch mode to visible (real console windows). A test
     # that needs the visible default sets the variable explicitly.
@@ -24,3 +24,4 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch):
     # the live herdr server instead of the policy under test.
     monkeypatch.delenv("HERDR_PANE_ID", raising=False)
     monkeypatch.delenv("HX_HERDR_PREFIX", raising=False)
+    monkeypatch.setenv("HX_OPENCODE_AUTH", str(tmp_path / "missing-opencode-auth.json"))

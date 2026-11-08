@@ -163,6 +163,7 @@
   },
   "context_limits": {
     "claude-lead": 400000,
+    "deepseek-v4.1-flash": 200000,
     "glm-5.3-flash": 200000,
     "qwen3.8-flash": 200000,
     "mimo-v2.6-flash": 200000,
@@ -171,7 +172,7 @@
     "kimi-k2.7-code": 200000,
     "gpt-6-luna": 200000
   },
-  "context_limits_note": "Effective worker limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code).",
+  "context_limits_note": "Effective worker limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code). DeepSeek v4.1 Flash native context is 1000000 per OpenCode models.json opencode-go metadata (models.dev, verified 2026-11-08); its effective budget follows the same 200K cap.",
   "context": {
     "boundary_threshold": 0.4,
     "pressure_threshold": 0.75,
