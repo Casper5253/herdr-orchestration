@@ -1,0 +1,54 @@
+# Metric loop program — <name>
+
+One declared metric, a fixed benchmark, one change per iteration, a change
+kept only when it beats the metric, every attempt logged for replay. This
+file is the whole contract; the loop runs from it and nothing else.
+
+## Metric
+
+- **Name:** <what is being optimised>
+- **Command:** <the exact command that prints the number>
+- **Direction:** lower | higher is better
+- **Baseline:** <the number before iteration 1, and the commit/file state it
+  was measured at>
+
+## Benchmark
+
+- **Corpus:** <the fixed inputs the metric is measured over — paths, hashes
+  or generation command. The corpus does not change during the loop.>
+- **Environment:** <what must be true to reproduce: cwd, env vars, services>
+
+## Budget
+
+- **Iterations:** <max attempts, including reverted ones>
+- **Time:** <wall-clock cap>
+- **Tokens:** <spend cap, if the loop calls a model>
+
+## What may change
+
+<The exact files, parameters or inputs each iteration may touch. Nothing
+outside this list is a candidate.>
+
+## What must not change
+
+<Hard constraints: corpus, production behaviour the metric does not see,
+files the loop may not write.>
+
+## Keep or revert
+
+- Run the metric after each change, from a clean state.
+- Keep the change only when the metric strictly improves. A tie is a revert.
+- On revert, restore the state before the attempt and say so in the log.
+- Stop when the budget is spent, the metric plateaus for <n> consecutive
+  iterations, or the metric hits its target.
+
+## Log
+
+One TSV row per attempt, appended to `<log path>`:
+
+```
+iter  change  <metric fields>  score  kept
+```
+
+Every attempt is logged — kept and reverted alike. The log is the evidence;
+the final row is the kept set re-measured from scratch.

@@ -1,0 +1,8 @@
+iter	change	fps	misses	wrong	kept
+baseline	current code	0	1	1	baseline
+it1-run-verbs	run phrase covers running/executing/starting/trying	0	0	0	yes
+it2-and-or	it1 + and/or as exec triggers	1	0	1	no
+it3-by	it1 + 'by' as exec trigger	0	0	0	no
+it4-no-with	it1 minus the 'with' trigger	0	1	1	no
+it5-skip-instead	it1 + skip lines with instead/rather/skip	0	0	0	no
+final	kept set applied	0	0	0	-
