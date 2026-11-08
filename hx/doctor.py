@@ -2,11 +2,12 @@
 
 The measured fault: the launch adapters drift from policy.json and nothing
 checks. For each worker hx reports the model policy selects against the model
-observed where it can be read (launch overlays and live pane configs),
+observed where it can be read (live OpenCode session messages and pane configs),
 whether context telemetry is known, whether the required skills are present
 for that host, and whether the C4 denied-command profile agrees with the
 live config. A second pass flags generated/overlay prose that contradicts
-policy, from a small table of rules rather than ad hoc checks.
+policy, from a small table of rules rather than ad hoc checks. The install
+manifest drives byte comparisons between every copied file and its repo source.
 
 Every value is ``ok``, ``drift`` (with both values) or ``unknown``. Doctor
 never probes the network and never guesses: an unreadable source is unknown,
@@ -20,12 +21,13 @@ import argparse
 import json
 import os
 import re
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hx import capability
+from hx import capability, context, paths, usage
 from hx import devin as devin_mod
-from hx import paths
 
 REQUIRED_SKILLS = ("herdr-team", "hx-router", "poteto-mode")
 
@@ -63,11 +65,64 @@ def _roots() -> dict[str, Path]:
         "claude_skills": home / ".claude" / "skills",
         "codex_skills": home / ".codex" / "skills",
         "devin_skills": appdata / "devin" / "skills",
-        "overlay": paths.package_root() / "team" / "opencode-trusted-dev.jsonc",
+        "home": home,
+        "repo": paths.package_root(),
+        "overlay": home / ".herdr-team" / "opencode-trusted-dev.jsonc",
+        "opencode_db": usage.default_opencode_db_path(),
         "codex_profile": home / ".codex" / "trusted-dev.config.toml",
         "devin_pane": devin_mod.state_dir() / "dev-devin" / "config.json",
         "hx_ocrun": paths.package_root() / "hx" / "ocrun.py",
     }
+
+
+def _installed_files(roots: dict[str, Path]) -> list[dict[str, Any]]:
+    if "repo" not in roots or "home" not in roots:
+        return []
+    manifest = roots["repo"] / "team" / "install-files.json"
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [{"status": "unknown", "source": str(manifest), "target": None}]
+    checks = []
+    for entry in entries:
+        source = roots["repo"] / entry["source"]
+        target = roots["home"] / entry["target"]
+        try:
+            status = "ok" if source.read_bytes() == target.read_bytes() else "drift"
+        except FileNotFoundError:
+            status = "drift" if source.is_file() and not target.exists() else "unknown"
+        except OSError:
+            status = "unknown"
+        checks.append({"status": status, "source": str(source), "target": str(target)})
+    return checks
+
+
+def _opencode_model(roots: dict[str, Path], policy: dict[str, Any]) -> tuple[str | None, str | None]:
+    db = roots.get("opencode_db")
+    if db is None or not db.is_file():
+        return None, str(db) if db else None
+    source = str(db)
+    try:
+        agent = context.agent_info(usage.team_prefix(policy) + "opencode")
+        sid = (agent.get("agent_session") or {}).get("value")
+        if agent.get("agent") != "opencode" or not isinstance(sid, str) or not sid:
+            return None, source
+        source += f" session={sid}"
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+            rows = conn.execute(
+                "SELECT data FROM message WHERE session_id = ? ORDER BY time_created DESC, rowid DESC", (sid,))
+            for (raw,) in rows:
+                data = json.loads(raw)
+                if data.get("role") not in {"assistant", "user"}:
+                    continue
+                model = data.get("modelID") or (data.get("model") or {}).get("modelID")
+                provider = data.get("providerID") or (data.get("model") or {}).get("providerID")
+                if not isinstance(model, str) or not model or not isinstance(provider, str) or not provider:
+                    return None, source
+                return (model if provider == "opencode-go" else f"{provider}/{model}"), source
+    except Exception:
+        return None, source
+    return None, source
 
 
 def _load_jsonc(path: Path) -> dict[str, Any] | None:
@@ -97,15 +152,12 @@ def _selected_models(policy: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
-def _observed_model(worker: str, roots: dict[str, Path]) -> tuple[str | None, str | None]:
-    """(model, source) read from launch/overlay/pane files, or (None, None)."""
+def _observed_model(worker: str, roots: dict[str, Path], policy: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Read the live session or host configuration; unknown is never overlay evidence."""
     if worker == "codex":
         return _toml_value(roots["codex_profile"], "model"), str(roots["codex_profile"])
     if worker == "opencode":
-        config = _load_jsonc(roots["overlay"])
-        model = config.get("model") if config else None
-        model = model.split("/", 1)[-1] if isinstance(model, str) else None
-        return model, str(roots["overlay"])
+        return _opencode_model(roots, policy)
     if worker == "devin":
         config = _load_jsonc(roots["devin_pane"]) or _load_jsonc(devin_mod.pane_config_template())
         return ((config or {}).get("agent") or {}).get("model"), str(roots["devin_pane"])
@@ -166,7 +218,7 @@ def _check_workers(policy: dict[str, Any], roots: dict[str, Path]) -> dict[str, 
     }
     out: dict[str, Any] = {}
     for worker in ("claude", "codex", "opencode", "devin"):
-        observed, source = _observed_model(worker, roots)
+        observed, source = _observed_model(worker, roots, policy)
         want = selected.get(worker)
         if want is None or observed is None:
             status = "unknown"
@@ -229,12 +281,13 @@ def doctor(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None =
     roots = roots or _roots()
     workers = _check_workers(policy, roots)
     prose = _scan_prose(policy, roots)
+    installed = _installed_files(roots)
     drift = any(
         part.get("status") == "drift"
         for worker in workers.values()
         for part in (worker["model"], worker["skills"], worker["deny_profile"])
-    ) or any(f.get("status") == "drift" for f in prose)
-    return {"workers": workers, "prose": prose, "drift": drift}
+    ) or any(f.get("status") == "drift" for f in prose + installed)
+    return {"workers": workers, "prose": prose, "installed_files": installed, "drift": drift}
 
 
 def _summary(report: dict[str, Any]) -> str:
@@ -244,6 +297,8 @@ def _summary(report: dict[str, Any]) -> str:
         lines.append(
             f"{worker:9s} model:{model['status']:7s} selected={model['selected']} observed={model['observed']}"
         )
+        if worker == "opencode":
+            lines.append(f"{'':9s} source:{model['source']}")
         if checks["context_telemetry"] != "known":
             lines.append(f"{'':9s} context:{checks['context_telemetry']}")
         skills = checks["skills"]
@@ -252,6 +307,8 @@ def _summary(report: dict[str, Any]) -> str:
         deny = checks["deny_profile"]
         if deny["status"] != "ok":
             lines.append(f"{'':9s} deny_profile:{deny['status']} {deny.get('mismatches') or deny.get('reason')}")
+    for check in report.get("installed_files", []):
+        lines.append(f"installed {check['status']} {check['target']} source={check['source']}")
     for finding in report["prose"]:
         if finding["status"] == "drift":
             lines.append(f"drift  {finding['file']}:{finding['line']} {finding['message']}")

@@ -1,0 +1,8 @@
+[
+  {"source": "team/Start-HerdrTeam.ps1", "target": ".herdr-team/Start-HerdrTeam.ps1"},
+  {"source": "team/claude-settings.json", "target": ".herdr-team/claude-settings.json"},
+  {"source": "team/opencode-trusted-dev.jsonc", "target": ".herdr-team/opencode-trusted-dev.jsonc"},
+  {"source": "team/devin-pane.config.json", "target": ".herdr-team/devin-pane.config.json"},
+  {"source": "team/README.md", "target": ".herdr-team/README.md"},
+  {"source": "team/herdr-team.rules", "target": ".codex/rules/herdr-team.rules"}
+]

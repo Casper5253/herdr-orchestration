@@ -15,10 +15,10 @@ $dir = Split-Path $PSCommandPath
 
 function Invoke-Herdr { $out = & herdr @args; if ($LASTEXITCODE -ne 0) { throw "herdr $args failed: $out" }; $out | ConvertFrom-Json }
 
-# -Devin reads policy.json for the model and refuses once the free SWE-2 promotion ends, the same gate
-# hx applies to ocrun --worker devin. HX_POLICY_PATH overrides the location, as it does for hx.
+# Launch models come from policy, regardless of stale installed overlay defaults.
 $devinModel = $null
-if ($Devin) {
+$opencodeModel = $null
+if ($Devin -or -not $NoOpenCode) {
     $policyPath = $env:HX_POLICY_PATH
     if (-not $policyPath) {
         $policyPath = Join-Path $dir '..\policy.json'
@@ -32,6 +32,15 @@ if ($Devin) {
     }
     if (-not (Test-Path $policyPath)) { throw 'policy.json not found; set HX_POLICY_PATH or run the launcher from the hx repo checkout.' }
     $policy = Get-Content -Raw $policyPath | ConvertFrom-Json
+}
+if (-not $NoOpenCode) {
+    $model = $policy.persistent_opencode_model
+    if ($model -isnot [string] -or $model -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
+        throw 'policy.persistent_opencode_model must be a model ID without a provider prefix.'
+    }
+    $opencodeModel = "opencode-go/$model"
+}
+if ($Devin) {
     $promoEnd = $null
     try { $promoEnd = [DateTimeOffset]::Parse($policy.devin.promo.ends_at) } catch {}
     if (-not $promoEnd -or [DateTimeOffset]::UtcNow -ge $promoEnd) {
@@ -71,7 +80,7 @@ if ($full.StartsWith($projRoot, [StringComparison]::OrdinalIgnoreCase)) {
     }
 }
 & herdr agent start "$Team-codex" --kind codex --pane $right --timeout 120000 -- -p trusted-dev
-if (-not $NoOpenCode) { & herdr agent start "$Team-opencode" --kind opencode --pane $below --timeout 120000 }
+if (-not $NoOpenCode) { & herdr agent start "$Team-opencode" --kind opencode --pane $below --timeout 120000 -- -m $opencodeModel }
 if ($Devin) {
     # The pane writes setup state (org id, shell setup, theme) into its config, so it gets a fresh copy
     # of the template on every launch.

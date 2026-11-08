@@ -11,11 +11,11 @@ function Install-File($from, $to) {
     Write-Host "installed $to"
 }
 
-New-Item -ItemType Directory -Force (Join-Path $home_ '.herdr-team') | Out-Null
-foreach ($f in 'Start-HerdrTeam.ps1', 'claude-settings.json', 'opencode-trusted-dev.jsonc', 'devin-pane.config.json', 'README.md') {
-    Install-File (Join-Path $src $f) (Join-Path $home_ ".herdr-team\$f")
+foreach ($file in (Get-Content -Raw (Join-Path $src 'install-files.json') | ConvertFrom-Json)) {
+    $target = Join-Path $home_ $file.target
+    New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+    Install-File (Join-Path $PSScriptRoot $file.source) $target
 }
-Install-File (Join-Path $src 'herdr-team.rules') (Join-Path $home_ '.codex\rules\herdr-team.rules')
 
 # Codex profile: make the identity line team-neutral and trust this repo. Other content (trust entries) is kept.
 $profile_ = Join-Path $home_ '.codex\trusted-dev.config.toml'
@@ -32,12 +32,6 @@ if (-not $text.Contains($repoKey)) { $text += "`r`n$repoKey`r`ntrust_level = `"t
 Write-Host "updated $profile_"
 
 # Skills: repo copies are the source; pstack sync distributes them to Claude, OpenCode and Codex.
-$pstackLocal = Join-Path $home_ '.agents\pstack\local'
-foreach ($skill in 'herdr-team', 'hx-router') {
-    $dest = Join-Path $pstackLocal $skill
-    New-Item -ItemType Directory -Force $dest | Out-Null
-    Install-File (Join-Path $PSScriptRoot "skills\$skill\SKILL.md") (Join-Path $dest 'SKILL.md')
-}
 $python = (Get-Command python).Source
 & $python -I (Join-Path $home_ '.agents\pstack\sync.py')
 & $python -I (Join-Path $home_ '.agents\pstack\sync.py') --check

@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from hx import doctor
+
+
+@pytest.fixture(autouse=True)
+def isolated_live_agent(monkeypatch):
+    monkeypatch.setattr(doctor.usage, "team_prefix", lambda policy: "dev-")
+    monkeypatch.setattr(doctor.context, "agent_info", lambda name: {
+        "agent": "opencode", "agent_session": {"value": "live-session"}})
+
+
+def _message(db, session, model, created=1, provider="opencode-go"):
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS message (session_id TEXT, time_created INTEGER, data TEXT)")
+        conn.execute("INSERT INTO message VALUES (?, ?, ?)", (session, created, json.dumps({
+            "role": "assistant", "modelID": model, "providerID": provider})))
 
 
 def _policy() -> dict:
@@ -33,6 +48,8 @@ def _roots(tmp_path: Path) -> dict:
     devin = _skills_tree(tmp_path / "devin-skills")
     overlay = tmp_path / "overlay.jsonc"
     overlay.write_text('{"model": "opencode-go/deepseek-v4.1-flash"}\n', encoding="utf-8")
+    db = tmp_path / "opencode.db"
+    _message(db, "live-session", "deepseek-v4.1-flash")
     profile = tmp_path / "trusted-dev.config.toml"
     profile.write_text('model = "gpt-6.1-sol"\n', encoding="utf-8")
     pane = tmp_path / "dev-devin" / "config.json"
@@ -61,6 +78,7 @@ def _roots(tmp_path: Path) -> dict:
         "codex_skills": codex,
         "devin_skills": devin,
         "overlay": overlay,
+        "opencode_db": db,
         "codex_profile": profile,
         "devin_pane": pane,
         "hx_ocrun": tmp_path / "missing-ocrun.py",
@@ -82,6 +100,7 @@ def test_ok(tmp_path: Path) -> None:
 def test_drift_model_and_missing_skills(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     roots["overlay"].write_text('{"model": "opencode-go/qwen3.7-plus"}\n', encoding="utf-8")
+    _message(roots["opencode_db"], "live-session", "qwen3.7-plus", 2)
     (roots["devin_skills"] / "hx-router" / "SKILL.md").unlink()
     report = doctor.doctor(_policy(), roots)
     model = report["workers"]["opencode"]["model"]
@@ -143,3 +162,82 @@ def test_main_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     assert doctor.main(["--json"]) == 1
     monkeypatch.setattr(doctor, "doctor", lambda: {"workers": {}, "prose": [], "drift": False})
     assert doctor.main([]) == 0
+
+
+def test_installed_qwen_repo_deepseek_regression(monkeypatch, tmp_path):
+    """The stale 22 Oct installed overlay must not be hidden by the repo copy."""
+    repo = tmp_path / "repo"
+    home = tmp_path / "home"
+    (repo / "team").mkdir(parents=True)
+    (home / ".herdr-team").mkdir(parents=True)
+    (repo / "team/opencode-trusted-dev.jsonc").write_text(
+        '{"model":"opencode-go/deepseek-v4.1-flash"}', encoding="utf-8")
+    (home / ".herdr-team/opencode-trusted-dev.jsonc").write_text(
+        '{"model":"opencode-go/qwen3.7-plus"}', encoding="utf-8")
+    # Reproduce the real install layout without reading the real home or DB.
+    manifest = Path(__file__).resolve().parents[1] / "team/install-files.json"
+    (repo / "team/install-files.json").write_bytes(manifest.read_bytes())
+    monkeypatch.setattr(doctor.paths, "package_root", lambda: repo)
+    monkeypatch.setattr(doctor.os.path, "expanduser", lambda value: str(home))
+    monkeypatch.setenv("APPDATA", str(home / "AppData/Roaming"))
+    monkeypatch.setenv("HX_OPENCODE_DB", str(tmp_path / "absent.db"))
+    monkeypatch.setattr(doctor.devin_mod, "state_dir", lambda: home / ".herdr-team/state")
+    monkeypatch.setattr(doctor.devin_mod, "pane_config_template", lambda: repo / "team/devin-pane.config.json")
+    monkeypatch.setattr(doctor, "_deny_check", lambda *args: {"status": "unknown"})
+    report = doctor.doctor({"persistent_opencode_model": "deepseek-v4.1-flash"})
+    assert report["drift"] is True
+    assert report["workers"]["opencode"]["model"]["status"] != "ok"
+    overlay = next(c for c in report["installed_files"] if c["target"].endswith("opencode-trusted-dev.jsonc"))
+    assert overlay["status"] == "drift"
+
+
+@pytest.mark.parametrize("model,provider,status", [
+    ("qwen3.7-plus", "opencode-go", "drift"),
+    ("deepseek-v4.1-flash", "opencode-go", "ok"),
+    ("deepseek-v4.1-flash", "other-provider", "drift"),
+])
+def test_live_model_latest_message_bound_to_session(tmp_path, model, provider, status):
+    roots = _roots(tmp_path)
+    _message(roots["opencode_db"], "live-session", model, 2, provider)
+    _message(roots["opencode_db"], "unrelated-session", "qwen3.7-plus", 999)
+    check = doctor.doctor(_policy(), roots)["workers"]["opencode"]["model"]
+    assert check["status"] == status
+    assert "session=live-session" in check["source"]
+
+
+@pytest.mark.parametrize("failure", ["no-session", "missing-db", "bad-db", "bad-message", "no-message"])
+def test_live_unknown_never_falls_back_to_good_overlay(tmp_path, monkeypatch, failure):
+    roots = _roots(tmp_path)
+    if failure == "no-session":
+        monkeypatch.setattr(doctor.context, "agent_info", lambda name: {"agent": "opencode"})
+    elif failure == "missing-db":
+        roots["opencode_db"] = tmp_path / "absent.db"
+    elif failure == "bad-db":
+        roots["opencode_db"].write_text("not sqlite", encoding="utf-8")
+    else:
+        with sqlite3.connect(roots["opencode_db"]) as conn:
+            conn.execute("DELETE FROM message")
+            if failure == "bad-message":
+                conn.execute("INSERT INTO message VALUES ('live-session', 2, 'bad json')")
+    assert doctor.doctor(_policy(), roots)["workers"]["opencode"]["model"]["status"] == "unknown"
+
+
+def test_every_manifest_copy_drift_and_missing_file(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    roots = {"repo": repo, "home": tmp_path}
+    entries = json.loads((repo / "team/install-files.json").read_text())
+    for entry in entries:
+        target = tmp_path / entry["target"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((repo / entry["source"]).read_bytes())
+    assert all(c["status"] == "ok" for c in doctor._installed_files(roots))
+    for entry in entries:
+        target = tmp_path / entry["target"]
+        good = target.read_bytes()
+        target.write_bytes(good + b"\nchanged")
+        checks = doctor._installed_files(roots)
+        assert next(c for c in checks if c["target"] == str(target))["status"] == "drift"
+        target.unlink()
+        checks = doctor._installed_files(roots)
+        assert next(c for c in checks if c["target"] == str(target))["status"] == "drift"
+        target.write_bytes(good)
