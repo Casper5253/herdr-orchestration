@@ -93,7 +93,7 @@ def test_reviewer_model_family_is_recorded(tmp_path: Path) -> None:
         model="claude-opus-4.5",
     )
     report = review.status("q-206", led=led)
-    assert report["verdict"]["reviewer"]["family"] == "claude"
+    assert report["verdict"]["reviewer"]["family"] == "anthropic"
     assert report["verdict"]["reviewer"]["model"] == "claude-opus-4.5"
 
 
@@ -111,6 +111,29 @@ def test_actual_model_family_beats_declared_agent(tmp_path: Path) -> None:
             policy=POLICY,
             model="gpt-5-codex",
         )
+
+
+@pytest.mark.parametrize("author_model,reviewer_model", [
+    ("gpt-6.1-sol", "opencode-go/gpt-6.1-sol"),
+    ("opencode-go/gpt-6.1-sol", "openai/gpt-6.1-sol"),
+    ("anthropic/claude-opus-4.5", "opencode-go/claude-opus-4.5"),
+    ("deepseek/deepseek-v4", "opencode-go/deepseek-v4"),
+])
+def test_transport_cannot_bypass_same_vendor_refusal(tmp_path: Path, author_model: str, reviewer_model: str) -> None:
+    repo = _repo(tmp_path)
+    led = _led(tmp_path)
+    review.open_review("q-206", repo, led=led, policy=POLICY, model=author_model)
+    with pytest.raises(ValueError, match="same-family"):
+        review.verdict("q-206", "dev-opencode", "ship", [], led=led, policy=POLICY, model=reviewer_model)
+
+
+def test_distinct_vendors_through_same_transport_can_review(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    led = _led(tmp_path)
+    opened = review.open_review("q-206", repo, led=led, policy=POLICY, model="opencode-go/deepseek-v4")
+    assert opened["author"]["family"] == "deepseek"
+    result = review.verdict("q-206", "dev-opencode", "ship", [], led=led, policy=POLICY, model="opencode-go/swe-2")
+    assert result["verdict"]["reviewer"]["family"] == "devin-swe"
 
 
 def test_finding_dispositions(tmp_path: Path) -> None:
@@ -150,4 +173,4 @@ def test_contract_from_brief(tmp_path: Path) -> None:
     brief.write_text("# Brief\n## Goal\nShip one review record.\n## Verify\npytest\n", encoding="utf-8")
     rec = review.open_review("q-206", repo, brief=brief, led=led, policy=POLICY)
     assert "Ship one review record" in rec["contract"]["contract"]
-    assert rec["author"]["family"] == "codex"
+    assert rec["author"]["family"] == "openai"

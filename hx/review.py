@@ -31,7 +31,6 @@ from hx import ledger as ledger_mod
 from hx import paths
 from hx import usage as usage_mod
 
-KNOWN_FAMILIES = {"claude", "codex", "devin", "opencode"}
 CONTRACT_MAX = 1500
 
 
@@ -52,29 +51,41 @@ def _family(agent: str, policy: dict[str, Any] | None) -> str:
     except Exception:
         prefix = "dev-"
     name = agent[len(prefix) :] if agent.startswith(prefix) else agent
-    return name.split("-")[0]
+    family = name.split("-")[0]
+    return {"claude": "anthropic", "codex": "openai", "devin": "devin-swe"}.get(family, family)
 
 
 _PROVIDER_FAMILIES = {
-    "opencode": "opencode",
-    "opencode-go": "opencode",
-    "anthropic": "claude",
-    "openai": "codex",
-    "codex": "codex",
-    "devin": "devin",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "codex": "openai",
+    "devin": "devin-swe",
+    "deepseek": "deepseek",
+    "qwen": "alibaba",
+    "zai": "zhipu",
+    "moonshotai": "moonshot",
+    "xiaomi": "xiaomi",
+    "minimax": "minimax",
+    "google": "google",
+    "xai": "xai",
 }
 
 _MODEL_PREFIX_FAMILIES = (
-    ("swe-", "devin"),
-    ("claude", "claude"),
-    ("gpt-", "codex"),
-    ("codex", "codex"),
-    ("deepseek", "opencode"),
-    ("qwen", "opencode"),
-    ("glm", "opencode"),
-    ("kimi", "opencode"),
-    ("mimo", "opencode"),
-    ("minimax", "opencode"),
+    ("swe-", "devin-swe"),
+    ("claude", "anthropic"),
+    ("gpt-", "openai"),
+    ("codex", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("deepseek", "deepseek"),
+    ("qwen", "alibaba"),
+    ("glm", "zhipu"),
+    ("kimi", "moonshot"),
+    ("mimo", "xiaomi"),
+    ("minimax", "minimax"),
+    ("gemini", "google"),
+    ("grok", "xai"),
 )
 
 
@@ -83,15 +94,13 @@ def _model_family(model: str | None) -> str | None:
     if not model:
         return None
     text = model.strip().lower()
-    if "/" in text:
-        provider, name = text.split("/", 1)
-        if provider in _PROVIDER_FAMILIES:
-            return _PROVIDER_FAMILIES[provider]
-    else:
-        name = text
+    name = text.rsplit("/", 1)[-1]
     for prefix, family in _MODEL_PREFIX_FAMILIES:
         if name.startswith(prefix):
             return family
+    for provider in reversed(text.split("/")[:-1]):
+        if provider in _PROVIDER_FAMILIES:
+            return _PROVIDER_FAMILIES[provider]
     return None
 
 
@@ -216,7 +225,8 @@ def verdict(
         raise ValueError(f"{task_id} has no open review; run hx review open first")
     reviewer_model = model or os.environ.get("HX_REVIEWER_MODEL")
     reviewer_family = _resolve_family(reviewer, reviewer_model, policy)
-    if reviewer_family == review["author"]["family"]:
+    author_family = _resolve_family(review["author"]["agent"], review["author"].get("model"), policy)
+    if reviewer_family == author_family:
         raise ValueError(
             f"same-family review refused: reviewer {reviewer} is {reviewer_family}, "
             f"the same family as author {review['author']['agent']}"

@@ -319,6 +319,15 @@ def test_prohibition_still_suppresses_its_own_instruction(tmp_path: Path) -> Non
     assert capability.prompt_findings("devin", brief, tmp_path) == []
 
 
+@pytest.mark.parametrize("separator", [". ", "; ", "! ", "? "])
+def test_prohibition_does_not_suppress_same_command_in_next_clause(tmp_path: Path, separator: str) -> None:
+    brief = f"Never run `git push` without review{separator}Run `git push` after the review."
+    findings = capability.prompt_findings("devin", brief, tmp_path)
+    assert {f["rule"] for f in findings} == {"Exec(git push)"}
+    assert all(f["line"] == 1 for f in findings)
+    assert all("without review" not in f["command"] for f in findings)
+
+
 def test_implement_write_scope_is_cwd_not_anywhere(tmp_path: Path) -> None:
     """C5/C4: write_roots 'cwd' means inside cwd, not anywhere."""
     import json as _json

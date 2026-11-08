@@ -599,11 +599,9 @@ def prompt_findings(
 ) -> list[dict[str, Any]]:
     """Every denied command or out-of-scope write path the brief asks to run.
 
-    Pass one marks lines that prohibit or discuss denials and harvests the
-    commands each prohibition's sentence names into a same-line suppressed
-    set. Pass two evaluates only what a worker would execute and drops
-    findings suppressed on their own line: a prohibition covers its own
-    instruction, never a command in another sentence or another line. With
+    Suppression is local to a prose sentence or clause. Code spans and
+    fenced/indented commands remain intact, and findings retain the original
+    line numbers. A prohibition never covers a separate instruction. With
     ``profile_name`` the named execution profile governs, not the static
     worker list.
     """
@@ -614,7 +612,19 @@ def prompt_findings(
         return [{"kind": "profile", "command": profile_name, "rule": profile["profile_error"], "line": 0}]
     if profile.get("lead_only"):
         return [{"kind": "profile", "command": profile_name, "rule": f"profile {profile_name} is lead-only", "line": 0}]
-    lines = prompt.splitlines()
+    lines: list[str] = []
+    source_lines: list[int] = []
+    in_fence = False
+    for lineno, line in enumerate(prompt.splitlines(), 1):
+        fence = bool(_FENCE_RE.match(line))
+        if fence or in_fence or _INDENTED_CODE_RE.match(line):
+            clauses = [line]
+        else:
+            clauses = re.split(r"(?<=[.!?;])\s+(?=(?:[^`]*`[^`]*`)*[^`]*$)", line)
+        lines.extend(clauses)
+        source_lines.extend([lineno] * len(clauses))
+        if fence:
+            in_fence = not in_fence
     skipped: set[int] = set()
     suppressed: dict[int, tuple[set[str], set[str]]] = {}
     for lineno, line in enumerate(lines, 1):
@@ -634,6 +644,7 @@ def prompt_findings(
         rules, tools = suppressed.get(finding["line"], ((), ()))
         if finding["rule"] in rules or finding["command"] in tools:
             continue
+        finding["line"] = source_lines[finding["line"] - 1]
         key = (finding["kind"], finding["rule"], finding["command"])
         if key in seen:
             continue
