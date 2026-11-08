@@ -21,7 +21,8 @@ def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("say", help="Message a teammate on your own team.")
     parser.add_argument("target", help="any live teammate role (claude, codex, devin, ...) or the full <team>-<role> name")
     parser.add_argument("message", nargs="+")
-    parser.set_defaults(func=lambda args: say.say(args.target, " ".join(args.message)))
+    parser.add_argument("--force", action="store_true", help="Send despite fresh worker context pressure (for recovery/control messages).")
+    parser.set_defaults(func=lambda args: say.say(args.target, " ".join(args.message), force=args.force))
 
 
 def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -113,6 +114,13 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_task_parser(subparsers)
     _add_say_parser(subparsers)
     _add_checkpoint_parser(subparsers)
+    boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction.")
+    boundary.add_argument("agent")
+    boundary.add_argument("--task")
+    boundary.add_argument("--work-item", help="Stable lead work-item key for its compaction guard.")
+    boundary.add_argument("--session")
+    boundary.set_defaults(func=lambda args: print(json.dumps(context.Controller().boundary(
+        args.agent, args.task, work_item=args.work_item, session_id=args.session))))
     # route and ocrun dispatch to their own main(argv) in main() before argparse
     # runs; these subparsers exist so `hx --help` lists them.
     subparsers.add_parser(
@@ -130,11 +138,13 @@ def _build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--task")
     decide.add_argument("--related", action="store_true")
     decide.add_argument("--session", help="Claude session id when Herdr does not provide one.")
-    decide.set_defaults(func=lambda args: print(json.dumps(context.Controller().decide(args.agent, args.task, args.related, session_id=args.session))))
+    decide.add_argument("--work-item")
+    decide.set_defaults(func=lambda args: print(json.dumps(context.Controller().decide(args.agent, args.task, args.related, session_id=args.session, work_item=args.work_item))))
     confirmed = context_sub.add_parser("self-compacted", help="Confirm that a Claude lead has compacted.")
     confirmed.add_argument("agent")
     confirmed.add_argument("--session", required=True)
-    confirmed.set_defaults(func=lambda args: print(json.dumps(context.Controller().self_compacted(args.agent, args.session))))
+    confirmed.add_argument("--work-item")
+    confirmed.set_defaults(func=lambda args: print(json.dumps(context.Controller().self_compacted(args.agent, args.session, work_item=args.work_item))))
     recover = context_sub.add_parser("recover")
     recover.add_argument("agent")
     recover.set_defaults(func=lambda args: print(json.dumps(context.Controller().recover(args.agent))))
@@ -208,6 +218,7 @@ def _task_done(args: argparse.Namespace) -> None:
     if not result["ok"]:
         raise RuntimeError(f"checkpoint validation failed: {'; '.join(result['errors'])}")
     task = led.get_task(args.id)
+    task["boundary"] = context.Controller(led=led).boundary(task["owner"], args.id, source="task-done")
     print(json.dumps(task, indent=2))
 
 

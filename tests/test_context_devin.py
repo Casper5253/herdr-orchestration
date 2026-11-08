@@ -125,7 +125,7 @@ def test_decide_clear_needed_under_pressure_mid_task(controller):
     assert "during active task" in decision["reason"]
 
 
-def test_decide_clear_needed_without_registered_task(controller, tmp_path):
+def test_decide_fresh_owner_handoff_without_registered_task(controller, tmp_path):
     controller.ledger = ledger.Ledger(
         repo_root=tmp_path,
         ledger_path=tmp_path / "empty-ledger.json",
@@ -134,9 +134,9 @@ def test_decide_clear_needed_without_registered_task(controller, tmp_path):
     )
     controller.footer = "Context: 210k / 262k tokens (80%)\n"
     decision = controller.decide("dev-devin")
-    assert decision["action"] == "clear-needed"
+    assert decision["action"] == "handoff-needed"
     assert "no hx task is registered" in decision["reason"]
-    assert "checkpoint" in decision["reason"]
+    assert "handoff" in " ".join(decision["steps"])
 
 
 def test_decide_keep_below_threshold(controller):

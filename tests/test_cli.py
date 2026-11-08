@@ -64,6 +64,11 @@ def test_task_add_assign_checkpoint_done_validate_flow(
     done_out = capsys.readouterr().out
     task = json.loads(done_out)
     assert task["status"] == "done"
+    boundary = task["boundary"]
+    assert boundary["agent"] == "w"
+    assert boundary["task_id"] == "t1"
+    assert boundary["source"] == "task-done"
+    assert json.loads((cli_repo / ".hx" / "context-boundaries.jsonl").read_text()) == boundary
 
     capsys.readouterr()
     assert cli.main(["checkpoint", "validate", "t1"]) == 0
@@ -95,6 +100,32 @@ def test_lead_checkpoint_without_ledger_task(cli_repo, capsys):
     assert not (cli_repo / ".hx" / "ledger.json").exists()
     assert cli.main(["checkpoint", "write", "lead", "--owner", "hx-claude"]) == 0
     assert "Review changes" in path.read_text(encoding="utf-8")
+
+
+def test_task_done_samples_owner_after_validated_completion(cli_repo, monkeypatch, capsys):
+    from hx import context, usage
+    monkeypatch.setattr(usage, 'team_prefix', lambda *args: 'dev-')
+    sampled = []
+
+    def agent_info(name):
+        saved = json.loads((cli_repo / '.hx' / 'ledger.json').read_text())['tasks']['t']
+        assert saved['status'] == 'done'
+        assert (cli_repo / '.hx' / 'checkpoints' / 't.md').is_file()
+        sampled.append(name)
+        return {'agent': 'codex', 'agent_status': 'working', 'agent_session': {'value': 'sid'}}
+
+    monkeypatch.setattr(context, 'agent_info', agent_info)
+    monkeypatch.setattr(context, 'telemetry', lambda *args: {
+        'session_id': 'sid', 'utilisation': .89, 'sampled_at': context._now().isoformat(),
+    })
+    assert cli.main(['task', 'add', 't', '--title', 'Item', '--owner', 'dev-codex', '--files', 'owned.py']) == 0
+    capsys.readouterr()
+    assert cli.main(['task', 'done', 't', '--objective', 'Finish item', '--decisions', 'Keep scope',
+                     '--errors', 'None', '--tests', 'Passed', '--next', 'Review']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert sampled == ['dev-codex']
+    assert result['boundary']['disposition'] == 'defer'
+    assert result['boundary']['readiness'] == 'held'
 
 
 def test_checkpoint_includes_committed_changes_for_owned_files(

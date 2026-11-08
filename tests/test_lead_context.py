@@ -29,6 +29,9 @@ def lead(tmp_path, monkeypatch):
                                                      "output_tokens": 5000}}}
     c.path = tmp_path / "claude-status-lead-sid.json"
     c.path.write_text(json.dumps(c.status), encoding="utf-8")
+    c.checkpoint = tmp_path / ".hx" / "checkpoints" / "lead.md"
+    c.checkpoint.parent.mkdir(parents=True)
+    c.checkpoint.write_text("## Objective\nFinish this release.\n", encoding="utf-8")
     monkeypatch.setattr(context, "agent_info", lambda name: copy.deepcopy(c.agent))
     monkeypatch.setattr(cli.context, "Controller", lambda: c)
     return c
@@ -120,7 +123,7 @@ def test_cli_confirmation_records_guard_and_interval(lead, capsys):
     assert cli.main(["context", "self-compacted", "test-claude", "--session", "lead-sid"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "self-compacted"
     guard = json.loads(lead.guard_path.read_text())["lead-sid"]
-    assert guard["tasks"]["lead"]["count"] == 1
+    assert guard["tasks"][lead._lead_work_item(None, None)]["count"] == 1
     assert context._timestamp(guard["last_at"]) is not None
     decision = lead.decide("test-claude")
     assert decision["action"] == "keep"
@@ -156,6 +159,31 @@ def test_lead_max_per_task_guard_after_interval(lead, monkeypatch):
     lead.self_compacted("test-claude", "lead-sid")
     monkeypatch.setattr(context, "_now", lambda: now + dt.timedelta(minutes=42))
     assert lead.decide("test-claude")["reason"] == "task compaction loop guard"
+
+
+def test_lead_changed_checkpoint_objective_starts_a_new_work_item(lead, monkeypatch):
+    lead.policy['context']['min_interval_min'] = 0
+    first = lead.decide('test-claude')['work_item']
+    lead.self_compacted('test-claude', 'lead-sid')
+    lead.self_compacted('test-claude', 'lead-sid')
+    assert lead.decide('test-claude')['reason'] == 'task compaction loop guard'
+    lead.checkpoint.write_text('## Objective\nShip the next release.\n')
+    decision = lead.decide('test-claude')
+    assert decision['action'] == 'self-compact'
+    assert decision['work_item'] != first
+
+
+def test_lead_requires_a_work_item_instead_of_a_session_wide_default(lead):
+    lead.checkpoint.unlink()
+    result = lead.decide('test-claude')
+    assert result['disposition'] == 'refused'
+    assert '--work-item' in result['reason']
+    assert lead.decide('test-claude', work_item='release')['action'] == 'self-compact'
+
+
+def test_lead_task_boundary_preserves_the_completed_task_id(lead):
+    result = lead.boundary('test-claude', 'release-task')
+    assert result['task_id'] == result['work_item'] == 'release-task'
 
 
 @pytest.mark.parametrize("change,sid", [({}, "wrong"), ({"agent": "codex"}, "lead-sid"), ({}, "")])

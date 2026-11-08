@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -15,6 +16,18 @@ from pathlib import Path
 from typing import Any
 
 from hx import checkpoint, ledger, usage
+
+
+class _RetainContext(ValueError):
+    disposition = "keep"
+
+
+class _DeferredContext(ValueError):
+    disposition = "defer"
+
+
+class _UnknownContext(ValueError):
+    disposition = "unknown"
 
 
 def _now() -> dt.datetime:
@@ -288,6 +301,39 @@ class Controller:
         self.ledger = led if led is not None else ledger.default_ledger()
         self.policy = policy if policy is not None else usage.load_policy()
         self.guard_path = Path(os.environ.get("HX_COMPACT_GUARD_PATH", self.ledger.leases_path.parent / "compact-guard.json"))
+        self.boundary_path = self.ledger.repo_root / ".hx" / "context-boundaries.jsonl"
+
+    def boundary(self, name: str, task_id: str | None = None, *,
+                 work_item: str | None = None, session_id: str | None = None,
+                 source: str = "boundary") -> dict[str, Any]:
+        result = {**self.decide(name, task_id, session_id=session_id, work_item=work_item),
+                  "source": source, "recorded_at": _now().isoformat(), "event_id": str(uuid.uuid4())}
+        sample = result.get("telemetry")
+        if sample is not None:
+            sample = dict(sample)
+            value = sample.get("utilisation")
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                sample["utilisation"] = None
+            result["telemetry"] = sample
+        self.boundary_path.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.LeaseLock(self.boundary_path.with_suffix(".lock")):
+            with self.boundary_path.open("a", encoding="utf-8") as output:
+                output.write(json.dumps(result, allow_nan=False) + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+        return result
+
+    def _lead_work_item(self, task_id: str | None, work_item: str | None) -> str:
+        if work_item or task_id:
+            return work_item or task_id
+        path = self.ledger.repo_root / ".hx" / "checkpoints" / "lead.md"
+        try:
+            objective = checkpoint._extract_section(path.read_text(encoding="utf-8"), "Objective")
+        except OSError:
+            objective = None
+        if not objective:
+            raise ValueError("lead work item unknown; pass --work-item <item> or --task <id>, or write the lead checkpoint objective")
+        return "objective:" + hashlib.sha256(objective.encode("utf-8")).hexdigest()[:16]
 
     def _agent(self, name: str) -> dict[str, Any]:
         prefix = usage.team_prefix(self.policy)
@@ -373,77 +419,102 @@ class Controller:
                 raise ValueError("agent has dirty files owned by an open task in pane repository")
         raise ValueError("pane repository contains uncheckpointed edits")
 
-    def _decide_lead(self, result: dict[str, Any], agent: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+    def _decide_lead(self, result: dict[str, Any], agent: dict[str, Any], session_id: str | None,
+                     task_id: str | None, work_item: str | None) -> dict[str, Any]:
         name = result["agent"]
         sid = _session(agent) or session_id or ""
         sample = _lead_telemetry(sid, self.policy)
-        result.update(session_id=sid, task_id="lead", telemetry=sample)
+        result.update(session_id=sid, telemetry=sample)
+        result.setdefault("task_id", "lead")
         if not sid:
             raise ValueError("Claude session id unavailable from Herdr; pass --session <claude-session-id>")
         if not _fresh(sample, sid, _now()):
-            raise ValueError("session telemetry unknown or stale")
+            raise _UnknownContext("session telemetry unknown or stale")
+        item = self._lead_work_item(task_id, work_item)
+        result["work_item"] = item
         with self.ledger._leases_lock():
             guard = (ledger._load_json(self.guard_path) or {}).get(sid, {})
-            task_guard = guard.get("tasks", {}).get("lead", {})
+            task_guard = guard.get("tasks", {}).get(item, {})
             if task_guard.get("failed") or task_guard.get("count", 0) >= self.policy.get("context", {}).get("max_per_task", 2):
                 raise ValueError("task compaction loop guard")
             last = _timestamp(guard.get("last_at"))
             if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
-                raise ValueError("minimum compaction interval")
+                raise _DeferredContext("minimum compaction interval")
         if sample["utilisation"] < self.policy.get("context", {}).get("claude_lead_threshold", 0.6):
-            raise ValueError("below Claude lead threshold")
+            raise _RetainContext("below Claude lead threshold")
         quoted_name = "'" + name.replace("'", "''") + "'"
         quoted_sid = "'" + sid.replace("'", "''") + "'"
+        quoted_item = "'" + item.replace("'", "''") + "'"
         command = f"Start-Sleep 60; herdr agent prompt {quoted_name} '/compact'"
         background = "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '" + command.replace("'", "''") + "'"
         result.update(action="self-compact", reason="Claude lead above threshold; compact at the next turn boundary", steps=[
             f"hx checkpoint write lead --owner {quoted_name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
             background,
             "End the turn so the background /compact prompt can reach the idle pane.",
-            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid}",
+            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid} --work-item {quoted_item}",
         ])
         return result
 
-    def self_compacted(self, name: str, session_id: str) -> dict[str, Any]:
+    def self_compacted(self, name: str, session_id: str, work_item: str | None = None) -> dict[str, Any]:
         agent = self._agent(name)
         if not self._is_lead(name) or agent.get("agent") != "claude":
             raise ValueError("self-compacted requires a Claude lead")
         if not session_id or (_session(agent) and _session(agent) != session_id):
             raise ValueError("--session must identify the current Claude session")
+        item = self._lead_work_item(None, work_item)
         with self.ledger._leases_lock():
             guards = ledger._load_json(self.guard_path) or {}
             guard = guards.setdefault(session_id, {"tasks": {}})
-            task_guard = guard.setdefault("tasks", {}).setdefault("lead", {"count": 0})
+            task_guard = guard.setdefault("tasks", {}).setdefault(item, {"count": 0})
             task_guard["count"] += 1
             guard["last_at"] = _now().isoformat()
             ledger._atomic_write_json(self.guard_path, guards)
-        return {"action": "self-compacted", "agent": name, "session_id": session_id, "task_id": "lead"}
+        return {"action": "self-compacted", "agent": name, "session_id": session_id, "task_id": "lead", "work_item": item}
 
     def decide(self, name: str, task_id: str | None = None, related: bool = False,
-               session_id: str | None = None) -> dict[str, Any]:
+               session_id: str | None = None, work_item: str | None = None) -> dict[str, Any]:
+        result = self._decide(name, task_id, related, session_id, work_item)
+        result.setdefault("disposition", "recovery-needed" if result["action"] != "keep" else "keep")
+        result["readiness"] = "ready" if result["disposition"] == "keep" else "held"
+        return result
+
+    def _decide(self, name: str, task_id: str | None, related: bool,
+                session_id: str | None, work_item: str | None) -> dict[str, Any]:
         result: dict[str, Any] = {"action": "keep", "agent": name}
+        if task_id:
+            result["task_id"] = task_id
         try:
             agent = self._agent(name)
             if self._is_lead(name):
                 if agent.get("agent") != "claude":
                     raise ValueError("lead self-compaction supports a Claude lead only")
-                return self._decide_lead(result, agent, session_id)
+                return self._decide_lead(result, agent, session_id, task_id, work_item)
             sid = _session(agent)
             sample = telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("agent"))
             if agent.get("agent_status") not in READY:
-                raise ValueError("agent is not idle")
+                raise _DeferredContext("agent is not idle")
             if not _fresh(sample, sid, _now()):
-                raise ValueError("session telemetry unknown or stale")
+                raise _UnknownContext("session telemetry unknown or stale")
             context_policy = self.policy.get("context", {})
             devin_clear = agent.get("agent") == "devin" and not self._devin_compact_command()
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
             owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
-            if pressure and not owned_tasks:
+            if not owned_tasks and not task_id:
+                if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
+                    raise _RetainContext("below boundary threshold")
                 if devin_clear:
-                    result.update(action="clear-needed", reason="pressure threshold reached but no hx task is registered; register a task and write a checkpoint before clearing")
+                    handoff = self.ledger.repo_root / ".hx" / "handoffs" / f"{name}.md"
+                    result.update(action="handoff-needed", reason="no hx task is registered; use a fresh-owner handoff because native Devin compaction is unverified", steps=[
+                        f"Write a handoff to {handoff}: objective, constraints, decisions, exact errors, tests, artifact references and next action.",
+                        "Have the lead start a fresh owner in the same repository and re-brief from that handoff; do not clear the current owner until its state is saved.",
+                        f"Run hx boundary {name} after the fresh owner acknowledges the next action.",
+                    ])
                 else:
-                    result.update(action="compact-needed", reason="pressure threshold reached but no hx task is registered; register a task and checkpoint before compaction")
+                    result.update(action="compact-needed", reason="no hx task is registered; native compaction recommended after registering the work and checkpointing", steps=[
+                        "Have the lead register the current work with hx task add and assign its actual files to this owner.",
+                        f"Write hx checkpoint write <task-id> with the current objective, decisions, errors, tests and next action, then run hx compact {name} --task <task-id>.",
+                    ])
                 return result
             task = self._task(name, task_id, allow_in_progress=pressure)
             result["task_id"] = task["id"]
@@ -461,9 +532,9 @@ class Controller:
                     raise ValueError("task compaction loop guard")
                 last = _timestamp(guard.get("last_at"))
                 if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
-                    raise ValueError("minimum compaction interval")
+                    raise _DeferredContext("minimum compaction interval")
             if related and not pressure:
-                raise ValueError("next task continues the same work; retain warm context")
+                raise _RetainContext("next task continues the same work; retain warm context")
             if pressure:
                 if devin_clear:
                     reason = "idle under context pressure during active task" if mid_task else "idle under context pressure"
@@ -473,7 +544,7 @@ class Controller:
                 result.update(action="compact", reason="idle under context pressure during active task" if mid_task else "idle under context pressure")
                 return result
             if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
-                raise ValueError("below boundary threshold")
+                raise _RetainContext("below boundary threshold")
             if devin_clear:
                 result.update(action="clear-needed", reason="idle at task boundary above threshold; Devin has no verified /compact, clear instead",
                               steps=_devin_clear_steps(name, task["id"]))
@@ -481,6 +552,7 @@ class Controller:
             result.update(action="compact", reason="idle at task boundary above threshold")
         except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
             result["reason"] = str(exc)
+            result["disposition"] = getattr(exc, "disposition", "refused")
         return result
 
     def _finish(self, sid: str, token: str, state: str | None, failed: bool) -> None:

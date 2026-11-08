@@ -25,3 +25,15 @@ Windows, Python 3.11+, Herdr 0.9, and the three agent CLIs.
     hx route --kind feature --size medium
 
 `install.ps1` backs up every file it replaces as `*.bak-<timestamp>`. Paths in `team/claude-settings.json` point at this repo's location on the author's machine; adjust them for yours.
+
+## Context boundaries
+
+`hx task done <id>` validates the completion checkpoint, runs the owning agent's context decision, and returns it in `boundary`. For pane work without a ledger task, run `hx boundary <agent>`. Both append a disposition to the project's `.hx/context-boundaries.jsonl`: `keep`, `defer`, `unknown`, `refused`, or `recovery-needed`, with session telemetry and `readiness` (`ready` or `held`). These operations recommend recovery; they do not execute compaction.
+
+`hx say` holds worker messages at or above the policy's pressure threshold and exits 1 with recovery commands. Use `hx say --force <agent> '<message>'` for intentional recovery/control messages. Reports to the lead remain reachable. Unknown or stale telemetry retains the existing send behavior.
+
+An idle pane without a registered task gets concrete recovery steps: register and checkpoint the work before protected native compaction, or save a handoff and use a fresh owner when native compaction is unverified (Devin). No working agent is cleared automatically.
+
+For the Claude lead, use a stable work-item key, for example `hx boundary dev-claude --work-item release-203`. Pass the same key to `hx context self-compacted dev-claude --session <session> --work-item release-203` after following the returned steps. A task boundary uses its task id; otherwise the saved lead checkpoint's Objective supplies a stable fallback key. Without either, the decision asks for `--work-item`. The loop guard is per item; the cooldown remains per session.
+
+Journal write failures are reported as command failures. Task completion has already saved its validated checkpoint/status at that point; retry the boundary operation to record the disposition after repairing storage.

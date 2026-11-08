@@ -83,7 +83,8 @@ def test_a_new_role_can_send(monkeypatch: pytest.MonkeyPatch, sent: list[list[st
     assert sent == [["herdr", "agent", "prompt", "dev-claude", "[team from dev-gemini] report"]]
 
 
-def test_say_warns_for_worker_above_pressure_and_still_sends(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("utilisation", [.75, .89, 1.23])
+def test_say_holds_worker_above_pressure(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], capsys: pytest.CaptureFixture[str], utilisation) -> None:
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
     events: list[str] = []
     monkeypatch.setattr(usage, "load_policy", lambda: {
@@ -91,7 +92,7 @@ def test_say_warns_for_worker_above_pressure_and_still_sends(monkeypatch: pytest
     })
     def telemetry(*args: object) -> dict[str, object]:
         events.append("sample")
-        return {"session_id": "sid", "utilisation": 1.23, "sampled_at": say.context._now().isoformat()}
+        return {"session_id": "sid", "utilisation": utilisation, "sampled_at": say.context._now().isoformat()}
     monkeypatch.setattr(say.context, "telemetry", telemetry)
     send = say.subprocess.run
     def record_send(*args: object, **kwargs: object) -> object:
@@ -99,13 +100,36 @@ def test_say_warns_for_worker_above_pressure_and_still_sends(monkeypatch: pytest
         return send(*args, **kwargs)
     monkeypatch.setattr(say.subprocess, "run", record_send)
 
-    assert main(["say", "opencode", "continue", "the", "task"]) == 0
+    assert main(["say", "opencode", "continue", "the", "task"]) == 1
     warning = capsys.readouterr().err
     assert "dev-opencode" in warning
-    assert "1.23" in warning and "123%" in warning
+    assert f"{utilisation:.0%}" in warning
     assert "hx compact dev-opencode" in warning
-    assert events == ["sample", "send"]
-    assert sent == [["herdr", "agent", "prompt", "dev-opencode", "[team from dev-codex] continue the task"]]
+    assert events == ["sample"]
+    assert sent == []
+
+
+def test_say_force_delivers_the_89_percent_replay(monkeypatch, sent):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    monkeypatch.setattr(say.context, "telemetry", lambda *args: {
+        "session_id": "sid", "utilisation": .89, "sampled_at": say.context._now().isoformat(),
+    })
+    assert main(["say", "--force", "opencode", "recovery instructions"]) == 0
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize('value, timestamp', [(.749, 'fresh'), (.89, 'stale')])
+def test_say_below_pressure_or_stale_sample_still_sends(monkeypatch, sent, value, timestamp):
+    monkeypatch.setenv('HERDR_PANE_ID', 'w8:p2')
+    monkeypatch.setattr(usage, 'load_policy', lambda: {
+        'team_prefix': 'dev-', 'context': {'pressure_threshold': .75},
+    })
+    monkeypatch.setattr(say.context, 'telemetry', lambda *args: {
+        'session_id': 'sid', 'utilisation': value,
+        'sampled_at': say.context._now().isoformat() if timestamp == 'fresh' else '2000-01-01T00:00:00Z',
+    })
+    assert main(['say', 'opencode', 'continue']) == 0
+    assert len(sent) == 1
 
 
 def test_say_unknown_telemetry_does_not_warn_or_block(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], capsys: pytest.CaptureFixture[str]) -> None:

@@ -34,13 +34,13 @@ def with_header(sender: str, message: str) -> str:
     return message
 
 
-def _warn_if_under_pressure(name: str) -> None:
-    """Warn before messaging a worker whose fresh context is above policy pressure."""
+def _under_pressure(name: str) -> bool:
+    """Hold worker messages at fresh pressure; leave lead reporting reachable."""
     try:
         policy = usage.load_policy()
         agent = context.agent_info(name)
         if name == usage.lead_name(policy, usage.team_prefix(policy)):
-            return
+            return False
         sample = context.telemetry(agent, policy)
         session_id = context._session(agent)
         value = sample.get("utilisation")
@@ -49,16 +49,18 @@ def _warn_if_under_pressure(name: str) -> None:
                 or not isinstance(value, (int, float)) or not math.isfinite(value)
                 or not isinstance(threshold, (int, float)) or not math.isfinite(threshold)
                 or value < threshold):
-            return
+            return False
         print(
-            f"Warning: {name} context utilisation is {value:.2f} ({value:.0%}), "
+            f"Held: {name} context utilisation is {value:.2f} ({value:.0%}), "
             f"at or above the {threshold:.0%} pressure threshold. "
-            f"Run `hx compact {name}` after updating its checkpoint.",
+            f"Run `hx boundary {name}` for recovery steps, or `hx compact {name}` after updating its registered task checkpoint. "
+            "Use --force only to send an intentional recovery/control message.",
             file=sys.stderr,
         )
+        return True
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError, OverflowError, subprocess.SubprocessError):
         # Unknown or unavailable telemetry must not block team communication.
-        return
+        return False
 
 
 def _denied_line_for(name: str) -> str:
@@ -76,14 +78,15 @@ def _denied_line_for(name: str) -> str:
         return ""
 
 
-def say(target: str, message: str) -> int:
+def say(target: str, message: str, *, force: bool = False) -> int:
     sender = usage.own_agent_name()
     if not sender:
         raise ValueError("hx say runs only in a herdr team pane (an agent named <team>-<role>)")
     name = resolve(sender, target)
     text = with_header(sender, message)
+    if not force and _under_pressure(name):
+        return 1
     line = _denied_line_for(name)
     if line:
         text += " " + line
-    _warn_if_under_pressure(name)
     return subprocess.run(["herdr", "agent", "prompt", name, text], timeout=60).returncode
