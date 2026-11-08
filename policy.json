@@ -116,7 +116,7 @@
   },
   "persistent_opencode_model": "deepseek-v4.1-flash",
   "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark. 2026-11-06 creator executive decision: deepseek-v4.1-flash is the go-to model, first in every ladder and the persistent OpenCode model (Global regions enabled; smoke test passed).",
-  "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.166.0/bin",
+  "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.167.0/bin",
   "opencode_variants": {
     "deepseek-v4.1-flash": [
       "high",
