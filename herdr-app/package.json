@@ -1,0 +1,8 @@
+{
+  "name": "herdr-app-setup",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/hx-usage.test.mjs"
+  }
+}

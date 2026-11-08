@@ -1,0 +1,251 @@
+{
+  "id": "root",
+  "type": "row",
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "children": [
+        {
+          "id": "brand",
+          "type": "block",
+          "content": {
+            "mod": "workspace-chrome"
+          },
+          "size": {
+            "px": 46
+          },
+          "window_drag": true
+        },
+        {
+          "id": "inbox",
+          "type": "block",
+          "content": {
+            "mod": "triage"
+          }
+        },
+        {
+          "id": "sidebar-footer",
+          "type": "block",
+          "size": {
+            "px": 69
+          },
+          "content": {
+            "mod": "workspace-chrome",
+            "props": {
+              "footer": true
+            }
+          }
+        }
+      ],
+      "size": {
+        "px": 300
+      },
+      "min": 44,
+      "max": 520,
+      "background": "chrome",
+      "resizable": false
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "children": [
+        {
+          "id": "tabs",
+          "type": "block",
+          "content": {
+            "mod": "tabs"
+          },
+          "size": {
+            "px": 42
+          },
+          "window_drag": true
+        },
+        {
+          "id": "work-body",
+          "type": "row",
+          "children": [
+            {
+              "id": "main",
+              "type": "block",
+              "content": {
+                "tab": "active",
+                "pane": {
+                  "header": {
+                    "content": {
+                      "mod": "pane"
+                    },
+                    "reveal": "always",
+                    "height": 30,
+                    "position": "top"
+                  },
+                  "background": "background",
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "focus": {
+                    "width": 1,
+                    "color": "accent"
+                  },
+                  "radius": 10,
+                  "gap": 8,
+                  "lone": true
+                }
+              }
+            },
+            {
+              "id": "panel",
+              "type": "row",
+              "children": [
+                {
+                  "id": "panel-body",
+                  "type": "stack",
+                  "children": [
+                    {
+                      "id": "reply",
+                      "type": "block",
+                      "content": {
+                        "mod": "triage-reply"
+                      },
+                      "title": "Reply"
+                    },
+                    {
+                      "id": "changes",
+                      "type": "block",
+                      "content": {
+                        "mod": "changes"
+                      },
+                      "title": "Review"
+                    },
+                    {
+                      "id": "history",
+                      "type": "block",
+                      "content": {
+                        "mod": "triage-history"
+                      },
+                      "title": "History"
+                    },
+                    {
+                      "id": "pr",
+                      "type": "block",
+                      "content": {
+                        "mod": "triage-pr"
+                      },
+                      "title": "PR & CI"
+                    },
+                    {
+                      "id": "issues",
+                      "title": "Issues",
+                      "type": "block",
+                      "content": {
+                        "mod": "triage-issues"
+                      }
+                    },
+                    {
+                      "id": "worktrees",
+                      "title": "Worktrees",
+                      "type": "block",
+                      "content": {
+                        "mod": "triage-worktrees"
+                      }
+                    },
+                    {
+                      "id": "files",
+                      "type": "block",
+                      "content": {
+                        "mod": "files"
+                      },
+                      "title": "Files"
+                    },
+                    {
+                      "id": "settings",
+                      "type": "block",
+                      "title": "Settings",
+                      "content": {
+                        "mod": "triage-launch",
+                        "props": {
+                          "settings": true
+                        }
+                      }
+                    }
+                  ],
+                  "active": "reply"
+                },
+                {
+                  "id": "activity",
+                  "type": "block",
+                  "size": {
+                    "px": 40
+                  },
+                  "resizable": false,
+                  "content": {
+                    "mod": "triage-activity",
+                    "props": {
+                      "stack": "panel-body"
+                    }
+                  }
+                }
+              ],
+              "size": {
+                "px": 420
+              },
+              "min": 300,
+              "max": 900
+            }
+          ],
+          "padding": 8,
+          "gap": 8
+        },
+        {
+          "id": "status",
+          "type": "row",
+          "size": {
+            "px": 28
+          },
+          "divider": {
+            "width": 1,
+            "color": "border"
+          },
+          "children": [
+            {
+              "id": "status-triage",
+              "type": "block",
+              "content": {
+                "mod": "triage-status"
+              }
+            },
+            {
+              "id": "hx-usage",
+              "type": "block",
+              "size": {
+                "px": 420
+              },
+              "min": 140,
+              "max": 900,
+              "content": {
+                "mod": "hx-usage"
+              }
+            }
+          ]
+        }
+      ],
+      "resizable": false
+    }
+  ],
+  "background": "canvas",
+  "terminal_padding": [
+    14,
+    12
+  ],
+  "divider": {
+    "width": 1,
+    "color": "border"
+  },
+  "titlebar": "none",
+  "traffic_lights": [
+    12,
+    16
+  ],
+  "preview": "layouts/triage.svg"
+}

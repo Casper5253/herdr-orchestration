@@ -5,3 +5,4 @@ __pycache__/
 bench/runs/
 e2e/
 .pytest-tmp/
+herdr-app/vendor/
