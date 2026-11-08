@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What changed, and why it's better</title>
+<style>
+:root{--bg:#f6f1e7;--panel:#fffaf1;--ink:#2a1f17;--muted:#6b5a4b;--line:#e3d6c2;--accent:#8a5a12;--good:#2f6f3a;--wait:#8a6a12;--chip:#efe4d1}
+@media (prefers-color-scheme:dark){:root{--bg:#17130f;--panel:#211b15;--ink:#eee4d4;--muted:#b3a28c;--line:#3a3027;--accent:#e2a65e;--good:#8fc285;--wait:#d8b56a;--chip:#2c241c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:28px 16px 64px}
+h1{font-size:clamp(1.8rem,5vw,2.5rem);line-height:1.1;margin:0 0 8px}
+h2{font-size:1.3rem;margin:36px 0 10px}
+.lede{color:var(--muted);font-size:1.08rem;margin:0 0 18px}
+.summary{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.summary li{margin:6px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:14px 0}
+.card h3{margin:0 0 4px;font-size:1.08rem}
+.tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;background:var(--chip);color:var(--muted);margin-left:6px;vertical-align:middle}
+.grid{display:grid;grid-template-columns:110px 1fr;gap:4px 12px;margin-top:8px}
+.grid b{color:var(--muted);font-weight:600;font-size:.9rem}
+.proof{border-left:3px solid var(--good);padding-left:10px}
+.early{border-left:3px solid var(--wait);padding-left:10px}
+table{width:100%;border-collapse:collapse;font-size:.95rem}
+td,th{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600}
+code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:.88em}
+@media (max-width:560px){.grid{grid-template-columns:1fr}.grid b{margin-top:6px}}
+</style>
+</head>
+<body>
+<main>
+<h1>What changed, and why it's better</h1>
+<p class="lede">The learn-from-the-greats program, 8 November. Seven of the best engineers in AI-assisted building, 68 of their methods, compared one by one with how your team really worked, then fixed. This page is the plain version: what's different, how you'll notice it, and the proof.</p>
+
+<div class="summary">
+<b>In five lines</b>
+<ul>
+<li>The team now checks whether a worker <em>can</em> do a job before starting it. Blocked commands caused 43% of failed runs.</li>
+<li>Context is managed at every hand-off, not when someone remembers. Workers stop being handed new work while overloaded.</li>
+<li>Every change can be proven on the real thing, in any project, and reviewed by a different AI family, with a record of what was checked.</li>
+<li>The setup checks itself for stale or conflicting settings, and changes to shared skills must pass tests before they reach the agents.</li>
+<li>One command, <code>/kickoff</code>, starts all of this the same way every session.</li>
+</ul>
+</div>
+
+<h2>The old picture, measured</h2>
+<p>Before changing anything, the team measured 14 days of real logs instead of trusting what the docs claimed.</p>
+<table>
+<tr><th>What was measured</th><th>Before</th></tr>
+<tr><td>Worker runs that failed</td><td>43%, and every one was a blocked command, never a lack of ability</td></tr>
+<tr><td>Smart context compaction by <code>hx</code></td><td>2 attempts, both refused. DeepSeek's context was invisible to <code>hx</code></td></tr>
+<tr><td>Shared skills never used</td><td>more than 40, including every eval and verification skill</td></tr>
+<tr><td>Skill changes tested before going to all agents</td><td>zero</td></tr>
+<tr><td>Settings that contradicted each other</td><td>4 kinds, unnoticed (for example OpenCode launched on Qwen while policy said DeepSeek)</td></tr>
+</table>
+
+<h2>Each change</h2>
+
+<div class="card"><h3>1. Check before starting <span class="tag">C4 · C5</span></h3>
+<div class="grid">
+<b>Before</b><div>A worker started a brief, hit a command it wasn't allowed to run halfway through, and died. Then it was retried the same way. Devin stopped this way three times on 8 Nov alone.</div>
+<b>Now</b><div><code>hx</code> reads the brief first. If it asks for something the worker can't do, it refuses up front and says what to change. Each kind of task gets exactly the permissions it needs: research and review can't write, implementation can run its own tests and make a branch but never push.</div>
+<b>You notice</b><div>Fewer runs that stop halfway, and fewer "Devin stalled" moments.</div>
+<b>What it solves</b><div>The cause behind 43% of failed runs.</div>
+</div>
+<p class="proof">Proof: tested against 8 real briefs from the day. The two failures that killed real runs (<code>git clone</code>, <code>git checkout</code>) are caught, and the clean briefs pass. A small experiment loop then cut the wrong findings from 1 to 0. A review by a different AI family found 6 holes first, and all are fixed.</p>
+</div>
+
+<div class="card"><h3>2. Context at every hand-off <span class="tag">C1 · C10</span></h3>
+<div class="grid">
+<b>Before</b><div>Nothing checked an agent's memory load when a task ended. A worker at 89% was simply handed the next task.</div>
+<b>Now</b><div>The check runs at every task end. A worker over its limit doesn't get new work until it's refreshed, and a restarted worker gets a short hand-off note so it continues where it left off.</div>
+<b>You notice</b><div>Workers stay sharp late in long sessions instead of getting sloppy.</div>
+<b>What it solves</b><div>Your complaint: "I barely see smart compaction happen."</div>
+</div>
+<p class="proof">Proof: on its first real use it held a brief for DeepSeek, whose session was at 299% of its working budget. Before, that brief would have gone out anyway. It also found that a fresh session reads as the old one until its first message, and that's fixed too.</p>
+</div>
+
+<div class="card"><h3>3. Prove it on the real thing, in any project <span class="tag">C2</span></h3>
+<div class="grid">
+<b>Before</b><div>"Done" mostly meant the unit tests passed. Driving the real app was improvised by hand, if it happened at all.</div>
+<b>Now</b><div>A global <code>verify</code> skill works in every project from day one. It finds the project type and drives it like a user would. Jotarium also has its own deep version that runs 7 journeys through the real screens.</div>
+<b>You notice</b><div>Fewer "done" items that turn out broken when you open them.</div>
+<b>What it solves</b><div>Verification was the biggest gap, and the one the experts agree on most.</div>
+</div>
+<p class="proof">Proof: <code>verify-jotarium</code> passed 7 of 7 journeys on a fresh build, with zero errors. On its first run it caught an old build that quietly passed 6 of 7, so it now refuses to test a build older than the code.</p>
+</div>
+
+<div class="card"><h3>4. Reviews with a record <span class="tag">C6</span></h3>
+<div class="grid">
+<b>Before</b><div>Reviews happened through chat messages, about 40 rounds, with no record of what version was checked or by which AI.</div>
+<b>Now</b><div>Each review records what was checked, by which AI family, and what happened to every finding. An AI can't approve its own family's work, and an approval goes stale the moment the code changes after it.</div>
+<b>You notice</b><div>Nothing directly. Fewer surprises after "approved".</div>
+<b>What it solves</b><div>Reviews that quietly covered an older version.</div>
+</div>
+<p class="proof">Proof: Codex reviewed the day's work this way. Its first pass found 10 holes before anything used them, and all 10 are fixed and rechecked with its own tests.</p>
+</div>
+
+<div class="card"><h3>5. The setup checks itself <span class="tag">C8 · C3</span></h3>
+<div class="grid">
+<b>Before</b><div>Settings drifted apart silently, and a skill change went to every agent untested.</div>
+<b>Now</b><div><code>hx doctor</code> finds stale or conflicting settings in one command. A changed shared skill must pass a fixed set of tests before it syncs to the agents.</div>
+<b>You notice</b><div>Agents behave the same way the instructions say they should.</div>
+<b>What it solves</b><div>The four drifts found today, and untested skill edits.</div>
+</div>
+<p class="proof">Proof: the doctor's first run found 4 kinds of drift, and it now reports "no drift". The skill tests let an unchanged skill through (3 of 3) and held a deliberately broken copy (2 of 3).</p>
+</div>
+
+<div class="card"><h3>6. The way of working, written down once <span class="tag">C7 · C9 · C11 · C12 · kickoff</span></h3>
+<div class="grid">
+<b>Before</b><div>The routine lived in my head and in repeated messages. Corrections were remembered, or not.</div>
+<b>Now</b><div><code>/kickoff</code> starts every session the same way and loads the skills. Your I-6 workflow (plan, see, build, document, revise) is a skill. Every correction becomes a check, not a note. Reports start with why. A reusable experiment loop exists for moving one number.</div>
+<b>You notice</b><div>Less repeating yourself. Corrections stick.</div>
+<b>What it solves</b><div>Lessons getting lost between sessions.</div>
+</div>
+<p class="proof">Proof: today's corrections are already built in. For example, slash commands now go out the safe way after Git Bash mangled <code>/clear</code>, and Codex now only reviews after it burned half its window on one big build.</p>
+</div>
+
+<div class="card"><h3>Also today</h3>
+<ul>
+<li><code>hx usage</code> shows your real OpenCode usage from OpenCode's own servers, matching your console.</li>
+<li>Your own skills moved out of pstack into <code>~/.agents/skills</code>. pstack is now just one source.</li>
+<li>Herdr app: the Triage layout plus a bar with every agent's usage and context.</li>
+</ul>
+</div>
+
+<h2>Honest: what's too early to measure</h2>
+<p class="early">Most fixes landed hours ago. The before numbers cover 14 days, so a fair after needs about the same. Failed-run rate, compaction count, review coverage and skill use get remeasured in two weeks, on the same measurements. The proof above is real, but it's from single cases, not trends yet.</p>
+</main>
+</body>
+</html>
