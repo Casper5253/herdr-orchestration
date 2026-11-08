@@ -49,6 +49,8 @@ def _under_pressure(name: str) -> bool:
                 or not isinstance(threshold, (int, float)) or not math.isfinite(threshold)
                 or value < threshold):
             return False
+        if context.reset_pending(name, session_id, policy):
+            return False
         print(
             f"Held: {name} context utilisation is {value:.2f} ({value:.0%}), "
             f"at or above the {threshold:.0%} pressure threshold. "

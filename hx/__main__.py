@@ -119,8 +119,14 @@ def _build_parser() -> argparse.ArgumentParser:
     boundary.add_argument("--task")
     boundary.add_argument("--work-item", help="Stable lead work-item key for its compaction guard.")
     boundary.add_argument("--session")
-    boundary.set_defaults(func=lambda args: print(json.dumps(context.Controller().boundary(
-        args.agent, args.task, work_item=args.work_item, session_id=args.session))))
+    boundary.add_argument("--reset-sent", action="store_true",
+                          help="Record a reset you already sent, so pressure holds clear until the new session samples.")
+    boundary.set_defaults(func=_boundary)
+    reset = subparsers.add_parser("reset", help="Send an idle worker's native reset command and record it.")
+    reset.add_argument("agent")
+    reset.add_argument("--session")
+    reset.set_defaults(func=lambda args: print(json.dumps(
+        context.Controller().reset(args.agent, session_id=args.session))))
     # route and ocrun dispatch to their own main(argv) in main() before argparse
     # runs; these subparsers exist so `hx --help` lists them.
     subparsers.add_parser(
@@ -158,6 +164,17 @@ def _build_parser() -> argparse.ArgumentParser:
     compact.add_argument("--related", action="store_true")
     compact.set_defaults(func=_compact)
     return parser
+
+
+def _boundary(args: argparse.Namespace) -> None:
+    controller = context.Controller()
+    if args.reset_sent:
+        reset = controller.record_reset(args.agent, session_id=args.session)
+        result = controller.boundary(args.agent, args.task, work_item=args.work_item, session_id=args.session)
+        result["reset"] = reset
+    else:
+        result = controller.boundary(args.agent, args.task, work_item=args.work_item, session_id=args.session)
+    print(json.dumps(result))
 
 
 def _compact(args: argparse.Namespace) -> None:

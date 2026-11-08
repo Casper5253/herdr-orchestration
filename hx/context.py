@@ -42,6 +42,64 @@ def _timestamp(value: Any) -> dt.datetime | None:
         return None
 
 
+RESET_COMMANDS = {"opencode": "/new", "devin": "/clear", "claude": "/clear"}
+
+
+def default_resets_path(leases_path: Path | None = None) -> Path:
+    """Where recorded worker resets live; the pane-side `hx say` reads the same file."""
+    env = os.environ.get("HX_CONTEXT_RESETS_PATH")
+    if env:
+        return Path(env)
+    if leases_path is not None:
+        return Path(leases_path).parent / "context-resets.json"
+    state_dir = Path(os.environ.get("HX_STATE_DIR", Path.home() / ".herdr-team" / "state"))
+    return state_dir / "context-resets.json"
+
+
+def _load_resets(path: Path) -> dict[str, Any]:
+    data = ledger._load_json(path)
+    return data if isinstance(data, dict) else {}
+
+
+def write_reset(path: Path, name: str, session_id: str, *, now: dt.datetime | None = None) -> dict[str, Any]:
+    record = {"agent": name, "session_id": session_id, "reset_at": (now or _now()).isoformat()}
+    with ledger.LeaseLock(path.with_suffix(".lock")):
+        data = _load_resets(path)
+        data[name] = record
+        ledger._atomic_write_json(path, data)
+    return record
+
+
+def reset_pending(name: str, session_id: str, policy: dict[str, Any], *,
+                  path: Path | None = None, now: dt.datetime | None = None) -> bool:
+    """A recorded reset still awaiting the first sample from the new session.
+
+    The provider session id stays at the pre-reset value until the pane's first
+    message, so pressure read from that session is stale for the reset worker.
+    The clearance expires after ``context.reset_grace_min`` and never applies
+    once a different session id is observed. Unknown or unreadable state leaves
+    the pressure hold in place.
+    """
+    try:
+        record = _load_resets(path or default_resets_path()).get(name)
+        if not isinstance(record, dict) or not session_id or record.get("session_id") != session_id:
+            return False
+        reset_at = _timestamp(record.get("reset_at"))
+        grace = (policy.get("context") or {}).get("reset_grace_min", 10)
+        if (reset_at is None or not isinstance(grace, (int, float))
+                or not math.isfinite(grace) or grace < 0):
+            return False
+        return 0 <= ((now or _now()) - reset_at).total_seconds() <= grace * 60
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _reset_command(policy: dict[str, Any], kind: Any) -> str | None:
+    commands = (policy.get("context") or {}).get("reset_commands") or RESET_COMMANDS
+    command = commands.get(kind) if isinstance(commands, dict) else None
+    return str(command) if command else None
+
+
 def _herdr(*args: str, timeout: float = 30) -> dict[str, Any]:
     result = subprocess.run(
         ["herdr", "agent", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -313,7 +371,29 @@ class Controller:
         self.ledger = led if led is not None else ledger.default_ledger()
         self.policy = policy if policy is not None else usage.load_policy()
         self.guard_path = Path(os.environ.get("HX_COMPACT_GUARD_PATH", self.ledger.leases_path.parent / "compact-guard.json"))
+        self.resets_path = default_resets_path(self.ledger.leases_path)
         self.boundary_path = self.ledger.repo_root / ".hx" / "context-boundaries.jsonl"
+
+    def record_reset(self, name: str, session_id: str | None = None) -> dict[str, Any]:
+        """Record a reset the caller already sent to an idle worker."""
+        agent = self._agent(name)
+        return write_reset(self.resets_path, name, session_id or _session(agent))
+
+    def reset(self, name: str, session_id: str | None = None) -> dict[str, Any]:
+        """Send the provider's reset command from Python, then record it for pressure holds."""
+        agent = self._agent(name)
+        if self._is_lead(name):
+            raise ValueError("hx reset targets a worker; the Claude lead self-compacts")
+        if agent.get("agent_status") not in READY:
+            raise ValueError("agent is not idle; wait for its turn to finish before resetting")
+        command = _reset_command(self.policy, agent.get("agent"))
+        if not command:
+            raise ValueError(
+                f"no reset command is configured for {agent.get('agent')}; "
+                f"send the reset yourself and record it with hx boundary {name} --reset-sent")
+        sid = session_id or _session(agent)
+        _herdr("prompt", name, command, timeout=60)
+        return {"action": "reset-sent", "command": command, **write_reset(self.resets_path, name, sid)}
 
     def boundary(self, name: str, task_id: str | None = None, *,
                  work_item: str | None = None, session_id: str | None = None,
@@ -507,6 +587,9 @@ class Controller:
                 raise _DeferredContext("agent is not idle")
             if not _fresh(sample, sid, _now()):
                 raise _UnknownContext("session telemetry unknown or stale")
+            if reset_pending(name, sid, self.policy, path=self.resets_path):
+                result["reset_pending"] = True
+                raise _RetainContext("recent reset; awaiting the new session's first sample")
             context_policy = self.policy.get("context", {})
             devin_clear = agent.get("agent") == "devin" and not self._devin_compact_command()
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)

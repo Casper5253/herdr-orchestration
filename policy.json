@@ -181,6 +181,13 @@
     "boundary_threshold": 0.4,
     "pressure_threshold": 0.75,
     "claude_lead_threshold": 0.6,
+    "reset_grace_min": 10,
+    "reset_grace_note": "A recorded reset clears worker pressure holds until the provider has a new session, for at most this long. The new session appears on the pane's first message, so hx say may carry that message. After the window an unchanged session is treated as a fake reset.",
+    "reset_commands": {
+      "opencode": "/new",
+      "devin": "/clear",
+      "claude": "/clear"
+    },
     "claude_lead_note": "Compact at a boundary around 240K tokens (0.6 of the 400K effective lead limit). The native window is 1M, but every turn re-reads the cached context, so cost and attention pressure start well before the window is full."
   },
   "devin": {
