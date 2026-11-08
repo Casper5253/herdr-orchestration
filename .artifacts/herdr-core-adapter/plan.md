@@ -1,0 +1,15 @@
+# Plan: hx on herdr-core
+
+Each unit ends in a check. Each unit goes through cross-family review before the next starts. Builders: DeepSeek (dev-opencode) and Devin. Reviewer: Codex. The lead verifies live in the app.
+
+| # | Unit | Owner | Check |
+|---|---|---|---|
+| U1 | `hx/host.py` with `Member`, `Host`, `detect()` and `HerdrHost`. Today's herdr code moves behind it, and every caller in `inventory.md` §9 goes through `Host`. No behaviour change. | DeepSeek | `pytest tests` keeps 650+ passing. `rg "\"herdr\"\|herdr agent\|herdr pane" hx/` finds hits only in `host.py`. |
+| U2 | `HcHost`: own, team, info, send, read. `hx say` works on hc and reports to the lead by its `role=claude` label. It keeps adding the Devin pane's deny line to messages for Devin (`devin.pane_denied_line`). Without it, Devin ran a denied `curl` and its turn ended (8 Nov). | DeepSeek | Unit tests against a fake `hc` (same suite as the herdr fake). Live: a worker runs `hx say claude 'ping'` and it shows up in the lead's terminal. |
+| U3 | `doctor`, `usage` (Devin live sessions from `hc ls`) and `context` on hc. `doctor` fails when the lead is in no team host, and prints the recovery. | DeepSeek | Live in the app: `hx doctor` exits 0, and `hx usage` shows Devin `live_sessions: 1`, not busy. From a plain terminal, `hx doctor` exits 1 with the recovery text (the kickoff correction, proven on the 8 Nov case). |
+| U4 | `hx team up <repo> [--team dev]`: starts the missing roles with policy models (Codex with `--no-daemon` and the pinned bin, OpenCode with the overlay, Devin with a fresh pane config) and places the 2x2 grid with `herdr-app`. Idempotent. | Devin | Live: from an empty space it builds the grid, and a second run changes nothing. |
+| U5 | `hx brief new <id> --playbook <p> --worker <role>`: writes the brief skeleton with the standard first line, the rules and a Report section that already holds the lead's `hx say claude` line. | DeepSeek | A test shows a generated brief always contains the Report section. The command also refuses a brief whose shell commands contain `|` inside quotes (OpenCode reads it as a pipe and asks for permission, 8 Nov). Kickoff points at the command. |
+| U6 | OpenCode 7501 status plugin in `team/`, installed by `install.ps1`. | Devin | Live: `hc ls` shows dev-opencode `agent: opencode`, and its status goes working then idle across one turn. |
+| U7 | Reset and compaction on hc by restart: `hx reset <agent>` and `hx compact` on hc. | DeepSeek | Live: reset an idle worker, and it comes back in the same pane with a fresh session and the same name and labels. |
+| U8 | Skills and docs: herdr-team, hx-router, kickoff and TEAM.md describe the app first. Then run `sync.py`. | Lead | `sync.py --check` passes, and each agent's copy has the new text. |
+| P1 | Permission widening, waiting on creator approval: Codex rules for `hc ls/get/read/send`, Devin `Fetch(domain:*)` (proven 8 Nov), Devin `hc send`. | Lead, after approval | Each in its own commit with a test. |
