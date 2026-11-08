@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from hx import capability
 from hx import devin as hx_devin
 from hx import paths
 from hx import usage as hx_usage
@@ -764,6 +765,62 @@ def _devin_decision(
 
 
 def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    """Pure routing decision, then the retry-by-cause admission check."""
+    decision = _route(task, usage, policy)
+    return _admission_retry_check(task, decision, policy)
+
+
+def _previous_failure_reason(task: dict[str, Any]) -> str | None:
+    """The failure text of the previous attempt, from its outcome or prev block."""
+    outcome = task.get("last_outcome") or {}
+    reason = (outcome.get("failure") or {}).get("reason")
+    if reason:
+        return reason
+    prev = task.get("prev") or {}
+    return (
+        (prev.get("failure") or {}).get("reason")
+        or prev.get("failure_reason")
+        or task.get("last_failure_reason")
+    )
+
+
+def _admission_retry_check(
+    task: dict[str, Any], decision: dict[str, Any], policy: dict[str, Any]
+) -> dict[str, Any]:
+    """Refuse a route that repeats the denied command the previous run died on.
+
+    Same-cause retries were the measured fault behind C4: a denied call ends
+    a worker run, and the router sent the same denied work again. When the
+    previous failure names a command or tool the newly chosen worker still
+    denies, the decision is refused before launch with the fix spelled out.
+    """
+    if task.get("last_failure") != "tool":
+        return decision
+    worker = decision.get("worker")
+    if not worker or decision.get("method") in ("defer", "direct"):
+        return decision
+    profile = capability.worker_profile(worker, policy)
+    if profile is None:
+        return decision
+    cause = capability.retry_denied_cause(_previous_failure_reason(task), profile)
+    if cause is None:
+        return decision
+    return {
+        "worker": None,
+        "model": None,
+        "effort": decision.get("effort"),
+        "method": "refuse",
+        "reason": (
+            f"admission: `{cause}` is still denied for {worker}; the previous run "
+            "died on it (last_failure=tool). Fix the brief: the lead runs that "
+            "command first or drops it, or the work goes to a worker that may."
+        ),
+        "stages": list(decision.get("stages") or []) + ["admission:denied-cause"],
+        "review": True,
+    }
+
+
+def _route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
     stages: list[str] = []
 
     # Stage 1: attempt cap.
@@ -950,13 +1007,38 @@ def route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) -
     return decision
 
 
+def _last_outcome(task_id: str | None) -> dict[str, Any] | None:
+    """The newest recorded outcome for a task in .hx/routing.jsonl, or None."""
+    if not task_id:
+        return None
+    try:
+        lines = (_repo_root() / ".hx" / "routing.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    found: dict[str, Any] | None = None
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if (
+            isinstance(record, dict)
+            and record.get("kind") == "outcome"
+            and record.get("task_id") == task_id
+        ):
+            found = record
+    return found
+
+
 def decide(task: dict[str, Any]) -> dict[str, Any]:
     policy = hx_usage.load_policy()
     snapshot = hx_usage.usage_snapshot(policy=policy)
     if isinstance(snapshot, dict):
         snapshot = dict(snapshot)
         snapshot["routing"] = {"recent": _recent_route_counts(policy)}
-    result = route(task, snapshot, policy)
+    enriched = dict(task)
+    enriched["last_outcome"] = _last_outcome(task.get("task_id"))
+    result = route(enriched, snapshot, policy)
 
     decision_id = str(uuid.uuid4())
     task_id = task.get("task_id")

@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from hx import capability
 from hx import devin as devin_mod
 from hx import paths
 
@@ -1428,10 +1429,34 @@ def run(
     mode: str | None = None,
     worker: str = "opencode",
     effort: str | None = None,
+    allow_preflight_risk: bool = False,
+    policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one OpenCode, Codex or Devin worker and return the run outcome."""
     if cwd is None:
         cwd = _repo_root()
+    if not allow_preflight_risk:
+        findings = capability.prompt_findings(worker, prompt, Path(cwd), policy)
+        if findings:
+            reason = capability.format_refusal(worker, findings)
+            result = _outcome_result(
+                {"kind": "admission", "reason": reason},
+                None,
+                None,
+                0.0,
+                None,
+                False,
+                True,
+                mode or "headless",
+                None,
+            )
+            result["worker"] = worker
+            result["effort"] = effort
+            result["failure"]["findings"] = findings
+            _append_outcome_entry(
+                result, title, model, variant, Path(cwd), task_id, decision_id, routing_log
+            )
+            return result
     if worker == "devin":
         return run_devin(
             prompt,
@@ -1443,6 +1468,7 @@ def run(
             task_id=task_id,
             decision_id=decision_id,
             mode=mode or "headless",
+            policy=policy,
         )
     if mode == "visible":
         return run_visible(
@@ -1544,6 +1570,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run in background --format json mode even when HERDR_ENV=1 (visible mode is the default there)",
     )
+    parser.add_argument(
+        "--allow-preflight-risk",
+        action="store_true",
+        help="launch even when the admission preflight finds denied commands or out-of-scope write paths",
+    )
     args = parser.parse_args(argv)
 
     if args.prompt_file:
@@ -1569,8 +1600,13 @@ def main(argv: list[str] | None = None) -> int:
         mode=mode,
         worker=args.worker,
         effort=args.effort,
+        allow_preflight_risk=args.allow_preflight_risk,
     )
     print(json.dumps(result, indent=2))
+    failure = result.get("failure") or {}
+    if failure.get("kind") == "admission":
+        print(failure.get("reason", ""), file=sys.stderr)
+        return 2
     return 0 if result["ok"] else 1
 
 
