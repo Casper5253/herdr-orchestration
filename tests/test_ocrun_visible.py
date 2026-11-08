@@ -198,6 +198,51 @@ def test_visible_run_launch_failure(
     assert result["session_id"] is None
 
 
+def test_visible_run_applies_profile(tmp_path: Path, ack: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    """C5: a visible launch must carry the profile config, not the default."""
+    launched: list[Path] = []
+    monkeypatch.setattr(ocrun, "launch_visible", lambda script: launched.append(script) or True)
+
+    result = ocrun.run(
+        "read the repo and report",
+        "glm-5.3-flash",
+        cwd=tmp_path,
+        timeout=5.0,
+        title=TITLE,
+        routing_log=tmp_path / "routing.jsonl",
+        mode="visible",
+        profile="research",
+    )
+    assert len(launched) == 1
+    script = launched[0].read_text(encoding="utf-8")
+    assert "$env:OPENCODE_CONFIG" in script
+    rendered = json.loads(
+        (tmp_path / ".hx" / "profiles" / "opencode-research.jsonc").read_text(encoding="utf-8")
+    )
+    assert rendered["permission"]["edit"] == "deny"
+    assert rendered["permission"]["bash"]["*"] == "deny"
+
+
+def test_visible_codex_uses_profile_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    launched: list[Path] = []
+    monkeypatch.setattr(ocrun, "launch_visible", lambda script: launched.append(script) or True)
+    monkeypatch.setattr(ocrun, "wait_for_done", lambda done, timeout: False)
+
+    ocrun.run(
+        "x",
+        "gpt-6-luna",
+        cwd=tmp_path,
+        timeout=1.0,
+        routing_log=tmp_path / "r.jsonl",
+        mode="visible",
+        worker="codex",
+        profile="research",
+    )
+    assert len(launched) == 1
+    script = launched[0].read_text(encoding="utf-8")
+    assert "-s 'read-only'" in script or "-s read-only" in script
+
+
 def test_cli_mode_defaults_from_herdr_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     selected: list = []
 

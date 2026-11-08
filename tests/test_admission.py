@@ -238,17 +238,25 @@ def test_devin_denied_path_rules(tmp_path: Path) -> None:
 
 
 def test_all_todays_briefs_give_zero_findings(tmp_path: Path) -> None:
-    """The five real briefs the lead replayed: no findings after the fix."""
+    """The real briefs the lead replayed that carry no denied instruction."""
     fixtures = Path(__file__).parent / "fixtures" / "briefs"
     for name in (
         "greats-gather-devin.md",
         "greats-diff.md",
         "c4-admission.md",
-        "herdr-app-setup.md",
         "q205-opencode-measured.md",
     ):
         text = (fixtures / name).read_text(encoding="utf-8")
         assert capability.prompt_findings("devin", text, tmp_path) == [], name
+
+
+def test_herdr_app_setup_brief_flags_its_real_denied_steps(tmp_path: Path) -> None:
+    """C4: an unrelated 'never' must not hide the brief's real `gh api` step."""
+    text = (Path(__file__).parent / "fixtures" / "briefs" / "herdr-app-setup.md").read_text(
+        encoding="utf-8"
+    )
+    rules = {f["rule"] for f in capability.prompt_findings("devin", text, tmp_path)}
+    assert "Exec(gh)" in rules
 
 
 @pytest.mark.parametrize(
@@ -286,6 +294,54 @@ def test_disclosure_lines_are_not_findings(tmp_path: Path) -> None:
         "Other denied rules: `Write(**/.git/**)`."
     )
     assert capability.prompt_findings("devin", brief, tmp_path) == []
+
+
+# ---------- C4: a prohibition suppresses only its own instruction ----------
+
+
+def test_unrelated_no_phrase_does_not_suppress_same_line(tmp_path: Path) -> None:
+    """'No tests' on a line must not hide a real `git push` instruction."""
+    brief = "No tests are needed for this change. Run `git push` when done."
+    rules = {f["rule"] for f in capability.prompt_findings("devin", brief, tmp_path)}
+    assert "Exec(git push)" in rules
+
+
+def test_prohibition_does_not_suppress_other_lines(tmp_path: Path) -> None:
+    """'Do not run X' on line 1 must not hide a real X instruction on line 2."""
+    brief = "Do not run `git push` yourself.\nOnce reviewed, run `git push` to ship it."
+    findings = capability.prompt_findings("devin", brief, tmp_path)
+    assert all(f["line"] == 2 for f in findings)
+    assert {f["rule"] for f in findings} == {"Exec(git push)"}
+
+
+def test_prohibition_still_suppresses_its_own_instruction(tmp_path: Path) -> None:
+    brief = "Do not run `git push`; the lead ships."
+    assert capability.prompt_findings("devin", brief, tmp_path) == []
+
+
+def test_implement_write_scope_is_cwd_not_anywhere(tmp_path: Path) -> None:
+    """C5/C4: write_roots 'cwd' means inside cwd, not anywhere."""
+    import json as _json
+
+    policy = _json.loads(Path("policy.json").read_text(encoding="utf-8"))
+    outside = capability.prompt_findings(
+        "devin", "write the output to C:\\Users\\caspe\\outside\\x.md", tmp_path, policy, "implement"
+    )
+    assert any(f["kind"] == "outside-cwd" for f in outside)
+    inside = capability.prompt_findings(
+        "devin", f"write the output to {tmp_path}\\x.md", tmp_path, policy, "implement"
+    )
+    assert inside == []
+
+
+def test_research_refuses_even_inside_cwd_writes(tmp_path: Path) -> None:
+    import json as _json
+
+    policy = _json.loads(Path("policy.json").read_text(encoding="utf-8"))
+    findings = capability.prompt_findings(
+        "devin", f"write the report to {tmp_path}\\notes.md", tmp_path, policy, "research"
+    )
+    assert any(f["kind"] == "outside-cwd" for f in findings)
 
 
 # ---------- ocrun refusal ----------
@@ -383,6 +439,61 @@ def test_allow_preflight_risk_launches(tmp_path: Path, monkeypatch: pytest.Monke
     )
     assert seen == ["execute"]
     assert (result.get("failure") or {}).get("kind") != "admission"
+
+
+# ---------- ocrun: the named profile is the boundary ----------
+
+
+def test_unknown_profile_is_a_refusal_not_a_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--allow-preflight-risk skips brief checks, never the profile boundary."""
+    monkeypatch.setattr(
+        ocrun,
+        "execute",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")),
+    )
+    result = ocrun.run(
+        "x",
+        "qwen3.8-flash",
+        cwd=tmp_path,
+        worker="opencode",
+        profile="nope",
+        allow_preflight_risk=True,
+        routing_log=tmp_path / "r.jsonl",
+    )
+    assert result["failure"]["kind"] == "admission"
+    assert "unknown profile" in result["failure"]["reason"]
+
+
+def test_lead_only_profile_is_a_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ocrun,
+        "execute",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")),
+    )
+    result = ocrun.run(
+        "x",
+        "qwen3.8-flash",
+        cwd=tmp_path,
+        worker="opencode",
+        profile="release",
+        allow_preflight_risk=True,
+        routing_log=tmp_path / "r.jsonl",
+    )
+    assert result["failure"]["kind"] == "admission"
+    assert "lead-only" in result["failure"]["reason"]
+
+
+def test_main_passes_the_real_policy_to_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def fake_run(*args: object, **kw: object) -> dict:
+        captured.update(kw)
+        return {"ok": True, "failure": None}
+
+    monkeypatch.setattr(ocrun, "run", fake_run)
+    ocrun.main(["--model", "glm-5.3-flash", "p", "--profile", "research", "--headless"])
+    assert captured["profile"] == "research"
+    assert captured["policy"] is not None and "profiles" in captured["policy"]
 
 
 # ---------- route: retries by cause ----------

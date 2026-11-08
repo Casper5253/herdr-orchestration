@@ -391,6 +391,7 @@ def write_run_script(
     variant: str | None,
     title: str,
     cwd: Path,
+    env_vars: dict[str, str] | None = None,
 ) -> dict[str, Path]:
     """Write prompt.md and run.ps1 under ``<repo>/.hx/runs/<title>/``."""
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -414,6 +415,7 @@ def write_run_script(
         [
             "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
             "clear-host",
+            *("$env:%s = %s" % (name, _ps(value)) for name, value in (env_vars or {}).items()),
             "& %s" % " ".join(cmd_parts),
             "$code = $LASTEXITCODE",
             "@{ exit_code = $code } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % _ps(str(run_dir / VISIBLE_DONE_FILE)),
@@ -467,6 +469,7 @@ def write_codex_run_script(
     effort: str | None,
     title: str,
     cwd: Path,
+    sandbox: str = "workspace-write",
 ) -> dict[str, Path]:
     """Write prompt.md and run.ps1 for a codex exec visible window.
 
@@ -483,7 +486,7 @@ def write_codex_run_script(
     cmd_parts = ["codex", "exec", "-p", "trusted-dev", "-m", _ps(model)]
     if effort:
         cmd_parts += ["-c", _ps(f"model_reasoning_effort={effort}")]
-    cmd_parts += ["-s", "workspace-write", "--skip-git-repo-check"]
+    cmd_parts += ["-s", sandbox, "--skip-git-repo-check"]
     cmd_parts += ["-C", _ps(str(cwd)), "-o", _ps(str(run_dir / VISIBLE_LAST_FILE))]
     cmd_parts.append(_prompt_arg(prompt_path))
     pinned = codex_bin_dir()
@@ -948,12 +951,26 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     run_dir = _unique_run_dir(cwd, title)
     run_title = run_dir.name
+    profile_name = args_kw.get("profile")
+    policy = args_kw.get("policy")
     if worker == "codex":
         started_utc = _utcnow()
-        files = write_codex_run_script(run_dir, prompt, model, effort, run_title, cwd)
+        sandbox = "workspace-write"
+        if profile_name is not None:
+            from hx import profile as profile_mod
+
+            named = profile_mod.get(profile_name, policy)
+            if named is None:
+                raise ValueError(f"unknown profile {profile_name}")
+            if named.get("lead_only"):
+                raise ValueError(f"profile {profile_name} is lead-only")
+            sandbox = profile_mod.render("codex", named)["sandbox"]
+        files = write_codex_run_script(run_dir, prompt, model, effort, run_title, cwd, sandbox=sandbox)
     else:
         started_utc = None
-        files = write_run_script(run_dir, prompt, model, variant, run_title, cwd)
+        config_path = _profile_config_path(worker, profile_name, cwd, policy)
+        env_vars = {"OPENCODE_CONFIG": str(config_path)} if config_path else None
+        files = write_run_script(run_dir, prompt, model, variant, run_title, cwd, env_vars=env_vars)
 
     if not launch_visible(files["script"]):
         result = _outcome_result(
@@ -1417,24 +1434,44 @@ def resolve_mode(headless: bool) -> str:
     return "visible" if os.environ.get("HERDR_ENV") == "1" else "headless"
 
 
-def _profile_env(
+def _profile_config_path(
     worker: str, profile: str | None, cwd: Path, policy: dict[str, Any] | None
-) -> dict[str, str] | None:
-    """OPENCODE_CONFIG env pointing at the rendered permission block, or None."""
+) -> Path | None:
+    """Render the profile's permission block and return its path, or None.
+
+    A missing, malformed or lead-only profile raises: a named profile that
+    cannot render a boundary is never a silent fallback to the default
+    OpenCode config.
+    """
     if worker != "opencode" or profile is None:
         return None
     from hx import profile as profile_mod
 
     named = profile_mod.get(profile, policy)
-    if named is None or named.get("lead_only"):
-        return None
+    if named is None:
+        raise ValueError(f"unknown profile {profile}")
+    if named.get("lead_only"):
+        raise ValueError(f"profile {profile} is lead-only")
+    error = profile_mod.validate(named)
+    if error:
+        raise ValueError(error)
     target = Path(cwd) / ".hx" / "profiles" / f"opencode-{profile}.jsonc"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(profile_mod.render("opencode", named), indent=2) + "\n", encoding="utf-8"
     )
+    return target
+
+
+def _profile_env(
+    worker: str, profile: str | None, cwd: Path, policy: dict[str, Any] | None
+) -> dict[str, str] | None:
+    """OPENCODE_CONFIG env pointing at the rendered permission block, or None."""
+    config_path = _profile_config_path(worker, profile, cwd, policy)
+    if config_path is None:
+        return None
     env = dict(os.environ)
-    env["OPENCODE_CONFIG"] = str(target)
+    env["OPENCODE_CONFIG"] = str(config_path)
     return env
 
 
@@ -1458,28 +1495,43 @@ def run(
     """Run one OpenCode, Codex or Devin worker and return the run outcome."""
     if cwd is None:
         cwd = _repo_root()
-    if not allow_preflight_risk:
+    if policy is None:
+        from hx.usage import load_policy
+
+        policy = load_policy()
+    findings: list[dict[str, Any]] = []
+    if profile is not None:
+        from hx import profile as profile_mod
+
+        named = profile_mod.get(profile, policy)
+        if named is None:
+            findings.append({"kind": "profile", "command": profile, "rule": f"unknown profile {profile}", "line": 0})
+        elif named.get("lead_only"):
+            findings.append({"kind": "profile", "command": profile, "rule": f"profile {profile} is lead-only", "line": 0})
+        elif (error := profile_mod.validate(named)) is not None:
+            findings.append({"kind": "profile", "command": profile, "rule": error, "line": 0})
+    if not findings and not allow_preflight_risk:
         findings = capability.prompt_findings(worker, prompt, Path(cwd), policy, profile_name=profile)
-        if findings:
-            reason = capability.format_refusal(worker, findings)
-            result = _outcome_result(
-                {"kind": "admission", "reason": reason},
-                None,
-                None,
-                0.0,
-                None,
-                False,
-                True,
-                mode or "headless",
-                None,
-            )
-            result["worker"] = worker
-            result["effort"] = effort
-            result["failure"]["findings"] = findings
-            _append_outcome_entry(
-                result, title, model, variant, Path(cwd), task_id, decision_id, routing_log
-            )
-            return result
+    if findings:
+        reason = capability.format_refusal(worker, findings)
+        result = _outcome_result(
+            {"kind": "admission", "reason": reason},
+            None,
+            None,
+            0.0,
+            None,
+            False,
+            True,
+            mode or "headless",
+            None,
+        )
+        result["worker"] = worker
+        result["effort"] = effort
+        result["failure"]["findings"] = findings
+        _append_outcome_entry(
+            result, title, model, variant, Path(cwd), task_id, decision_id, routing_log
+        )
+        return result
     if worker == "devin":
         return run_devin(
             prompt,
@@ -1508,6 +1560,8 @@ def run(
                 "decision_id": decision_id,
                 "worker": worker,
                 "effort": effort,
+                "profile": profile,
+                "policy": policy,
             }
         )
     if worker != "opencode":
@@ -1617,6 +1671,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.worker == "codex" and mode == "headless":
         parser.error("codex worker supports visible mode only (drop --headless)")
 
+    from hx.usage import load_policy
+
     result = run(
         prompt,
         args.model,
@@ -1630,6 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
         worker=args.worker,
         effort=args.effort,
         allow_preflight_risk=args.allow_preflight_risk,
+        policy=load_policy(),
         profile=args.profile,
     )
     print(json.dumps(result, indent=2))
