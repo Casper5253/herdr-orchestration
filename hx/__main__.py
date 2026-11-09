@@ -126,8 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reset = subparsers.add_parser("reset", help="Send an idle worker's native reset command and record it.")
     reset.add_argument("agent")
     reset.add_argument("--session")
-    reset.set_defaults(func=lambda args: print(json.dumps(
-        context.Controller().reset(args.agent, session_id=args.session))))
+    reset.set_defaults(func=_reset)
     # route and ocrun dispatch to their own main(argv) in main() before argparse
     # runs; these subparsers exist so `hx --help` lists them.
     subparsers.add_parser(
@@ -172,6 +171,8 @@ def _build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--team", help="Team name; default is this pane's own team.")
     watch_parser.add_argument("--interval", type=float, default=1.0, help="Roster rescan period in seconds.")
     watch_parser.add_argument("--timeout", type=float, default=None, help="Seconds to watch before exiting quietly.")
+    watch_parser.add_argument("--recover", action="store_true",
+                              help="Also run the guarded recovery a clear-needed/compact-needed/compact decision asks for (hx compact or the reset path) and print its outcome; never recovers the lead.")
     watch_parser.set_defaults(func=lambda args: _team_watch(args))
     return parser
 
@@ -187,8 +188,18 @@ def _boundary(args: argparse.Namespace) -> None:
     print(json.dumps(result))
 
 
+def _reset(args: argparse.Namespace) -> int:
+    result = context.Controller().reset(args.agent, session_id=args.session)
+    print(json.dumps(result))
+    if result.get("action") == "reset-verified":
+        return 0
+    print(f"hx: {result.get('reason') or result.get('action')}", file=sys.stderr)
+    return 1
+
+
 def _team_watch(args: argparse.Namespace) -> int:
-    return team_watch.watch(args.team, interval=args.interval, timeout=args.timeout)
+    return team_watch.watch(args.team, interval=args.interval, timeout=args.timeout,
+                            recover=args.recover)
 
 
 def _compact(args: argparse.Namespace) -> None:

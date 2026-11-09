@@ -132,13 +132,36 @@ def _host_status(detected: host.Host, name: str) -> str:
     return str(member["status"]) if member else "unknown"
 
 
-def _await_advance(detected: host.Host, name: str, sent_turn: int | None, seconds: float) -> bool:
-    """Submission evidence: the receiver's turn number advanced past ours.
+def _submit_poll_seconds(kind: str) -> float:
+    """The submission-evidence window for a provider, from policy's say section.
 
-    `hc get` reports no progress counter finer than `turn`. Status alone is
-    never proof — a stale or unrelated working status would mark an
-    unsubmitted message delivered and prevent retry.
+    `say.submit_poll_seconds` may be a flat number or a per-kind map; a missing
+    or invalid entry falls back to SUBMIT_POLL_SECONDS.
     """
+    try:
+        policy = usage.load_policy()
+    except Exception:
+        policy = {}
+    windows = (policy.get("say") or {}).get("submit_poll_seconds")
+    value = windows.get(kind, windows.get("default")) if isinstance(windows, dict) else windows
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0):
+        return float(value)
+    return SUBMIT_POLL_SECONDS
+
+
+def _await_submission(detected: host.Host, name: str, result: host.SendResult,
+                      seconds: float, kind: str) -> bool:
+    """Submission evidence: a turn advance, or for Devin an idle->working start.
+
+    `hc get` reports no progress counter finer than `turn`, and Devin's turn
+    stays at its pre-send value until the whole turn finishes — so for Devin a
+    status move from idle/done to working after the send is the proof. Status
+    alone is never proof for other kinds — a stale or unrelated working status
+    would mark an unsubmitted message delivered and prevent retry.
+    """
+    sent_turn = result["turn"]
+    devin_start = kind == "devin" and result["status"] in ("idle", "done")
     deadline = time.monotonic() + seconds
     while True:
         member = _host_member(detected, name)
@@ -148,6 +171,8 @@ def _await_advance(detected: host.Host, name: str, sent_turn: int | None, second
         if (isinstance(sent_turn, int) and not isinstance(sent_turn, bool)
                 and isinstance(turn, int) and not isinstance(turn, bool)
                 and turn > sent_turn):
+            return True
+        if devin_start and member["status"] == "working":
             return True
         if member["status"] in ("blocked", "error"):
             return False
@@ -176,6 +201,7 @@ def _submission_evidence(
     name: str,
     text: str,
     result: host.SendResult,
+    kind: str = "",
 ) -> str:
     """What an accepted hc send actually did: submitted, queued, or uncertain.
 
@@ -184,11 +210,12 @@ def _submission_evidence(
     got the text queued to its turn; an idle one is watched briefly, then the
     unsubmitted-paste check decides whether one Enter press is owed.
     """
+    window = _submit_poll_seconds(kind)
     if result["status"] == "working":
-        if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
+        if _await_submission(detected, name, result, window, kind):
             return "queued"
         return "uncertain"
-    if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
+    if _await_submission(detected, name, result, window, kind):
         return "submitted"
     member = _host_member(detected, name)
     if member is None or member["status"] not in ("idle", "done"):
@@ -211,6 +238,8 @@ def _submission_evidence(
     if (fresh is not None and isinstance(fresh.get("turn"), int)
             and isinstance(result["turn"], int) and not isinstance(result["turn"], bool)
             and fresh["turn"] > result["turn"]):
+        return "submitted"
+    if fresh is not None and kind == "devin" and fresh["status"] == "working":
         return "submitted"
     return "uncertain"
 
@@ -490,7 +519,8 @@ def _deliver(
             # herdr CLI, which reports the provider response inline and can
             # press no keys.
             if not isinstance(detected, host.HerdrHost):
-                outcome = _submission_evidence(detected, name, text, result)
+                outcome = _submission_evidence(detected, name, text, result,
+                                               str(destination.get("kind") or ""))
             if outcome == "uncertain":
                 state = "uncertain"
                 reason = "sent; no submission evidence"

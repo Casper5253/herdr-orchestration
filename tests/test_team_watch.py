@@ -28,15 +28,21 @@ class FakeHost:
 
 
 class FakeController:
-    def __init__(self):
+    def __init__(self, decision=None):
         self.decisions = []
+        self.recoveries = []
+        self.decision = decision or {"disposition": "keep", "action": "keep"}
 
     def decide(self, name):
         self.decisions.append(name)
-        return {"disposition": "keep", "action": "keep"}
+        return dict(self.decision)
+
+    def execute_recovery(self, name, decision):
+        self.recoveries.append((name, decision.get("action")))
+        return {"outcome": "reset-verified", "action": decision.get("action")}
 
 
-def _watch(host, controller, steps):
+def _watch(host, controller, steps, recover=False):
     """Drive watch() with an instant clock; each sleep applies the next roster step."""
     out = []
     t = [0.0]
@@ -51,7 +57,8 @@ def _watch(host, controller, steps):
 
     rc = team_watch.watch(
         "dev", interval=1.0, timeout=30, detected=host,
-        controller=controller, emit=out.append, sleep=sleep, clock=lambda: t[0])
+        controller=controller, emit=out.append, sleep=sleep, clock=lambda: t[0],
+        recover=recover)
     return rc, [json.loads(line) for line in out]
 
 
@@ -183,3 +190,71 @@ def test_main_wires_the_team_watch_command(monkeypatch, capsys):
     monkeypatch.setattr(team_watch, "watch", lambda team, **kw: seen.update(team=team) or 0)
     assert main(["team", "watch", "--team", "dev", "--timeout", "5"]) == 0
     assert seen["team"] == "dev"
+
+
+def test_recover_executes_a_clear_needed_decision():
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t2w")
+    controller = FakeController({"disposition": "recovery-needed", "action": "clear-needed"})
+    rc, events = _watch(hc, controller, [
+        lambda: hc.members["dev-devin"].update(status="idle")], recover=True)
+    assert rc == 0
+    assert controller.recoveries == [("dev-devin", "clear-needed")]
+    assert events[0]["decision"] == {"disposition": "recovery-needed", "action": "clear-needed"}
+    (recovery,) = [e for e in events if e.get("type") == "recovery"]
+    assert recovery["name"] == "dev-devin" and recovery["outcome"] == "reset-verified"
+
+
+def test_recover_is_off_by_default():
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t2w")
+    controller = FakeController({"disposition": "recovery-needed", "action": "clear-needed"})
+    rc, events = _watch(hc, controller, [
+        lambda: hc.members["dev-devin"].update(status="idle")])
+    assert controller.recoveries == []
+    assert [e.get("type") for e in events] == [None]
+
+
+def test_recover_skips_a_keep_decision():
+    hc = FakeHost()
+    hc.members["dev-codex"] = _member("dev-codex", "working", "t24")
+    controller = FakeController({"disposition": "keep", "action": "keep"})
+    rc, events = _watch(hc, controller, [
+        lambda: hc.members["dev-codex"].update(status="idle")], recover=True)
+    assert controller.recoveries == []
+    assert [e.get("type") for e in events] == [None]
+
+
+def test_recover_never_touches_the_lead_seat():
+    hc = FakeHost()
+    hc.members["dev-lead"] = _member("dev-lead", "working", "t23")
+    hc.members["dev-lead"]["role"] = "lead"
+    hc.own = lambda: _member("dev-codex", "working", "t24")
+    controller = FakeController({"disposition": "recovery-needed", "action": "clear-needed"})
+    rc, events = _watch(hc, controller, [
+        lambda: hc.members["dev-lead"].update(status="idle")], recover=True)
+    assert controller.recoveries == []
+    assert [e.get("type") for e in events] == [None]
+
+
+def test_recover_outcome_error_is_an_event_not_a_crash():
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t2w")
+    controller = FakeController({"disposition": "recovery-needed", "action": "clear-needed"})
+
+    def boom(name, decision):
+        raise RuntimeError("executor blew up")
+    controller.execute_recovery = boom
+    rc, events = _watch(hc, controller, [
+        lambda: hc.members["dev-devin"].update(status="idle")], recover=True)
+    assert rc == 0
+    (recovery,) = [e for e in events if e.get("type") == "recovery"]
+    assert recovery["outcome"] == "error" and "executor blew up" in recovery["reason"]
+
+
+def test_main_wires_recover(monkeypatch, capsys):
+    from hx.__main__ import main
+    seen = {}
+    monkeypatch.setattr(team_watch, "watch", lambda team, **kw: seen.update(kw) or 0)
+    assert main(["team", "watch", "--team", "dev", "--recover", "--timeout", "5"]) == 0
+    assert seen["recover"] is True

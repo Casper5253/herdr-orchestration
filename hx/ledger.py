@@ -295,6 +295,11 @@ class Ledger:
     CLOSED_STATUSES = {"done", "failed", "blocked"}
     SESSION_LEASE_STATES = {"held", "compact-unknown"}
 
+    @staticmethod
+    def is_unfinished(task: dict[str, Any]) -> bool:
+        """An open-status task whose claims still stand; released tasks do not count."""
+        return task.get("status") in Ledger.OPEN_STATUSES and not task.get("released")
+
     def __init__(
         self,
         ledger_path: Path | str | None = None,

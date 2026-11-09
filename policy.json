@@ -191,6 +191,14 @@
     },
     "claude_lead_note": "Compact at a boundary around 240K tokens (0.6 of the 400K effective lead limit). The native window is 1M, but every turn re-reads the cached context, so cost and attention pressure start well before the window is full."
   },
+  "say": {
+    "submit_poll_seconds": {
+      "default": 10,
+      "codex": 15,
+      "devin": 15
+    },
+    "submit_poll_seconds_note": "Measured live 9 Nov on the dev team: every hx say to Devin returned uncertain because hc holds Devin's turn at 0/1 until the turn finishes — Devin submission proof is now a status move from idle/done to working inside this window, not a turn advance. Codex's turn advanced once just after the 10 s window, so codex gets 15 s. Claude and OpenCode are unmeasured and keep the 10 s default."
+  },
   "devin": {
     "enabled": true,
     "bin": "~/AppData/Local/devin/cli/bin/devin.exe",

@@ -220,6 +220,98 @@ def test_send_slash_reports_a_failed_key_call(fake: FakeHc) -> None:
     assert len(fake.keys) == 1
 
 
+def test_send_slash_presses_enter_once_more_when_the_command_stays_staged(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Live repro: the first Enter landed in Devin's slash-command autocomplete."""
+    enters = [0]
+    original = fake.run
+
+    def run(argv, **kwargs):
+        if argv[1] == "read":
+            staged = enters[0] < 2
+            return _completed(json.dumps({
+                "how": "screen", "complete": True,
+                "text": "> /clear" if staged else "fresh pane"}))
+        result = original(argv, **kwargs)
+        if argv[1] == "keys" and argv[3] == "enter":
+            enters[0] += 1
+        return result
+
+    monkeypatch.setattr(host.subprocess, "run", run)
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/clear") is True
+    assert fake.keys == [
+        ["hc", "keys", "t9", "/", "c", "l", "e", "a", "r"],
+        ["hc", "keys", "t9", "enter"],
+        ["hc", "keys", "t9", "enter"],
+    ]
+
+
+def test_send_slash_is_unverified_when_the_command_stays_staged(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Still staged after the retry: unverified, and Enter was pressed exactly once more."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": "> /clear"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/clear") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 2
+
+
+def test_send_slash_never_retries_enter_for_a_submitted_command(
+    fake: FakeHc, monkeypatch
+) -> None:
+    fake.read_payload = {"how": "screen", "complete": True, "text": "some output"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_is_unverified_when_the_screen_cannot_be_read(
+    fake: FakeHc, monkeypatch
+) -> None:
+    fake.read_fail = True
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+
+
+def test_send_slash_ignores_the_command_in_output_above_the_composer(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Review 2 finding 4: a submitted command's echo in output never earns another Enter."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "Finished /clear successfully.\n❭ "}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/clear") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_ignores_a_scrollback_echo_above_an_empty_prompt(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """A submitted `› /clear` in scrollback above the live composer is not staged."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "› /clear\nFinished /clear successfully.\n› "}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/clear") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_staged_command_matches_the_exact_command_only(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Review 2 finding 4: `❭ /clearance` is not the `/clear` send_slash typed."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": "❭ /clearance"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/clear") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
 def test_send_slash_to_a_vanished_member_was_never_attempted(fake: FakeHc) -> None:
     del fake.terminals["t1"]
     fake.order.remove("t1")

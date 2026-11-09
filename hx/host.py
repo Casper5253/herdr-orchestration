@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
@@ -22,6 +23,11 @@ STATUSES = frozenset({"idle", "working", "done", "blocked", "error"})
 SETTLED = frozenset({"idle", "done"})
 ERROR_TYPES = frozenset({"timeout", "agent_prompt_stalled", "agent_blocked", "error"})
 WAIT_DEFAULT_MS = 300000
+# A typed slash command's Enter press gets a beat before the composer check.
+SLASH_ENTER_SETTLE_SECONDS = 0.75
+# The line a TUI types into starts with one of these: Devin `❭`, Codex `›`,
+# OpenCode/Claude `>`/`❯`. The last one on screen is the live composer.
+_COMPOSER_PROMPTS = ("❭", "›", "❯", ">", "»")
 # The 7501 `app` word, the only evidence of which provider runs in a terminal.
 HC_APP_KINDS = {
     "claude-code": "claude",
@@ -759,11 +765,55 @@ class HcHost:
 
         `hc send` wraps text in `<hc from=...>`, so a slash command sent as a
         message never reaches the provider's native command handling. Typing
-        the keys does. True only when both key calls were accepted.
+        the keys does. The first Enter can land in the provider's
+        slash-command autocomplete instead of submitting: the screen is read,
+        one more Enter goes out only while the command still sits in the
+        composer, and True means the staged text is verifiably gone.
         """
         if not command.startswith("/"):
             raise ValueError("send_slash types slash commands like /compact or /clear")
-        return self.press(member, *command) and self.press(member, "enter")
+        if isinstance(member, dict):
+            address = str(member.get("address") or "")
+            if not address:
+                raise SendNotAttempted("the member's terminal has no address")
+        else:
+            address = self._send_address(member)
+        if not (self._run("keys", address, *command, timeout=30).returncode == 0
+                and self._run("keys", address, "enter", timeout=30).returncode == 0):
+            return False
+        time.sleep(SLASH_ENTER_SETTLE_SECONDS)
+        staged = self._staged_command(address, command)
+        if staged is False:
+            return True
+        if staged is None:
+            return False  # keys went out but the composer state cannot be proven
+        if self._run("keys", address, "enter", timeout=30).returncode != 0:
+            return False
+        time.sleep(SLASH_ENTER_SETTLE_SECONDS)
+        return self._staged_command(address, command) is False
+
+    def _staged_command(self, address: str, command: str) -> bool | None:
+        """Whether the typed slash command still sits in the terminal's composer.
+
+        The composer is the last prompt-glyph line on the screen (`❭` in
+        Devin, `›` in Codex, `>` elsewhere): scrollback and output above it can
+        echo the command but never stage it, and a staged `❭ /clearance` is
+        not the `/clear` this call typed. None means the screen could not be
+        read: unverified, never a reason to press Enter again.
+        """
+        try:
+            completed = self._run("read", address, "--json", "--lines", "12")
+            data = self._json(completed)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str):
+            return None
+        for line in reversed(text.rstrip().splitlines()[-6:]):
+            stripped = line.strip()
+            if stripped[:1] in _COMPOSER_PROMPTS:
+                return stripped[1:].strip() == command
+        return False
 
     def send_checked(
         self,

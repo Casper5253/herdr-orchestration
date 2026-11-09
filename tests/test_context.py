@@ -54,7 +54,7 @@ def controller(tmp_path, monkeypatch):
 
 
 def test_success_reserves_verifies_restores_and_releases(controller):
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "compacted"
     assert result["telemetry"]["utilisation"] == .2
     assert controller.calls[0][1] == "/compact"
@@ -71,7 +71,7 @@ def test_success_reserves_verifies_restores_and_releases(controller):
 def test_decision_rejects_unsafe_agent(controller, change, reason):
     controller.agent.update(change)
     assert reason in controller.decide("hx-codex")["reason"]
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
@@ -82,13 +82,13 @@ def test_decision_rejects_unsafe_agent(controller, change, reason):
 ])
 def test_unknown_or_stale_never_compacts(controller, sample):
     controller.sample.update(sample)
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
 def test_boundary_and_pressure_decisions(controller):
-    assert controller.decide("hx-codex")["action"] == "compact"
-    assert controller.decide("hx-codex", related=True)["action"] == "keep"
+    assert controller.decide("hx-codex", "t")["action"] == "compact"
+    assert controller.decide("hx-codex", "t", related=True)["action"] == "keep"
     controller.sample["utilisation"] = .39
     assert controller.decide("hx-codex")["action"] == "keep"
     controller.sample["utilisation"] = .75
@@ -103,7 +103,7 @@ def test_boundary_and_pressure_decisions(controller):
 def test_pressure_compaction_runs_for_registered_in_progress_task(controller):
     controller.ledger.set_status("t", "in_progress")
     controller.sample["utilisation"] = .75
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "compacted"
     assert result["task_id"] == "t"
     assert controller.ledger.get_task("t")["status"] == "in_progress"
@@ -118,7 +118,7 @@ def test_pressure_compaction_preserves_current_persistent_task_reservation(contr
     decision = controller.decide("hx-codex")
     assert decision["action"] == "compact"
 
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
 
     assert result["action"] == "compacted"
     sessions = json.loads(controller.ledger.leases_path.read_text())["sessions"]
@@ -127,7 +127,7 @@ def test_pressure_compaction_preserves_current_persistent_task_reservation(contr
     assert "sid" not in sessions
 
 
-def test_pressure_without_registered_task_requests_task_registration(controller, tmp_path):
+def test_pressure_without_open_task_proceeds_without_checkpoint(controller, tmp_path):
     controller.ledger = ledger.Ledger(
         repo_root=tmp_path,
         ledger_path=tmp_path / "empty-ledger.json",
@@ -137,7 +137,8 @@ def test_pressure_without_registered_task_requests_task_registration(controller,
     controller.sample["utilisation"] = .9
     result = controller.decide("hx-codex")
     assert result["action"] == "compact-needed"
-    assert "no hx task is registered" in result["reason"]
+    assert "no open task" in result["reason"]
+    assert any("/compact" in step for step in result["steps"])
 
 
 def test_pressure_compaction_keeps_task_loop_guard(controller):
@@ -151,21 +152,23 @@ def test_pressure_compaction_keeps_task_loop_guard(controller):
 
 def test_checkpoint_failure_sends_nothing_and_blocks_retry(controller, monkeypatch):
     monkeypatch.setattr(checkpoint, "validate_checkpoint", lambda *a, **kw: {"ok": False, "errors": ["stale"]})
-    assert "checkpoint validation failed" in controller.compact("hx-codex")["reason"]
+    assert "checkpoint validation failed" in controller.compact("hx-codex", "t")["reason"]
     assert not controller.calls
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
-    assert "loop guard" in controller.decide("hx-codex")["reason"]
+    assert "loop guard" in controller.decide("hx-codex", "t")["reason"]
+    # A task-bound failure does not block taskless recovery for the same agent.
+    assert controller.decide("hx-codex")["action"] == "compact-needed"
 
 
 def test_empty_authored_checkpoint_rejected(controller):
     (controller.ledger.repo_root / "checkpoint.md").write_text("## Decisions\n\n## Exact errors\nNone\n\n## Next action\nNext\n", encoding="utf-8")
-    assert "section empty" in controller.compact("hx-codex")["reason"]
+    assert "section empty" in controller.compact("hx-codex", "t")["reason"]
     assert not controller.calls
 
 
 def test_unowned_edits_rejected(controller, monkeypatch):
     monkeypatch.setattr(checkpoint, "_run_git", lambda *a: (0, " M other.py\0", ""))
-    assert "ownership" in controller.compact("hx-codex")["reason"]
+    assert "ownership" in controller.compact("hx-codex", "t")["reason"]
     assert not controller.calls
 
 
@@ -197,8 +200,8 @@ def test_clean_separate_pane_repository_is_compactable(cross_repo, recorded_work
         task_root.mkdir()
         controller.ledger.update_task("t", worktree=str(task_root),
                                       files=[ledger._canonical_path(task_root / "owned.py")])
-    assert controller.decide("hx-codex")["action"] == "compact"
-    assert controller.compact("hx-codex")["action"] == "compacted"
+    assert controller.decide("hx-codex", "t")["action"] == "compact"
+    assert controller.compact("hx-codex", "t")["action"] == "compacted"
     checked_roots = {cwd for args, cwd in calls if args[0] == "status"}
     assert checked_roots == {task_root, pane_root}
 
@@ -213,7 +216,7 @@ def test_same_repository_pane_subdirectory_is_allowed(controller, monkeypatch):
         return (0, str(root), "") if args[0] == "rev-parse" else (0, "", "")
 
     monkeypatch.setattr(checkpoint, "_run_git", git)
-    assert controller.decide("hx-codex")["action"] == "compact"
+    assert controller.decide("hx-codex", "t")["action"] == "compact"
     assert [cwd for args, cwd in calls if args[0] == "status"] == [root]
 
 
@@ -226,7 +229,7 @@ def test_dirty_open_task_in_pane_repository_blocks_compaction(cross_repo):
     pane_ledger.add_task("unfinished", "Other work", "hx-codex", ["unfinished.py"], base_commit="base")
     pane_ledger.set_status("unfinished", "in_progress")
     statuses[pane_root] = " M unfinished.py\0"
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "keep"
     assert "owned by an open task in pane repository" in result["reason"]
     assert not controller.calls
@@ -237,7 +240,7 @@ def test_cross_repo_unknown_dirt_blocks_compaction(cross_repo, dirty_tree):
     controller, pane_root, statuses, calls = cross_repo
     root = controller.ledger.repo_root if dirty_tree == "task" else pane_root
     statuses[root] = "?? unrecorded.py\0"
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "keep"
     assert "ownership" in result["reason"] if dirty_tree == "task" else "uncheckpointed" in result["reason"]
     assert not controller.calls
@@ -245,7 +248,7 @@ def test_cross_repo_unknown_dirt_blocks_compaction(cross_repo, dirty_tree):
 
 def test_cross_repo_dirt_is_rechecked_before_sending(cross_repo, monkeypatch):
     controller, pane_root, statuses, calls = cross_repo
-    assert controller.decide("hx-codex")["action"] == "compact"
+    assert controller.decide("hx-codex", "t")["action"] == "compact"
     original_validate = checkpoint.validate_checkpoint
 
     def validate(*args, **kwargs):
@@ -253,7 +256,7 @@ def test_cross_repo_dirt_is_rechecked_before_sending(cross_repo, monkeypatch):
         return original_validate(*args, **kwargs)
 
     monkeypatch.setattr(checkpoint, "validate_checkpoint", validate)
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "keep"
     assert "uncheckpointed" in result["reason"]
     assert not controller.calls
@@ -270,7 +273,7 @@ def test_cross_repo_git_failure_is_not_treated_as_clean(cross_repo, monkeypatch,
         return original_git(args, cwd)
 
     monkeypatch.setattr(checkpoint, "_run_git", git)
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "keep"
     assert "git unavailable" in result["reason"]
     assert not controller.calls
@@ -279,14 +282,14 @@ def test_cross_repo_git_failure_is_not_treated_as_clean(cross_repo, monkeypatch,
 def test_busy_immediately_before_send_rejected(controller, monkeypatch):
     replies = iter([dict(controller.agent), dict(controller.agent, status="working")])
     monkeypatch.setattr(context, "agent_info", lambda name: next(replies))
-    assert "became busy" in controller.compact("hx-codex")["reason"]
+    assert "became busy" in controller.compact("hx-codex", "t")["reason"]
     assert not controller.calls
 
 
 def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
     monkeypatch.setattr(context, "_send_slash", lambda member, command: False)
     monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: "")
-    assert controller.compact("hx-codex")["action"] == "compact-unknown"
+    assert controller.compact("hx-codex", "t")["action"] == "compact-unknown"
     assert "leased" in controller.decide("hx-codex")["reason"]
     assert controller.recover("hx-codex")["action"] == "keep"
     controller.sample["sampled_at"] = context._now().isoformat()
@@ -294,7 +297,7 @@ def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
     assert controller.recover("hx-codex")["action"] == "keep"
     controller.agent["status"] = "idle"
     assert controller.recover("hx-codex")["action"] == "recovered"
-    assert "loop guard" in controller.decide("hx-codex")["reason"]
+    assert "loop guard" in controller.decide("hx-codex", "t")["reason"]
 
 
 @pytest.mark.parametrize("failure", ["session", "telemetry-session", "stale", "unchanged", "ack"])
@@ -321,26 +324,26 @@ def test_unverified_completion_is_unknown(controller, monkeypatch, failure):
         return f"{token} Run acceptance."
 
     monkeypatch.setattr(context, "_herdr_read", read)
-    assert controller.compact("hx-codex")["action"] == "compact-unknown"
+    assert controller.compact("hx-codex", "t")["action"] == "compact-unknown"
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]["state"] == "compact-unknown"
 
 
 def test_existing_lease_prevents_send(controller):
     ledger._atomic_write_json(controller.ledger.leases_path, {"files": {}, "sessions": {"sid": {"state": "dispatch"}}})
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
 def test_previous_session_lease_also_blocks_agent(controller):
     ledger._atomic_write_json(controller.ledger.leases_path, {"files": {}, "sessions": {"old": {"agent": "hx-codex", "state": "compact-unknown"}}})
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
 def test_reservation_for_another_task_still_blocks_agent(controller):
     reservation = {"agent": "hx-codex", "task_id": "another-task", "state": "held"}
     ledger._atomic_write_json(controller.ledger.leases_path, {"files": {}, "sessions": {"hx-codex": reservation}})
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
@@ -362,13 +365,13 @@ def test_multiline_acknowledgement_matches_parsed_text():
 ])
 def test_guard_rejects_recent_or_repeated_compaction(controller, guard):
     ledger._atomic_write_json(controller.guard_path, {"sid": guard})
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
 def test_stale_acknowledgement_without_current_nonce_rejected(controller, monkeypatch):
     monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: "Run acceptance.")
-    assert controller.compact("hx-codex")["action"] == "compact-unknown"
+    assert controller.compact("hx-codex", "t")["action"] == "compact-unknown"
 
 
 def test_reservation_rechecks_task_after_decision(controller, monkeypatch):
@@ -378,13 +381,13 @@ def test_reservation_rechecks_task_after_decision(controller, monkeypatch):
         controller.ledger.set_status("t", "in_progress")
         return result
     monkeypatch.setattr(controller, "decide", decide)
-    assert controller.compact("hx-codex")["action"] == "keep"
+    assert controller.compact("hx-codex", "t")["action"] == "keep"
     assert not controller.calls
 
 
 def test_cli_routes_context_commands(controller, monkeypatch, capsys):
     monkeypatch.setattr(context, "Controller", lambda: controller)
-    assert cli.main(["context", "decide", "hx-codex"]) == 0
+    assert cli.main(["context", "decide", "hx-codex", "--task", "t"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "compact"
     assert cli.main(["compact", "hx-codex", "--task", "t"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "compacted"
@@ -479,7 +482,7 @@ def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeyp
         return json.loads(led.leases_path.read_text())["sessions"]["sid"]["token"] + " Run acceptance."
 
     monkeypatch.setattr(context, "_herdr_read", read)
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     if outcome == "success":
         assert result["action"] == "compacted"
     else:
@@ -580,6 +583,41 @@ def test_herdr_read_window_includes_long_wrapped_acknowledgement(monkeypatch):
     assert context._has_acknowledgement(reply, expected)
 
 
+def test_taskless_decision_consults_the_pane_repository_ledger(cross_repo):
+    """Review 4: an open task in the worker's own repo makes it task-bound, never taskless."""
+    controller, pane_root, statuses, calls = cross_repo
+    pane_ledger = ledger.Ledger(repo_root=pane_root,
+                              ledger_path=pane_root / ".hx" / "ledger.json",
+                              lock_path=pane_root / ".hx" / "ledger.lock",
+                              leases_path=controller.ledger.leases_path)
+    pane_ledger.add_task("foreign", "Other repo work", "hx-codex", ["f.py"], base_commit="base")
+    decision = controller.decide("hx-codex")
+    assert decision["action"] == "keep"
+    assert "repository" in decision["reason"]
+    assert controller.reset("hx-codex", command="/clear")["action"] == "keep"
+
+
+def test_released_tasks_do_not_count_as_unfinished(controller):
+    """A task released with `hx task release` no longer counts in `hx context decide`."""
+    controller.ledger.add_task("released-task", "Old work", "hx-codex",
+                               ["old.py"], base_commit="base")
+    controller.ledger.release_task_reservations("released-task")
+    decision = controller.decide("hx-codex")
+    assert decision["action"] == "compact-needed"
+
+
+def test_a_released_task_does_not_stack_with_an_open_one(controller):
+    """Live repro: released + open read as "multiple unfinished tasks" until close."""
+    controller.ledger.add_task("released-task", "Old work", "hx-codex",
+                               ["old.py"], base_commit="base")
+    controller.ledger.release_task_reservations("released-task")
+    controller.ledger.set_status("t", "in_progress")
+    controller.sample["utilisation"] = .9
+    decision = controller.decide("hx-codex")
+    assert decision["action"] == "compact"
+    assert decision["task_id"] == "t"
+
+
 def test_compaction_waits_for_the_post_send_settle(controller, monkeypatch):
     """Finding: a worker busy 20s must compact under compact_wait_seconds, not
     die compact-unknown at the 10s verification cap."""
@@ -602,6 +640,6 @@ def test_compaction_waits_for_the_post_send_settle(controller, monkeypatch):
         return copy.deepcopy(controller.agent)
     monkeypatch.setattr(context, "agent_info", info)
 
-    result = controller.compact("hx-codex")
+    result = controller.compact("hx-codex", "t")
     assert result["action"] == "compacted"
     assert t[0] < 300

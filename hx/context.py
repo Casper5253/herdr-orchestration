@@ -43,6 +43,11 @@ def _timestamp(value: Any) -> dt.datetime | None:
 
 
 RESET_COMMANDS = {"opencode": "/new", "devin": "/clear", "claude": "/clear"}
+# Guard key for recoveries that run with no attributed task.
+NO_TASK_KEY = "<no-task>"
+# Decisions team watch --recover executes through the reset path; "compact"
+# keeps the full task-bound executor.
+RESET_ACTIONS = frozenset({"clear-needed", "compact-needed"})
 
 
 def default_resets_path(leases_path: Path | None = None) -> Path:
@@ -279,7 +284,7 @@ def _has_blocking_session_lease(
             and "token" not in lease
             and lease.get("task_id") == task.get("id")
             and task.get("owner") == name
-            and task.get("status") in ledger.Ledger.OPEN_STATUSES
+            and ledger.Ledger.is_unfinished(task)
         )
         if not is_current_task_hold:
             return True
@@ -441,80 +446,256 @@ class Controller:
         agent = self._agent(name)
         return write_reset(self.resets_path, name, session_id or _session(agent))
 
-    def reset(self, name: str, session_id: str | None = None) -> dict[str, Any]:
-        """Send the provider's reset command from Python, then record it for pressure holds."""
+    def reset(self, name: str, session_id: str | None = None,
+              task_id: str | None = None, command: str | None = None) -> dict[str, Any]:
+        """Send the provider's reset command from Python, then record it for pressure holds.
+
+        Proof of reset is a new provider session id, or — for a pane whose
+        session id cannot move, like Devin's — a fresh utilisation drop on the
+        same session. With ``task_id`` the existing checkpoint rules apply: the
+        task's authored checkpoint must validate before context is cleared, and
+        a task-bound clear is not done until the worker is re-briefed from that
+        checkpoint and its acknowledgement is checked. Outcomes return as
+        dicts; misuse (busy agent, lead, no command) raises.
+        """
         agent = self._agent(name)
         if self._is_lead(name):
             raise ValueError("hx reset targets a worker; the Claude lead self-compacts")
         if agent.get("status") not in READY:
             raise ValueError("agent is not idle; wait for its turn to finish before resetting")
-        command = _reset_command(self.policy, agent.get("kind"))
+        command = command or _reset_command(self.policy, agent.get("kind"))
         if not command:
             raise ValueError(
                 f"no reset command is configured for {agent.get('kind')}; "
                 f"send the reset yourself and record it with hx boundary {name} --reset-sent")
         sid = session_id or _session(agent)
+        task = None
+        checkpoint_ref: tuple[Path, str] | None = None
+        if task_id:
+            try:
+                checkpoint_ref = self._require_checkpoint(task_id)
+            except ValueError as exc:
+                return {"action": "keep", "reason": str(exc)}
+            task = self.ledger.get_task(task_id)
+        guard_task = task if task is not None else {
+            "id": NO_TASK_KEY, "owner": name, "files": [], "worktree": None}
+        before = telemetry(agent, self.policy)
+        if _fresh(before, sid, _now()):
+            pass
+        elif str(sid).startswith("devin-pane:"):
+            return {"action": "keep",
+                    "reason": "telemetry unknown; a pane-bound session cannot prove a reset"}
+        else:
+            before = None  # only a new provider session can then prove the reset
+        task_key = task_id or NO_TASK_KEY
+        context_policy = self.policy.get("context", {})
         hold = f"reset:{name}"
 
-        def reserve(leases: dict[str, Any]) -> dict[str, Any]:
-            entry = leases.setdefault("sessions", {}).get(hold)
+        def reserve(ledger_data: dict[str, Any], leases: dict[str, Any]) -> dict[str, Any]:
+            sessions = leases.setdefault("sessions", {})
+            entry = sessions.get(hold)
             if isinstance(entry, dict):
                 observed = _session(agent)
-                if (entry.get("state") == "reset-unknown" and observed
-                        and observed != entry.get("session_id")):
-                    del leases["sessions"][hold]
+                moved = bool(observed) and observed != entry.get("session_id")
+                task_bound = entry.get("task_id") not in (None, NO_TASK_KEY)
+                if entry.get("state") == "reset-unknown" and (moved or entry.get("rebrief_pending")):
+                    if not entry.get("counted"):
+                        self._bump_reset_guard(name, str(entry.get("task_id") or NO_TASK_KEY))
+                        entry["counted"] = True
+                    if task_bound:
+                        # The reset verified, but a task-bound hold releases
+                        # only after the checkpoint re-brief is acknowledged.
+                        return {"action": "resumed",
+                                "session_id": observed or entry.get("session_id"),
+                                "verified_by": "session" if moved
+                                else entry.get("verified_by") or "telemetry",
+                                "task_id": entry.get("task_id"),
+                                "from_sid": entry.get("session_id")}
+                    del sessions[hold]
                     return {"action": "verified", "session_id": observed,
                             "from_sid": entry.get("session_id")}
                 return {"action": "blocked"}
-            leases["sessions"][hold] = {
+            if session_id and _session(agent) and _session(agent) != session_id:
+                return {"action": "keep",
+                        "reason": "live session differs from the session the "
+                                  "decision was made for; re-decide"}
+            # Everything the decision relied on, re-proven atomically with the
+            # reservation: task attribution, other session leases, cooldown and
+            # the per-task limit. The attempt is consumed here — durable before
+            # any keys go out, so a later crash leaves a reservation or a
+            # counted attempt, never neither.
+            if task_id:
+                current_task = ledger_data.get("tasks", {}).get(task_id)
+                if (current_task is None or current_task.get("owner") != name
+                        or current_task.get("released")):
+                    return {"action": "keep", "reason": "task changed before reservation"}
+            if any(other.get("owner") == name and other.get("id") != task_id
+                   and ledger.Ledger.is_unfinished(other)
+                   for other in ledger_data.get("tasks", {}).values()):
+                return {"action": "keep", "reason": "agent acquired unfinished work"}
+            if _has_blocking_session_lease(sessions, sid, name, guard_task):
+                return {"action": "keep",
+                        "reason": "session is leased; a held outcome needs recovery first"}
+            try:
+                self._check_reset_guard(ledger._load_json(self.guard_path) or {},
+                                        name, task_key, context_policy)
+            except ValueError as exc:
+                return {"action": "keep", "reason": str(exc)}
+            self._bump_reset_guard(name, task_key)
+            sessions[hold] = {
                 "agent": name, "state": "resetting", "reset_of": name,
-                "session_id": sid, "requested_at": _now().isoformat()}
+                "session_id": sid, "command": command, "task_id": task_id,
+                "counted": True, "requested_at": _now().isoformat()}
             return {"action": "reserved"}
 
-        verdict = self.ledger.mutate_leases(reserve)
+        verdict = self.ledger.mutate_leases_with_repo(reserve)
         if verdict["action"] == "verified":
-            return {"action": "reset-verified", "command": command,
+            return {"action": "reset-verified", "command": command, "verified_by": "session",
                     "new_session_id": verdict["session_id"],
                     **write_reset(self.resets_path, name, verdict.get("from_sid") or sid)}
         if verdict["action"] == "blocked":
-            raise RuntimeError(
-                f"a reset for {name} is still unverified; its reservation blocks another send")
-        try:
-            accepted = _send_slash(agent, command)
-        except Exception:
-            accepted = False
-        if not accepted:
-            def fail(leases: dict[str, Any]) -> None:
-                entry = leases.get("sessions", {}).get(hold)
-                if isinstance(entry, dict):
-                    entry["state"] = "reset-unknown"
-            self.ledger.mutate_leases(fail)
-            raise RuntimeError("host did not accept the reset keys")
-        # Proof of reset is a new provider session id through the binding, not the
-        # key call's exit code; without it the outcome is unknown, not "sent".
-        deadline = time.monotonic() + float(
-            self.policy.get("context", {}).get("verification_timeout_seconds", 10))
+            return {"action": "blocked",
+                    "reason": f"a reset for {name} is still unverified; its reservation blocks another send"}
+        if verdict["action"] not in ("reserved", "resumed"):
+            return verdict
         new_sid = ""
-        while time.monotonic() < deadline:
-            current = self._agent(name)
-            observed = _session(current)
-            if observed and observed != sid:
-                new_sid = observed
-                break
-            time.sleep(0.25)
+        verified_by = None
+        if verdict["action"] == "resumed":
+            # The reset already verified but its re-brief never landed; the
+            # hold survives until the checkpoint acknowledgement does.
+            new_sid = str(verdict["session_id"])
+            verified_by = str(verdict.get("verified_by") or "session")
+            if checkpoint_ref is None:
+                try:
+                    checkpoint_ref = self._require_checkpoint(str(verdict["task_id"]))
+                except (ValueError, OSError) as exc:
+                    return self._reset_unknown(
+                        name, "reset verified but the checkpoint re-brief "
+                              f"cannot resume: {exc}")
+        else:
+            # The snapshot the decision ran on is stale by now: re-prove
+            # session, readiness, worktrees, task and telemetry — then take the
+            # final readiness snapshot immediately before the keys go out.
+            try:
+                current = self._agent(name)
+                if _session(current) != sid or current.get("status") not in READY:
+                    raise ValueError("session changed or agent became busy before send")
+                self._check_worktrees(current, guard_task)
+                if task is not None and self.ledger.get_task(task_id)["rev"] != task["rev"]:
+                    raise ValueError("task changed during reset preparation")
+                fresh = telemetry(current, self.policy)
+                if _fresh(fresh, sid, _now()):
+                    before = fresh
+                elif before is not None:
+                    raise ValueError("pre-send telemetry went stale")
+                current = self._agent(name)
+                if _session(current) != sid or current.get("status") not in READY:
+                    raise ValueError("session changed or agent became busy before send")
+            except Exception as exc:
+                def abort(leases: dict[str, Any]) -> None:
+                    leases.get("sessions", {}).pop(hold, None)
+                self.ledger.mutate_leases(abort)
+                return {"action": "keep", "reason": str(exc)}
+            try:
+                accepted = _send_slash(current, command)
+            except Exception:
+                accepted = False
+            if not accepted:
+                return self._reset_unknown(name, "host did not accept the reset keys")
+            # The key call's exit code proves nothing: the session must move,
+            # or a fresh same-session sample must read lower than the pre-send one.
+            started = _now()
+            deadline = time.monotonic() + float(
+                self.policy.get("context", {}).get("verification_timeout_seconds", 10))
+            try:
+                while time.monotonic() < deadline:
+                    current = self._agent(name)
+                    observed = _session(current)
+                    if observed and observed != sid:
+                        new_sid, verified_by = observed, "session"
+                        break
+                    if before is not None and observed == sid:
+                        after = telemetry(current, self.policy)
+                        if (_fresh(after, sid, _now(), after=started)
+                                and after["utilisation"] < before["utilisation"]):
+                            new_sid, verified_by = sid, "telemetry"
+                            break
+                    time.sleep(0.25)
+            except Exception as exc:
+                return self._reset_unknown(name, str(exc))
+            if not new_sid:
+                return self._reset_unknown(
+                    name, "reset keys went out but no new provider session or lower "
+                          "same-session utilisation was observed; outcome unknown")
+        if checkpoint_ref is not None:
+            # A task-bound clear is not done until the worker is re-briefed
+            # from its validated checkpoint and the ack is seen; until then the
+            # outcome is unknown and the reservation stays.
+            path, text = checkpoint_ref
+            token = str(uuid.uuid4())
+            next_action = checkpoint._extract_section(text, "Next action")
+            lead = usage.lead_name(self.policy, usage.team_prefix(self.policy))
+            message = (f"[team from {lead}] Context cleared. Read {path}; reply with "
+                       f"{token} followed by the checkpoint Next action only.")
+            try:
+                sent = _send_checked(name, message, wait=True, until=("idle", "done"),
+                                     timeout_ms=300000)
+                current = self._agent(name)
+                reply = _herdr_read(name)
+                briefed = bool(
+                    sent["ended"] and _session(current) == new_sid
+                    and current.get("status") in READY
+                    and _has_acknowledgement(reply, f"{token} {next_action}"))
+            except Exception:
+                briefed = False
+            if not briefed:
+                return self._reset_unknown(
+                    name, "reset verified but the checkpoint re-brief was not "
+                          "acknowledged; the reservation stays",
+                    rebrief_pending=True, verified_by=verified_by)
 
         def finish(leases: dict[str, Any]) -> None:
-            sessions = leases.setdefault("sessions", {})
-            if new_sid:
-                sessions.pop(hold, None)
-            elif isinstance(sessions.get(hold), dict):
-                sessions[hold]["state"] = "reset-unknown"
-
+            leases.setdefault("sessions", {}).pop(hold, None)
         self.ledger.mutate_leases(finish)
-        if not new_sid:
-            raise RuntimeError("reset keys went out but no new provider session was observed; outcome unknown")
-        return {"action": "reset-verified", "command": command,
-                "new_session_id": new_sid, **write_reset(self.resets_path, name, sid)}
+        return {"action": "reset-verified", "command": command, "verified_by": verified_by,
+                "new_session_id": new_sid,
+                **write_reset(self.resets_path, name, verdict.get("from_sid") or sid)}
+
+    def execute_recovery(self, name: str, decision: dict[str, Any]) -> dict[str, Any]:
+        """Run the guarded executor a recovery-needed decision calls for.
+
+        ``compact`` keeps the full task-bound executor; ``clear-needed`` and
+        ``compact-needed`` run through the reset path — the provider reset
+        command for a clear, in-place ``/compact`` for a taskless compaction.
+        Any other action is reported skipped; executor failures surface as an
+        ``error`` outcome while the reservation they left keeps blocking.
+        """
+        action = str(decision.get("action") or "")
+        kind = decision.get("agent_kind")
+        try:
+            if action == "compact":
+                result = self.compact(name, decision.get("task_id"))
+            elif action == "clear-needed":
+                reset_args: dict[str, Any] = {"task_id": decision.get("task_id")}
+                if decision.get("session_id"):
+                    reset_args["session_id"] = decision["session_id"]
+                result = self.reset(name, **reset_args)
+            elif action == "compact-needed":
+                command = self._compact_command(kind)
+                if not command:
+                    return {"outcome": "skipped", "action": action,
+                            "reason": f"no verified compact command for {kind}"}
+                reset_args = {"command": command}
+                if decision.get("session_id"):
+                    reset_args["session_id"] = decision["session_id"]
+                result = self.reset(name, **reset_args)
+            else:
+                return {"outcome": "skipped", "action": action,
+                        "reason": "decision is not executable recovery"}
+        except Exception as exc:
+            return {"outcome": "error", "action": action, "reason": str(exc)}
+        return {"outcome": str(result.get("action") or "unknown"),
+                "action": action, "reason": result.get("reason")}
 
     def boundary(self, name: str, task_id: str | None = None, *,
                  work_item: str | None = None, session_id: str | None = None,
@@ -562,19 +743,121 @@ class Controller:
         value = (self.policy.get("devin") or {}).get("compact_command")
         return str(value) if value else None
 
+    def _compact_command(self, kind: Any) -> str | None:
+        """The in-place compact command for a taskless recovery; Devin needs a configured one."""
+        if kind == "devin":
+            return self._devin_compact_command()
+        return "/compact"
+
+    def _check_reset_guard(self, guards: dict[str, Any], name: str, task_key: str,
+                           context_policy: dict[str, Any]) -> None:
+        """Cooldown and per-task limit for the reset path, keyed by agent.
+
+        A reset on a session-bound provider changes the session id, so the
+        sid-keyed compact guard cannot bound reset loops; the agent-keyed
+        entry does.
+        """
+        guard = guards.get(name, {})
+        task_guard = guard.get("tasks", {}).get(task_key, {})
+        if (task_guard.get("failed")
+                or task_guard.get("count", 0) >= context_policy.get("max_per_task", 2)):
+            raise ValueError("task compaction loop guard")
+        last = _timestamp(guard.get("last_at"))
+        min_interval = context_policy.get("min_interval_min", 20)
+        if last and (_now() - last).total_seconds() < min_interval * 60:
+            raise _DeferredContext("minimum compaction interval")
+
+    def _bump_reset_guard(self, name: str, task_key: str) -> None:
+        """Record a reset attempt on the agent-keyed guard entry.
+
+        Callers run inside a leases mutation under the shared lock, so the
+        guard write lands before the mutation commits: a crash leaves a
+        counted attempt or a reservation, never neither.
+        """
+        guards = ledger._load_json(self.guard_path) or {}
+        guard = guards.setdefault(name, {"tasks": {}})
+        task_guard = guard.setdefault("tasks", {}).setdefault(task_key, {"count": 0})
+        task_guard["count"] += 1
+        guard["last_at"] = _now().isoformat()
+        ledger._atomic_write_json(self.guard_path, guards)
+
+    def _reset_unknown(self, name: str, reason: str, **fields: Any) -> dict[str, Any]:
+        """Keys may already be out: park the hold in the recoverable unknown state.
+
+        Everything after the slash send ends here or in verified — never in
+        the unreachable ``resetting`` state — so ``hx context recover`` can
+        always reconcile the outcome.
+        """
+        def unknown(leases: dict[str, Any]) -> None:
+            entry = leases.get("sessions", {}).get(f"reset:{name}")
+            if isinstance(entry, dict):
+                entry["state"] = "reset-unknown"
+                entry.update(fields)
+        self.ledger.mutate_leases(unknown)
+        return {"action": "reset-unknown", "reason": reason}
+
+    def _no_task_recovery(self, agent: host.Member, devin_clear: bool) -> dict[str, Any]:
+        """Recovery for a worker with no open task: reset in place, no checkpoint.
+
+        There is no open task to checkpoint and nothing for the lead to write;
+        the next brief re-orients the agent once the reset lands.
+        """
+        name = str(agent.get("name") or "")
+        if devin_clear:
+            return {
+                "action": "clear-needed",
+                "reason": "no open task for the agent; /clear proceeds without a checkpoint",
+                "steps": [
+                    "No open task is registered, so no checkpoint is required.",
+                    f"Clear the pane from Python: {host.prompt_command(name, '/clear')} "
+                    "(never Git Bash; MSYS rewrites /clear as a Windows path); "
+                    "hx team watch --recover runs this itself.",
+                ],
+            }
+        return {
+            "action": "compact-needed",
+            "reason": "no open task for the agent; /compact proceeds without a checkpoint",
+            "steps": [
+                "No open task is registered, so no checkpoint is required.",
+                f"Compact the pane from Python: {host.prompt_command(name, '/compact')} "
+                "(typed keys, never a wrapped send); hx team watch --recover runs this itself.",
+            ],
+        }
+
+    def _require_checkpoint(self, task_id: str) -> tuple[Path, str]:
+        """The validated authored checkpoint a task-bound recovery re-briefs from."""
+        validation = checkpoint.validate_checkpoint(task_id, ledger=self.ledger)
+        if not validation["ok"]:
+            raise ValueError("checkpoint validation failed: " + "; ".join(validation["errors"]))
+        path = Path(validation["checkpoint"])
+        text = path.read_text(encoding="utf-8")
+        for section in ("Decisions", "Exact errors", "Next action"):
+            if not checkpoint._extract_section(text, section):
+                raise ValueError(f"agent-authored checkpoint section empty: {section}")
+        return path, text
+
     def _task(self, name: str, task_id: str | None, allow_in_progress: bool = False) -> dict[str, Any]:
-        tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
-        unfinished_tasks = [t for t in tasks if t.get("status") not in ledger.Ledger.CLOSED_STATUSES]
-        if unfinished_tasks and not allow_in_progress:
+        """The agent's attributed task: only open tasks count, never a stale closed one.
+
+        An explicit ``task_id`` names the boundary task directly (``hx task
+        done`` decides on the just-closed task, ``hx compact --task`` on a
+        deliberate boundary); attribution without one picks the single open
+        task and refuses when the agent has none.
+        """
+        owned = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
+        open_tasks = [t for t in owned if ledger.Ledger.is_unfinished(t)]
+        if open_tasks and not allow_in_progress:
             raise ValueError("agent has an unfinished task")
-        if len(unfinished_tasks) > 1:
+        if len(open_tasks) > 1:
             raise ValueError("agent has multiple unfinished tasks")
-        if not tasks:
-            raise ValueError("no task registered for agent")
-        task = unfinished_tasks[0] if unfinished_tasks else max(tasks, key=lambda t: t.get("updated", ""))
-        if task_id and task["id"] != task_id:
-            raise ValueError("task is not the current task or most recent boundary for agent")
-        return task
+        if task_id:
+            task = next((t for t in owned if t.get("id") == task_id), None)
+            if task is None or (open_tasks and task["id"] != open_tasks[0]["id"]):
+                raise ValueError("task is not the current task or most recent boundary for agent")
+            return task
+        if not open_tasks:
+            raise ValueError("no open task for agent")
+        return open_tasks[0]
 
     def _dirty_paths(self, workdir: Path) -> set[str]:
         rc, dirty, error = checkpoint._run_git(
@@ -596,6 +879,16 @@ class Controller:
                 paths.add(ledger._canonical_path(workdir / original))
         return paths
 
+    def _pane_ledger(self, pane_root: Path) -> ledger.Ledger | None:
+        """The task ledger of the worker's own repository, when it keeps one."""
+        ledger_path = pane_root / ".hx" / "ledger.json"
+        if not ledger_path.exists():
+            return None
+        return ledger.Ledger(
+            repo_root=pane_root, ledger_path=ledger_path,
+            lock_path=pane_root / ".hx" / "ledger.lock",
+            leases_path=self.ledger.leases_path)
+
     def _check_worktrees(self, agent: host.Member, task: dict[str, Any]) -> None:
         workdir = Path(task.get("worktree") or self.ledger.repo_root)
         owned = {ledger._canonical_path(path) for path in task.get("files", [])}
@@ -613,24 +906,24 @@ class Controller:
         if ledger._canonical_path(pane_root) == ledger._canonical_path(workdir):
             return
         pane_dirty = self._dirty_paths(pane_root)
-        if not pane_dirty:
-            return
-        pane_ledger_path = pane_root / ".hx" / "ledger.json"
-        if pane_ledger_path.exists():
-            pane_ledger = ledger.Ledger(
-                repo_root=pane_root, ledger_path=pane_ledger_path,
-                lock_path=pane_root / ".hx" / "ledger.lock",
-                leases_path=self.ledger.leases_path)
-            open_owned = {
-                ledger._canonical_path(path)
-                for active in pane_ledger.list_tasks()
-                if active.get("owner") == task["owner"]
-                and active.get("status") in ledger.Ledger.OPEN_STATUSES
-                for path in active.get("files", [])
-            }
-            if pane_dirty & open_owned:
-                raise ValueError("agent has dirty files owned by an open task in pane repository")
-        raise ValueError("pane repository contains uncheckpointed edits")
+        pane_ledger = self._pane_ledger(pane_root)
+        pane_open = [
+            active for active in (pane_ledger.list_tasks() if pane_ledger else [])
+            if active.get("owner") == task["owner"] and ledger.Ledger.is_unfinished(active)
+        ]
+        open_owned = {
+            ledger._canonical_path(path)
+            for active in pane_open
+            for path in active.get("files", [])
+        }
+        if pane_dirty & open_owned:
+            raise ValueError("agent has dirty files owned by an open task in pane repository")
+        if pane_dirty:
+            raise ValueError("pane repository contains uncheckpointed edits")
+        if task.get("id") == NO_TASK_KEY and pane_open:
+            raise ValueError(
+                "agent has an open task in its own repository; a taskless "
+                "recovery would clear that work's context")
 
     def _decide_lead(self, result: dict[str, Any], agent: host.Member, session_id: str | None,
                      task_id: str | None, work_item: str | None) -> dict[str, Any]:
@@ -749,29 +1042,28 @@ class Controller:
             context_policy = self.policy.get("context", {})
             devin_clear = agent.get("kind") == "devin" and not self._devin_compact_command()
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
-            owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
-            if not owned_tasks and not task_id:
+            open_tasks = [t for t in self.ledger.list_tasks()
+                          if t.get("owner") == name and ledger.Ledger.is_unfinished(t)]
+            if not open_tasks and not task_id:
+                # Taskless recovery needs no checkpoint and no lead; the guards
+                # that protect a task-bound recovery still apply.
                 if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
                     raise _RetainContext("below boundary threshold")
-                if devin_clear:
-                    handoff = self.ledger.repo_root / ".hx" / "handoffs" / f"{name}.md"
-                    result.update(action="handoff-needed", reason="no hx task is registered; use a fresh-owner handoff because native Devin compaction is unverified", steps=[
-                        "Register the work with hx task add and checkpoint it, then run "
-                        f"`hx handoff write {name} --task <id>` (writes {handoff.parent}).",
-                        "Have the lead start a fresh owner in the same repository and send it "
-                        "the line `hx handoff brief <file>` prints; do not clear the current "
-                        "owner until its state is saved.",
-                        f"Run hx boundary {name} after the fresh owner acknowledges the next action.",
-                    ])
-                else:
-                    result.update(action="compact-needed", reason="no hx task is registered; native compaction recommended after registering the work and checkpointing", steps=[
-                        "Have the lead register the current work with hx task add and assign its actual files to this owner.",
-                        f"Write hx checkpoint write <task-id> with the current objective, decisions, errors, tests and next action, then run hx compact {name} --task <task-id>.",
-                    ])
+                if related and not pressure:
+                    raise _RetainContext("next task continues the same work; retain warm context")
+                no_task = {"id": NO_TASK_KEY, "owner": name, "files": [], "worktree": None}
+                self._check_worktrees(agent, no_task)
+                with self.ledger._leases_lock():
+                    leases = self.ledger._load_leases()
+                    if _has_blocking_session_lease(leases.get("sessions", {}), sid, name, no_task):
+                        raise ValueError("session is leased; a held outcome needs recovery first")
+                    guards = ledger._load_json(self.guard_path) or {}
+                    self._check_reset_guard(guards, name, NO_TASK_KEY, context_policy)
+                result.update(**self._no_task_recovery(agent, devin_clear))
                 return result
             task = self._task(name, task_id, allow_in_progress=pressure)
             result["task_id"] = task["id"]
-            mid_task = task.get("status") in ledger.Ledger.OPEN_STATUSES
+            mid_task = ledger.Ledger.is_unfinished(task)
             result.update(pressure=pressure, mid_task=mid_task)
             self._check_worktrees(agent, task)
             with self.ledger._leases_lock():
@@ -786,6 +1078,8 @@ class Controller:
                 last = _timestamp(guard.get("last_at"))
                 if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
                     raise _DeferredContext("minimum compaction interval")
+                if devin_clear:
+                    self._check_reset_guard(guards, name, task["id"], context_policy)
             if related and not pressure:
                 raise _RetainContext("next task continues the same work; retain warm context")
             if pressure:
@@ -841,12 +1135,13 @@ class Controller:
             if _has_blocking_session_lease(sessions, sid, name, task):
                 return {"action": "keep", "reason": "session already leased"}
             if decision.get("mid_task"):
-                if not decision.get("pressure") or task.get("status") not in ledger.Ledger.OPEN_STATUSES:
+                if not decision.get("pressure") or not ledger.Ledger.is_unfinished(task):
                     return {"action": "keep", "reason": "pressure task changed before reservation"}
             elif task.get("status") not in {"done", "failed"}:
                 return {"action": "keep", "reason": "task changed before reservation"}
             if any(t.get("owner") == name and t.get("id") != task_id
                    and t.get("status") not in {"done", "failed"}
+                   and not t.get("released")
                    for t in ledger_data["tasks"].values()):
                 return {"action": "keep", "reason": "agent acquired unfinished work"}
             guards = ledger._load_json(self.guard_path) or {}
@@ -869,14 +1164,7 @@ class Controller:
         task = reservation["task"]
         submitted = False
         try:
-            validation = checkpoint.validate_checkpoint(task_id, ledger=self.ledger)
-            if not validation["ok"]:
-                raise ValueError("checkpoint validation failed: " + "; ".join(validation["errors"]))
-            path = Path(validation["checkpoint"])
-            text = path.read_text(encoding="utf-8")
-            for section in ("Decisions", "Exact errors", "Next action"):
-                if not checkpoint._extract_section(text, section):
-                    raise ValueError(f"agent-authored checkpoint section empty: {section}")
+            path, text = self._require_checkpoint(task_id)
             current = self._agent(name)
             if _session(current) != sid or current.get("status") not in READY:
                 raise ValueError("session changed or agent became busy before send")
@@ -977,6 +1265,14 @@ class Controller:
             reset_hold = sessions.get(f"reset:{name}")
             if isinstance(reset_hold, dict) and reset_hold.get("state") == "reset-unknown":
                 held_sid = reset_hold.get("session_id")
+                if (reset_hold.get("task_id") not in (None, NO_TASK_KEY)
+                        and (sid != held_sid or reset_hold.get("rebrief_pending"))):
+                    # The reset verified on a task-bound hold: releasing it here
+                    # would drop the owed checkpoint re-brief. The reset path
+                    # resumes it instead.
+                    return {"action": "keep",
+                            "reason": "a task-bound reset still owes its checkpoint "
+                                      "re-brief; resume it through hx reset"}
                 # The session moved on: the reset provably ran — or the agent is
                 # idle on the same session: the send never landed. Both are safe
                 # to release; a busy agent keeps the reservation.

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from hx import host, say
+from hx import host, say, usage
 
 
 def _member(name, role=None, kind="codex", status="idle", address="t1"):
@@ -52,11 +52,12 @@ class FakeHc:
             raise self.attempt_error
         self.sent.append((name, text))
         status = self.members[name]["status"]
+        turn = self.members[name]["turn"]
         if self.advance:
             self.members[name]["turn"] += 1  # a real submission advances the turn
         if self.on_send:
             self.on_send(name)
-        return host.SendResult(started=True, status=status, turn=4, ended=False, reason=None)
+        return host.SendResult(started=True, status=status, turn=turn, ended=False, reason=None)
 
     def send_slash(self, member, command):
         return True
@@ -80,6 +81,7 @@ def fake(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(host, "detect", lambda: hc)
     monkeypatch.setattr(say, "_under_pressure", lambda name: False)
+    monkeypatch.setattr(usage, "load_policy", lambda: {})
     monkeypatch.setattr(say, "SUBMIT_POLL_SECONDS", 0.3)
     monkeypatch.setattr(say, "ENTER_SETTLE_SECONDS", 0.01)
     return hc
@@ -170,3 +172,58 @@ def test_a_dead_role_record_resolves_once_with_a_reason(fake, capsys, tmp_path):
     capsys.readouterr()
     assert say.retry_pending() == 0
     assert "No pending messages for dev-codex." in capsys.readouterr().out
+
+
+def _devin(fake):
+    member = _member("dev-devin", kind="devin", status="idle", address="t2w")
+    member["turn"] = 0
+    fake.members["dev-devin"] = member
+    return member
+
+
+def test_devin_idle_to_working_proves_submission(fake, capsys):
+    """Devin's turn stays put while it works; the status move is the proof."""
+    devin = _devin(fake)
+    fake.advance = False
+    fake.on_send = lambda name: devin.update(status="working")
+    assert say.say("devin", "brief") == 0
+    assert capsys.readouterr().out.endswith(" -> t2w: submitted\n")
+    assert fake.keys == []
+
+
+def test_devin_still_idle_is_uncertain(fake, capsys):
+    _devin(fake)
+    fake.advance = False
+    assert say.say("devin", "brief") == 1
+    assert " -> t2w: uncertain" in capsys.readouterr().out
+    assert fake.keys == []
+
+
+def test_devin_queued_while_busy_stays_uncertain(fake, capsys):
+    """A busy Devin's turn only advances on finish, so queueing is not provable."""
+    devin = _devin(fake)
+    devin["status"] = "working"
+    fake.advance = False
+    assert say.say("devin", "queued note") == 1
+    assert " -> t2w: uncertain" in capsys.readouterr().out
+
+
+def test_devin_stuck_paste_gets_one_enter_press(fake, capsys):
+    devin = _devin(fake)
+    fake.advance = False
+    # The Devin pane's deny line rides on the message, so the stuck paste is
+    # whatever was actually sent; mirror it into the fake's composer.
+    fake.on_send = lambda name: fake.views.__setitem__(
+        "dev-devin", f"prompt\n<hc from=t9>{fake.sent[-1][1]}</hc>\n>")
+    assert say.say("devin", "brief ends here") == 0
+    assert fake.keys == [["keys", "t2w", "enter"]]  # exactly one Enter
+
+
+def test_submit_poll_seconds_reads_per_kind_windows(fake, monkeypatch):
+    monkeypatch.setattr(usage, "load_policy", lambda: {
+        "say": {"submit_poll_seconds": {"devin": 25, "default": 8}}})
+    assert say._submit_poll_seconds("devin") == 25
+    assert say._submit_poll_seconds("codex") == 8
+    assert say._submit_poll_seconds("unknown-kind") == 8
+    monkeypatch.setattr(usage, "load_policy", lambda: {})
+    assert say._submit_poll_seconds("devin") == say.SUBMIT_POLL_SECONDS

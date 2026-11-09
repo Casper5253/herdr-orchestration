@@ -85,7 +85,7 @@ def test_journal_failure_is_not_a_silent_success(boundary_controller):
         controller.boundary('dev-codex')
 
 
-@pytest.mark.parametrize('provider, action', [('devin', 'handoff-needed'), ('codex', 'compact-needed')])
+@pytest.mark.parametrize('provider, action', [('devin', 'clear-needed'), ('codex', 'compact-needed')])
 def test_unregistered_pressure_has_actionable_recovery(boundary_controller, provider, action):
     controller, agent, sample = boundary_controller
     controller.ledger.set_status('one', 'done')
@@ -103,7 +103,7 @@ def test_cli_pane_boundary_records_without_executing_recovery(boundary_controlle
     sample['utilisation'] = .89
     assert cli.main(['boundary', 'dev-codex']) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result['action'] == 'compact'
+    assert result['action'] == 'compact-needed'
     assert result['disposition'] == 'recovery-needed'
     assert controller.boundary_path.exists()
 

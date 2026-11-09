@@ -7,7 +7,11 @@ import sqlite3
 import pytest
 
 from hx import __main__ as cli
-from hx import context, host, ledger, usage
+from hx import checkpoint, context, host, ledger, usage
+
+
+def _prompts(sent):
+    return [c for c in sent if c[:3] == ['herdr', 'agent', 'prompt']]
 
 
 @pytest.fixture
@@ -29,6 +33,7 @@ def pane(tmp_path, monkeypatch):
     agent = host.member({'name': 'dev-opencode', 'agent': 'opencode', 'agent_status': 'idle',
                          'agent_session': {'value': 'old'}, 'cwd': str(tmp_path)})
     monkeypatch.setattr(context, 'agent_info', lambda name: dict(agent))
+    monkeypatch.setattr(checkpoint, '_run_git', lambda *a: (0, '', ''))
     led = ledger.Ledger(repo_root=tmp_path, ledger_path=tmp_path/'ledger.json',
                         lock_path=tmp_path/'lock', leases_path=tmp_path/'leases.json')
     controller = context.Controller(led, policy)
@@ -55,7 +60,7 @@ def test_real_session_reset_clears_hold_for_both_cli_paths(pane, capsys):
     agent, append, sent = pane
     append('old', 598000)
     assert cli.main(['say', 'opencode', 'first assignment']) == 1
-    assert sent == []
+    assert _prompts(sent) == []
     assert '299%' in capsys.readouterr().err
     append('new', 1000)
     agent['session_id'] = 'new'
@@ -64,7 +69,7 @@ def test_real_session_reset_clears_hold_for_both_cli_paths(pane, capsys):
     assert decision['session_id'] == decision['telemetry']['session_id'] == 'new'
     assert decision['telemetry']['utilisation'] == .005
     assert cli.main(['say', 'opencode', 'next assignment']) == 0
-    assert len(sent) == 1
+    assert len(_prompts(sent)) == 1
     assert 'Held:' not in capsys.readouterr().err
 
 
@@ -76,7 +81,7 @@ def test_same_session_placeholder_does_not_fake_a_reset(pane, capsys):
     decision = json.loads(capsys.readouterr().out)
     assert decision['telemetry']['utilisation'] == 2.99
     assert cli.main(['say', 'opencode', 'next assignment']) == 1
-    assert sent == []
+    assert _prompts(sent) == []
     assert '299%' in capsys.readouterr().err
 
 
@@ -90,7 +95,7 @@ def test_empty_new_session_is_unknown_instead_of_reusing_old_pressure(pane, caps
     assert decision['telemetry']['session_id'] == 'new'
     assert decision['telemetry']['utilisation'] is None
     assert cli.main(['say', 'opencode', 'next assignment']) == 0
-    assert len(sent) == 1
+    assert len(_prompts(sent)) == 1
 
 
 def test_session_lookup_is_pinned_during_a_telemetry_read(tmp_path, monkeypatch):
@@ -116,7 +121,7 @@ def test_recorded_reset_clears_the_hold_before_the_new_session_exists(pane, caps
     agent, append, sent = pane
     append('old', 598000)
     assert cli.main(['say', 'opencode', 'first assignment']) == 1
-    assert sent == []
+    assert _prompts(sent) == []
     assert '299%' in capsys.readouterr().err
     assert cli.main(['boundary', 'dev-opencode', '--reset-sent']) == 0
     recorded = json.loads(capsys.readouterr().out)
@@ -124,7 +129,7 @@ def test_recorded_reset_clears_the_hold_before_the_new_session_exists(pane, caps
     assert recorded['reset_pending'] is True
     assert recorded['reset']['session_id'] == 'old'
     assert cli.main(['say', 'opencode', 'start the new session']) == 0
-    assert len(sent) == 1
+    assert len(_prompts(sent)) == 1
     assert 'Held:' not in capsys.readouterr().err
 
 
@@ -137,7 +142,7 @@ def test_fake_reset_holds_again_after_the_grace_window(pane, capsys, monkeypatch
     reset_at = dt.datetime.fromisoformat(recorded['reset']['reset_at'])
     monkeypatch.setattr(context, '_now', lambda: reset_at + dt.timedelta(minutes=6))
     assert cli.main(['say', 'opencode', 'too late']) == 1
-    assert sent == []
+    assert _prompts(sent) == []
     assert '299%' in capsys.readouterr().err
 
 
@@ -158,9 +163,9 @@ def test_hx_reset_sends_new_then_records_it(pane, capsys, monkeypatch):
     assert result['command'] == '/new'
     assert result['session_id'] == 'old' and result['new_session_id'] == 'new'
     assert slashes == [('dev-opencode', '/new')]
-    assert sent == []
+    assert _prompts(sent) == []
     assert cli.main(['say', 'opencode', 'first message of the new session']) == 0
-    assert len(sent) == 1
+    assert len(_prompts(sent)) == 1
 
 
 def test_hx_reset_without_a_new_session_is_unknown(pane, capsys, monkeypatch):
@@ -177,7 +182,7 @@ def test_hx_reset_refuses_a_busy_agent(pane, capsys):
     agent, append, sent = pane
     agent['status'] = 'working'
     assert cli.main(['reset', 'dev-opencode']) == 1
-    assert sent == []
+    assert _prompts(sent) == []
     assert 'not idle' in capsys.readouterr().err
 
 
@@ -252,6 +257,39 @@ def test_a_failed_reset_send_marks_the_hold_recoverable(pane, capsys, monkeypatc
     out = cli.context.Controller().recover("dev-opencode")
     assert out["action"] == "recovered"
     assert "reset:dev-opencode" not in json.loads(leases_path.read_text())["sessions"]
+
+
+def test_reset_aborts_when_the_session_moves_before_send(pane, monkeypatch, tmp_path):
+    """Review 1: session identity is re-read from a fresh snapshot before keys go out."""
+    agent, append, sent = pane
+    append('old', 598000)
+    replies = iter([dict(agent), dict(agent, session_id='other')])
+    monkeypatch.setattr(context, 'agent_info', lambda name: next(replies))
+    controller = cli.context.Controller()
+    slashes = []
+    monkeypatch.setattr(context, '_send_slash', lambda m, c: slashes.append(c) or True)
+    result = controller.reset('dev-opencode')
+    assert result['action'] == 'keep'
+    assert 'session changed' in result['reason']
+    assert slashes == []
+    sessions = json.loads((tmp_path/'leases.json').read_text())["sessions"]
+    assert 'reset:dev-opencode' not in sessions
+
+
+def test_reset_reservation_rechecks_session_leases(pane, monkeypatch, tmp_path):
+    """Review 1: reservation re-runs the lease check the decision relied on."""
+    agent, append, sent = pane
+    append('old', 598000)
+    leases_path = tmp_path / 'leases.json'
+    ledger._atomic_write_json(leases_path, {"files": {}, "sessions": {
+        "other": {"agent": "dev-opencode", "state": "compact-unknown"}}})
+    controller = cli.context.Controller()
+    slashes = []
+    monkeypatch.setattr(context, '_send_slash', lambda m, c: slashes.append(c) or True)
+    result = controller.reset('dev-opencode')
+    assert result['action'] == 'keep'
+    assert 'leased' in result['reason']
+    assert slashes == []
 
 
 def test_refused_lead_decide_writes_no_pending_recovery(tmp_path, monkeypatch):
