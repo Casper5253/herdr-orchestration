@@ -474,7 +474,8 @@ def test_denied_section_real_worker_config_lists_agent_clis(tmp_path: Path) -> N
     assert section
     for prefix in ("`git push`", "`git commit`", "`devin`", "`devin.exe`",
                    "`herdr`", "`hx`", "`opencode`", "`codex`", "`claude`",
-                   "`python -m hx`", "`curl`"):
+                   "`python -m hx`", "`curl`", "`hc send`", "`hc run`",
+                   "`hc kill`", "`hc keys`"):
         assert prefix in section
     assert "Read(~/.ssh/**)" in section
 

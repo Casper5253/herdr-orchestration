@@ -59,6 +59,12 @@
       "Exec(devin)",
       "Exec(devin.exe)",
       "Exec(herdr)",
+      // The Herdr app core (`hc`): reporting uses `hx say`, which keeps the team
+      // boundary and the Devin deny line. Raw sends and terminal control stay off.
+      "Exec(hc send)",
+      "Exec(hc run)",
+      "Exec(hc kill)",
+      "Exec(hc keys)",
       // Pane worker reports with `hx say` and writes checkpoints; the lead keeps routing and compaction.
       "Exec(hx ocrun)",
       "Exec(hx compact)",

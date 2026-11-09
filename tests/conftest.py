@@ -28,8 +28,8 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     # ocrun's default launch mode to visible (real console windows). A test
     # that needs the visible default sets the variable explicitly.
     monkeypatch.delenv("HERDR_ENV", raising=False)
-    # Tests must never inherit an hc terminal either: host.detect() treats it
-    # as "no host until U2", which would hide the old herdr path under test.
+    # Tests must never inherit an hc terminal either: host.detect() would use
+    # HcHost and hide the old herdr path under test.
     monkeypatch.delenv("HC_TERMINAL_ID", raising=False)
     # Likewise the session's pane id and prefix would make team_prefix() query
     # the live herdr server instead of the policy under test.

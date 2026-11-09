@@ -153,14 +153,15 @@ def test_context_uses_only_declared_methods(roster):
     assert fake.checked == [("dev-codex", "/compact", True, ("idle", "done"), 1000)]
 
 
-def test_say_sends_through_the_declared_send():
+def test_say_sends_through_the_declared_checked_send(monkeypatch, tmp_path):
     fake = MinimalHost([_member("dev-codex"), _member("dev-claude")])
     unknown = {"session_id": None, "utilisation": None, "sampled_at": None}
+    monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
     with patch.object(host, "detect", return_value=fake), \
             patch.object(context, "telemetry", return_value=unknown), \
             patch.object(usage, "load_policy", return_value={"lead_role": "claude"}):
         assert say.say("claude", "hi") == 0
-    assert fake.sent == [("dev-claude", "[team from dev-codex] hi")]
+    assert fake.checked == [("dev-claude", "[team from dev-codex] hi", False, (), None)]
 
 
 def test_focused_is_nullable_not_dropped():
@@ -256,9 +257,9 @@ def test_detect_returns_herdr_inside_a_pane(monkeypatch):
     assert isinstance(host.detect(), host.HerdrHost)
 
 
-def test_detect_has_no_host_in_an_hc_terminal_until_u2(monkeypatch):
+def test_detect_returns_hc_in_an_hc_terminal(monkeypatch):
     monkeypatch.setenv("HC_TERMINAL_ID", "t11")
-    assert host.detect() is None
+    assert isinstance(host.detect(), host.HcHost)
 
 
 def test_the_protocol_declares_every_caller_method():

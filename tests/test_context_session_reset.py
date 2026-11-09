@@ -17,6 +17,7 @@ def pane(tmp_path, monkeypatch):
         conn.execute('CREATE TABLE message (session_id TEXT, time_created INTEGER, data TEXT)')
     monkeypatch.setenv('HX_OPENCODE_DB', str(db))
     monkeypatch.setenv('HX_CONTEXT_RESETS_PATH', str(tmp_path / 'context-resets.json'))
+    monkeypatch.setenv('HX_PROJECT_ROOT', str(tmp_path))
     monkeypatch.setenv('HERDR_ENV', '1')
     monkeypatch.setenv('HERDR_PANE_ID', 'sender-pane')
     monkeypatch.setattr(host.HerdrHost, 'all_members', lambda self: [host.member(a) for a in [

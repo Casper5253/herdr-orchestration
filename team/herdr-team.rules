@@ -13,10 +13,10 @@ prefix_rule(pattern=["herdr", "agent", ["send-keys", "start", "rename", "focus",
 prefix_rule(pattern=["herdr", "pane", ["run", "send-text", "send-keys", "close", "split", "move", "input"]], decision="prompt")
 prefix_rule(pattern=["herdr", ["workspace", "tab", "server", "worktree"], ["create", "close", "stop"]], decision="prompt")
 # Herdr app (herdr-core, `hc`), added 2026-11-09 on the owner's request for one report path for every worker.
-# Reads are free; `hc send` delivers a report to the lead. Starting, ending or typing keys into a terminal asks.
-# Temporary until the hx adapter's U2 lands, when every worker reports with `hx say claude` again.
+# Reads are free. Reports go through `hx say`, which enforces the team boundary and the outbox;
+# a raw `hc send` could reach any terminal, so it asks. Starting, ending or typing keys asks.
 prefix_rule(pattern=["hc", ["ls", "get", "read", "wait", "templates", "schema", "--help"]], decision="allow")
-prefix_rule(pattern=["hc", "send"], decision="allow")
+prefix_rule(pattern=["hc", "send"], decision="prompt")
 prefix_rule(pattern=["hc", ["run", "kill", "rm", "keys", "interrupt", "label", "keep", "attach", "server", "exec", "file", "put"]], decision="prompt")
 # Routine in-repo dev work (added 2026-10-12 to stop repeated approval prompts).
 # The project venv's base python lives under WindowsApps, which the MXC sandbox blocks, so these must run unprompted outside it.

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
 TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)[a-z0-9]+")
@@ -19,6 +20,13 @@ STATUSES = frozenset({"idle", "working", "done", "blocked", "error"})
 SETTLED = frozenset({"idle", "done"})
 ERROR_TYPES = frozenset({"timeout", "agent_prompt_stalled", "agent_blocked", "error"})
 WAIT_DEFAULT_MS = 300000
+# The 7501 `app` word, the only evidence of which provider runs in a terminal.
+HC_APP_KINDS = {
+    "claude-code": "claude",
+    "codex": "codex",
+    "opencode": "opencode",
+    "devin": "devin",
+}
 
 
 class Member(TypedDict):
@@ -243,6 +251,213 @@ class HerdrHost:
         return data
 
 
+def _hc_state_dir() -> Path:
+    env = os.environ.get("HX_STATE_DIR")
+    return Path(env) if env else Path.home() / ".herdr-team" / "state"
+
+
+def _hc_binding_session(address: str, pid: Any) -> str | None:
+    """The provider session bound to this terminal, or None when the binding is absent or stale.
+
+    The OpenCode plugin writes <state>/hc-bindings/<terminal>.json with the
+    process pid it saw. A binding for another terminal, or for a different pid
+    (a relaunched program), is not this terminal's session.
+    """
+    if not address or not isinstance(pid, int) or isinstance(pid, bool):
+        return None
+    try:
+        data = json.loads(
+            (_hc_state_dir() / "hc-bindings" / f"{address}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("terminal") != address or data.get("pid") != pid:
+        return None
+    session = data.get("session_id")
+    return session if isinstance(session, str) and session else None
+
+
+def hc_member(raw: dict[str, Any]) -> Member:
+    """One `hc get` Terminal -> Member. Team and role are the labels, never the name."""
+    labels = raw.get("labels")
+    labels = labels if isinstance(labels, dict) else {}
+    team = str(labels.get("team") or "")
+    role = str(labels.get("role") or "")
+    name = str(raw.get("name") or "")
+    if not name and team and role:
+        name = f"{team}-{role}"
+    status_raw = raw.get("status")
+    status_raw = status_raw if isinstance(status_raw, dict) else {}
+    app = str(status_raw.get("app") or "")
+    state = str(status_raw.get("state") or "")
+    address = str(raw.get("address") or "")
+    return Member(
+        name=name,
+        team=team,
+        role=role,
+        kind=HC_APP_KINDS.get(app, "unknown"),
+        status=state if state in STATUSES else "unknown",
+        cwd=str(raw.get("cwd") or ""),
+        address=address,
+        session_id=_hc_binding_session(address, raw.get("pid")),
+        focused=None,
+    )
+
+
+def _hc_error_result(kind: str, message: Any = None) -> SendResult:
+    """An hc `{error: {kind}}` envelope as a SendResult. A refused send never started."""
+    kind = str(kind or "")
+    if kind == "blocked":
+        return SendResult(started=False, status="blocked", turn=None, ended=False, reason="blocked")
+    if kind:
+        return SendResult(started=False, status="unknown", turn=None, ended=False, reason=kind)
+    return _unknown_send(str(message or "hc send failed"), started=False)
+
+
+def _hc_send_result(data: Any) -> SendResult:
+    """An hc SendResult as the host-neutral one, with no invented evidence."""
+    if not isinstance(data, dict):
+        return _unknown_send("malformed response")
+    error = data.get("error")
+    if isinstance(error, dict):
+        return _hc_error_result(str(error.get("kind") or ""), error.get("message"))
+    if not {"started", "status", "turn", "wait"} & set(data):
+        return _unknown_send("malformed response")
+    started = data.get("started")
+    started = started if isinstance(started, bool) else None
+    status = data.get("status")
+    status = status if status in STATUSES else "unknown"
+    turn = data.get("turn")
+    turn = turn if isinstance(turn, int) and not isinstance(turn, bool) else None
+    waited = data.get("wait")
+    ended = False
+    reason = None
+    if isinstance(waited, dict):
+        ended = waited.get("ended") is True
+        if not ended and waited.get("reason"):
+            reason = str(waited["reason"])
+    return SendResult(started=started, status=status, turn=turn, ended=ended, reason=reason)
+
+
+class HcHost:
+    """The Herdr app core (`hc`), behind the same Host interface."""
+
+    def __init__(self, terminal_id: str | None = None) -> None:
+        self.terminal_id = (
+            terminal_id if terminal_id is not None else os.environ.get("HC_TERMINAL_ID")
+        )
+
+    def _run(self, *args: str, timeout: float = 30) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["hc", *args], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False, timeout=timeout, shell=False,
+        )
+
+    @staticmethod
+    def _json(completed: subprocess.CompletedProcess) -> Any:
+        try:
+            return json.loads(completed.stdout)
+        except (TypeError, ValueError):
+            return None
+
+    def _detail(self, terminal: str) -> dict[str, Any]:
+        completed = self._run("get", terminal, "--json")
+        data = self._json(completed)
+        if completed.returncode != 0 or not isinstance(data, dict):
+            raise ValueError(f"hc could not read terminal {terminal}")
+        return data
+
+    def own(self) -> Member | None:
+        if not self.terminal_id:
+            return None
+        try:
+            found = hc_member(self._detail(self.terminal_id))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        if not found["team"] or not found["role"]:
+            return None
+        return found
+
+    def all_members(self) -> list[Member]:
+        completed = self._run("ls", "--json")
+        listing = self._json(completed)
+        terminals = listing.get("terminals") if isinstance(listing, dict) else None
+        if completed.returncode != 0 or not isinstance(terminals, list):
+            raise ValueError("hc returned no valid terminal list")
+        if any(not isinstance(row, dict) for row in terminals):
+            raise ValueError("hc returned no valid terminal list")
+        members = []
+        for row in terminals:
+            address = row.get("address")
+            if not isinstance(address, str) or not address:
+                raise ValueError("hc returned a terminal without an address")
+            members.append(hc_member(self._detail(address)))
+        return members
+
+    def team(self, prefix: str) -> dict[str, Member]:
+        team = prefix[:-1] if prefix.endswith("-") else prefix
+        members: dict[str, Member] = {}
+        for agent in self.all_members():
+            if not agent["team"] or agent["team"] != team:
+                continue
+            name = agent["name"]
+            if name in members:
+                raise ValueError(
+                    f"duplicate role {name} on team {team}: "
+                    f"{members[name]['address']} and {agent['address']}"
+                )
+            members[name] = agent
+        return members
+
+    def info(self, name: str) -> Member:
+        return hc_member(self._detail(name))
+
+    def send(self, name: str, text: str) -> int:
+        return self._run("send", name, text, timeout=60).returncode
+
+    def send_checked(
+        self,
+        name: str,
+        text: str,
+        *,
+        wait: bool = False,
+        until: tuple[str, ...] = (),
+        timeout_ms: int | None = None,
+    ) -> SendResult:
+        args = ["send", name, text, "--json"]
+        process_timeout = 60.0
+        if wait:
+            args.append("--wait")
+            args.extend(("--timeout", f"{(timeout_ms or WAIT_DEFAULT_MS) / 1000:g}"))
+            process_timeout = (timeout_ms or WAIT_DEFAULT_MS) / 1000 + 15
+        try:
+            completed = self._run(*args, timeout=process_timeout)
+        except subprocess.TimeoutExpired:
+            return _unknown_send("timeout")
+        except (OSError, subprocess.SubprocessError):
+            return _unknown_send("host command failed")
+        data = self._json(completed)
+        if data is None:
+            try:
+                data = json.loads(completed.stderr)
+            except (TypeError, ValueError):
+                data = None
+        if completed.returncode != 0:
+            if isinstance(data, dict) and isinstance(data.get("error"), dict):
+                error = data["error"]
+                return _hc_error_result(str(error.get("kind") or ""), error.get("message"))
+            return _unknown_send(f"hc exited {completed.returncode}")
+        return _hc_send_result(data)
+
+    def read(self, name: str, lines: int = 200) -> str:
+        completed = self._run("read", name, "--lines", str(lines))
+        if completed.returncode != 0:
+            raise RuntimeError(f"hc could not read terminal {name}")
+        return completed.stdout
+
+
 def prompt_command(name: str, text: str) -> str:
     """The CLI text that sends `text` to `name`, for instructions hx prints."""
     return f"herdr agent prompt {name} '{text}'"
@@ -251,12 +466,11 @@ def prompt_command(name: str, text: str) -> str:
 def detect() -> Host | None:
     """The host this process runs on.
 
-    Outside an hc terminal the old herdr CLI is the host, with or without the
-    pane marker: that is the behaviour hx shipped with. HcHost (HC_TERMINAL_ID)
-    lands in unit U2; until then an hc terminal has no host.
+    A terminal of the Herdr app's core (`HC_TERMINAL_ID`) uses `hc`; anything
+    else uses the standalone `herdr` CLI, with or without the pane marker.
     """
     if os.environ.get("HC_TERMINAL_ID"):
-        return None
+        return HcHost()
     return HerdrHost()
 
 

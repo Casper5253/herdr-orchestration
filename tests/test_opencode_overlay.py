@@ -21,9 +21,28 @@ READ_WITHOUT_ASKING = [
 ]
 
 
-def test_opencode_config_with_its_token_is_not_pre_allowed():
+SECRET_FOLDERS = {
+    ".ssh\\*": "deny",
+    ".config\\opencode\\*": "ask",
+    ".codex\\*": "ask",
+    "AppData\\Roaming\\devin\\*": "ask",
+    ".claude\\*": "ask",
+}
+
+
+def test_reading_outside_the_repo_is_free_except_secret_folders():
+    # Owner, 9 Nov: "i dont like having to approve all this stuff".
     rules = _overlay()["permission"]["external_directory"]
-    assert HOME + ".config\\opencode\\*" not in rules, "opencode.jsonc holds a token; allow subfolders only"
+    assert rules.get("*") == "allow"
+    wrong = {d: rules.get(HOME + d) for d, want in SECRET_FOLDERS.items() if rules.get(HOME + d) != want}
+    assert not wrong, f"secret folders must ask or deny in {OVERLAY.name}: {wrong}"
+    keys = list(rules)
+    # last match wins: each secret folder's rule must come before any narrower allow inside it
+    for d in SECRET_FOLDERS:
+        for inner in (k for k in keys if k.startswith(HOME + d[:-1]) and k != HOME + d):
+            assert keys.index(HOME + d) < keys.index(inner), f"{inner} must follow {d}"
+
+
 NEVER_EDIT = [".agents\\*", ".claude\\skills\\*", *HERDR_FOLDERS]
 
 
@@ -51,6 +70,15 @@ def test_hc_mutations_ask_and_reads_are_free():
         assert bash.get(read) == "allow", read
 
 
-def test_worker_can_report_to_the_lead():
-    # A brief ends with `hc send <lead> "[team report ...]"`; a prompt here means the lead never hears back.
-    assert _overlay()["permission"]["bash"].get("hc send *") == "allow"
+def test_worker_can_report_to_the_lead_with_hx_say():
+    # A brief ends with `hx say claude "[team report ...]"`; `hx say` is covered by
+    # the "*" allow and enforces the team boundary and the outbox.
+    bash = _overlay()["permission"]["bash"]
+    assert bash.get("*") == "allow"
+    assert "hc send *" not in bash
+
+
+def test_raw_hc_send_asks_again():
+    bash = _overlay()["permission"]["bash"]
+    assert bash.get("hc *") == "ask"
+    assert bash.get("hc send *") is None, "raw `hc send` must fall through to the ask"

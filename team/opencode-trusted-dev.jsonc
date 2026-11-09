@@ -17,10 +17,9 @@
       "herdr pane read *": "allow",
       "herdr status*": "allow",
       "herdr --skill*": "allow",
-      // Herdr app (herdr-core): reading terminals and reporting to the lead with `hc send` are free;
-      // starting, ending or pressing keys in a terminal asks.
+      // Herdr app (herdr-core): reads are free; `hx say` is the report path. Raw
+      // `hc send` and every terminal mutation ask, so the team boundary holds.
       "hc *": "ask",
-      "hc send *": "allow",
       "hc ls*": "allow",
       "hc get *": "allow",
       "hc read *": "allow",
@@ -36,9 +35,18 @@
       "herdr-app --skill*": "allow",
       "herdr-app --help*": "allow"
     },
-    // Skills and the Herdr app's docs and state live outside every repo; asking here stalled each brief.
+    // Owner, 9 Nov: "i dont like having to approve all this stuff". Reading outside the repo is free;
+    // folders that hold secrets ask (OpenCode applies the LAST matching rule, so the asks come first,
+    // the narrower allows inside them after).
     "external_directory": {
-      "*": "ask",
+      "*": "allow",
+      "C:\\Users\\caspe\\.ssh\\*": "deny",
+      "C:\\Users\\caspe\\.config\\opencode\\*": "ask",
+      "C:\\Users\\caspe\\.codex\\*": "ask",
+      "C:\\Users\\caspe\\.codex\\skills\\*": "allow",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\*": "ask",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\skills\\*": "allow",
+      "C:\\Users\\caspe\\.claude\\*": "ask",
       "C:\\Users\\caspe\\.agents\\*": "allow",
       "C:\\Users\\caspe\\.claude\\skills\\*": "allow",
       "C:\\Users\\caspe\\.config\\herdr-app\\*": "allow",

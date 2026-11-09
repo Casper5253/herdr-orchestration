@@ -23,6 +23,7 @@ def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
     monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(host.HerdrHost, "all_members", lambda self: [host.member(a) for a in AGENTS["result"]["agents"]])
     monkeypatch.setattr(say.context, "agent_info", lambda name: host.member({
         "name": name,
@@ -36,6 +37,8 @@ def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
 
     class Done:
         returncode = 0
+        stdout = '{"result":{"type":"agent_prompted","agent":{"agent_status":"working","turn":1}}}'
+        stderr = ""
 
     monkeypatch.setattr(host.subprocess, "run", lambda argv, **_: calls.append(argv) or Done())
     return calls
