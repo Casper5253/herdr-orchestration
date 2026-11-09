@@ -968,7 +968,7 @@ def test_decision_and_outcome_share_ids(
         json.dumps({"type": "step_finish", "timestamp": 0, "sessionID": session, "part": {"reason": "stop", "sessionID": session, "type": "step_finish", "tokens": {"total": 10, "input": 1, "output": 9, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0.001}}),
     ])
 
-    def fake_execute(cmd, cwd, timeout):
+    def fake_execute(cmd, cwd, timeout, env=None):  # noqa: ARG001
         return 0, stream, "", False, True
 
     monkeypatch.setattr(ocrun, "execute", fake_execute)

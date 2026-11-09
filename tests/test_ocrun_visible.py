@@ -274,7 +274,7 @@ def test_run_library_default_is_headless(tmp_path: Path, monkeypatch: pytest.Mon
 
     captured: dict = {}
 
-    def fake_execute(cmd: list[str], cwd: Path, timeout: float):
+    def fake_execute(cmd: list[str], cwd: Path, timeout: float, env=None):  # noqa: ARG001
         captured["cmd"] = cmd
         return 0, json.dumps({"sessionID": "ses_h", "type": "turn_started"}) + "\n" + json.dumps(
             {

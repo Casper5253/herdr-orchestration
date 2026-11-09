@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -953,6 +954,7 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
     run_title = run_dir.name
     profile_name = args_kw.get("profile")
     policy = args_kw.get("policy")
+    permission_config: dict[str, Any] | None = None
     if worker == "codex":
         started_utc = _utcnow()
         sandbox = "workspace-write"
@@ -968,8 +970,11 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
         files = write_codex_run_script(run_dir, prompt, model, effort, run_title, cwd, sandbox=sandbox)
     else:
         started_utc = None
-        config_path = _profile_config_path(worker, profile_name, cwd, policy)
-        env_vars = {"OPENCODE_CONFIG": str(config_path)} if config_path else None
+        rendered = _permission_config(worker, profile_name, cwd, policy)
+        env_vars = None
+        if rendered is not None:
+            config_path, permission_config = rendered
+            env_vars = {"OPENCODE_CONFIG": str(config_path)}
         files = write_run_script(run_dir, prompt, model, variant, run_title, cwd, env_vars=env_vars)
 
     if not launch_visible(files["script"]):
@@ -986,6 +991,7 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
         )
         result["worker"] = worker
         result["effort"] = effort
+        result["permission_config"] = permission_config
         _append_outcome_entry(
             result,
             run_dir.name,
@@ -1026,6 +1032,7 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
         )
     result["worker"] = worker
     result["effort"] = effort
+    result["permission_config"] = permission_config
     _append_outcome_entry(
         result,
         run_title,
@@ -1153,7 +1160,7 @@ def _append_outcome_entry(
         "worker": result.get("worker", "opencode"),
         "effort": result.get("effort"),
     }
-    for key in ("provider", "models_seen"):
+    for key in ("provider", "models_seen", "permission_config"):
         if key in result:
             entry[key] = result[key]
     append_outcome(routing_log or default_routing_log(cwd), entry)
@@ -1434,45 +1441,61 @@ def resolve_mode(headless: bool) -> str:
     return "visible" if os.environ.get("HERDR_ENV") == "1" else "headless"
 
 
-def _profile_config_path(
+def _permission_config(
     worker: str, profile: str | None, cwd: Path, policy: dict[str, Any] | None
-) -> Path | None:
-    """Render the profile's permission block and return its path, or None.
+) -> tuple[Path, dict[str, Any]] | None:
+    """Render the OpenCode permission config for this run and describe it.
 
-    A missing, malformed or lead-only profile raises: a named profile that
-    cannot render a boundary is never a silent fallback to the default
-    OpenCode config.
+    Every OpenCode run gets one: without a profile the baseline keeps the
+    shared skill and agent roots readable, which the default config asks
+    about (F09/F10). A missing, malformed or lead-only profile raises: a
+    named profile that cannot render a boundary is never a silent fallback.
+    The provenance carries only the path, hash and profile name, never config
+    content.
     """
-    if worker != "opencode" or profile is None:
+    if worker != "opencode":
         return None
     from hx import profile as profile_mod
 
-    named = profile_mod.get(profile, policy)
-    if named is None:
-        raise ValueError(f"unknown profile {profile}")
-    if named.get("lead_only"):
-        raise ValueError(f"profile {profile} is lead-only")
-    error = profile_mod.validate(named)
-    if error:
-        raise ValueError(error)
-    target = Path(cwd) / ".hx" / "profiles" / f"opencode-{profile}.jsonc"
+    if profile is None:
+        block = profile_mod.render_opencode_baseline()
+        name = "opencode-baseline.jsonc"
+    else:
+        named = profile_mod.get(profile, policy)
+        if named is None:
+            raise ValueError(f"unknown profile {profile}")
+        if named.get("lead_only"):
+            raise ValueError(f"profile {profile} is lead-only")
+        error = profile_mod.validate(named)
+        if error:
+            raise ValueError(error)
+        block = profile_mod.render("opencode", named)
+        name = f"opencode-{profile}.jsonc"
+    target = Path(cwd) / ".hx" / "profiles" / name
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(profile_mod.render("opencode", named), indent=2) + "\n", encoding="utf-8"
-    )
-    return target
+    text = json.dumps(block, indent=2) + "\n"
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_bytes(text.encode("utf-8"))
+    os.replace(tmp, target)
+    provenance = {
+        "path": str(target),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "profile": profile or "baseline",
+    }
+    return target, provenance
 
 
-def _profile_env(
+def _permission_env(
     worker: str, profile: str | None, cwd: Path, policy: dict[str, Any] | None
-) -> dict[str, str] | None:
-    """OPENCODE_CONFIG env pointing at the rendered permission block, or None."""
-    config_path = _profile_config_path(worker, profile, cwd, policy)
-    if config_path is None:
-        return None
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    """OPENCODE_CONFIG env plus provenance, or (None, None) for other workers."""
+    rendered = _permission_config(worker, profile, cwd, policy)
+    if rendered is None:
+        return None, None
+    config_path, provenance = rendered
     env = dict(os.environ)
     env["OPENCODE_CONFIG"] = str(config_path)
-    return env
+    return env, provenance
 
 
 def run(
@@ -1568,7 +1591,7 @@ def run(
         raise ValueError(f"worker {worker} supports visible mode only")
     started = time.monotonic()
     cmd = build_command(prompt, model, variant, cwd, title)
-    env = _profile_env(worker, profile, cwd, policy)
+    env, permission_config = _permission_env(worker, profile, cwd, policy)
     execute_result = execute(cmd, cwd, timeout, env=env) if env is not None else execute(cmd, cwd, timeout)
     if len(execute_result) == 4:
         exit_code, out, _err, timed_out = execute_result
@@ -1591,6 +1614,7 @@ def run(
         "latency_s": round(latency, 3),
         "mode": "headless",
         "worker": "opencode",
+        "permission_config": permission_config,
     }
 
     if timed_out and not terminated:
@@ -1614,6 +1638,7 @@ def run(
         "latency_s": result["latency_s"],
         "exit_code": exit_code,
         "session_id": result["session_id"],
+        "permission_config": permission_config,
     }
     append_outcome(routing_log or default_routing_log(cwd), entry)
     return result

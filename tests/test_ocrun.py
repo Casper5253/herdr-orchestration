@@ -124,7 +124,7 @@ MALFORMED_STREAM = "\n".join([">{not json}dont parse me", json.dumps({"type": "e
 
 
 def _fake_execute(stream: str, exit_code: int = 0, timed_out: bool = False, terminated: bool = True):
-    def fake(cmd, cwd, timeout):
+    def fake(cmd, cwd, timeout, env=None):  # noqa: ARG001
         return exit_code, stream, "", timed_out, terminated
 
     return fake

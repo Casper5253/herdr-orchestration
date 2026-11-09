@@ -271,7 +271,7 @@ def test_ocrun_subcommand_wired_with_prompt_file(
     prompt_file = cli_repo.parent / "brief.md"
     prompt_file.write_text("fix the stats module\n", encoding="utf-8")
 
-    def fake_execute(cmd, cwd, timeout):
+    def fake_execute(cmd, cwd, timeout, env=None):  # noqa: ARG001
         return 0, OCRUN_SUCCESS_STREAM, "", False
 
     monkeypatch.setattr("hx.ocrun.execute", fake_execute)

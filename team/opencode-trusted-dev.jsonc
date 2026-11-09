@@ -7,6 +7,17 @@
   "permission": {
     "bash": {
       "*": "allow",
+      // A shell read of any dotenv file is denied: the directory gate below
+      // cannot see files inside the repo (review finding 2).
+      "*.env*": "deny",
+      // The directory gate stops a file outside the repo; these stop a shell
+      // read of a token file inside an allowed directory or inside the repo.
+      "*auth.json*": "deny",
+      "*config.toml*": "deny",
+      "*.credentials.json*": "deny",
+      "*opencode.jsonc*": "deny",
+      "*credentials.toml*": "deny",
+      "*.ssh\\*": "deny",
       "herdr *": "deny",
       // Team messages use `hx say` (allowed by "*"), which only reaches the own team; raw prompts ask.
       "herdr agent list*": "allow",
@@ -35,47 +46,113 @@
       "herdr-app --skill*": "allow",
       "herdr-app --help*": "allow"
     },
-    // Owner, 9 Nov: "i dont like having to approve all this stuff". Reading outside the repo is free;
-    // folders that hold secrets ask (OpenCode applies the LAST matching rule, so the asks come first,
-    // the narrower allows inside them after).
+    // Creator, 9 Nov: "I have to approve a million things a day for opencode. not
+    // very autonomous". Reading the shared skill sets, hx state and app state is
+    // normal team work and is free. OpenCode normalises every target to a
+    // backslash path and asks external_directory with `dirname(file)\*`, never the
+    // file (security review, 9 Nov). So a directory that holds a token file asks,
+    // and only the needed subdirectory inside it is allowed.
     "external_directory": {
       "*": "allow",
-      "C:\\Users\\caspe\\.ssh\\*": "deny",
-      "C:\\Users\\caspe\\.config\\opencode\\*": "ask",
+      // Directories that hold a token file: ask before access.
       "C:\\Users\\caspe\\.codex\\*": "ask",
-      "C:\\Users\\caspe\\.codex\\skills\\*": "allow",
-      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\*": "ask",
-      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\skills\\*": "allow",
       "C:\\Users\\caspe\\.claude\\*": "ask",
+      "C:\\Users\\caspe\\.config\\opencode\\*": "ask",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\*": "ask",
+      "C:\\Users\\caspe\\.local\\share\\opencode\\*": "ask",
+      // The directories the team needs, allowed after the parent asks.
       "C:\\Users\\caspe\\.agents\\*": "allow",
       "C:\\Users\\caspe\\.claude\\skills\\*": "allow",
+      "C:\\Users\\caspe\\.codex\\skills\\*": "allow",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\skills\\*": "allow",
+      "C:\\Users\\caspe\\.herdr-team\\*": "allow",
+      "C:\\Users\\caspe\\.herdr-team\\state\\hc-bindings\\*": "allow",
       "C:\\Users\\caspe\\.config\\herdr-app\\*": "allow",
+      "C:\\Users\\caspe\\.config\\opencode\\agents\\*": "allow",
+      "C:\\Users\\caspe\\.config\\opencode\\node_modules\\*": "allow",
+      "C:\\Users\\caspe\\.config\\opencode\\plugins\\*": "allow",
+      "C:\\Users\\caspe\\.local\\bin\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr-core\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-core\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "allow",
-      // OpenCode's own plugin API and installed plugins (no secrets); opencode.jsonc holds a token and still asks.
-      "C:\\Users\\caspe\\.config\\opencode\\node_modules\\*": "allow",
-      "C:\\Users\\caspe\\.config\\opencode\\plugins\\*": "allow",
-      // hc session bindings written by the OpenCode status plugin: terminal, session id, cwd, pid (no secrets).
-      "C:\\Users\\caspe\\.herdr-team\\state\\hc-bindings\\*": "allow",
       // Scratch space for long command output and temp files.
-      "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow"
+      "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow",
+      // The agentmem vault.
+      "C:\\Users\\caspe\\Documents\\Notes\\FDE Knowledge\\*": "allow",
+      // Secret files and keys, denied last so they win. File rules do not gate
+      // external_directory, but they are the read/edit boundary.
+      "C:\\Users\\caspe\\.ssh\\*": "deny",
+      "C:\\Users\\caspe\\.codex\\auth.json": "deny",
+      "C:\\Users\\caspe\\.codex\\config.toml": "deny",
+      "C:\\Users\\caspe\\.codex\\*.config.toml": "deny",
+      "C:\\Users\\caspe\\.claude\\.credentials.json": "deny",
+      "C:\\Users\\caspe\\.local\\share\\opencode\\auth.json": "deny",
+      "C:\\Users\\caspe\\.config\\opencode\\opencode.jsonc": "deny",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\credentials.toml": "deny",
+      "*\\.env*": "deny",
+      "*\\.ssh\\*": "deny",
+      "*\\.codex\\auth.json": "deny",
+      "*\\.codex\\config.toml": "deny",
+      "*\\.codex\\*.config.toml": "deny",
+      "*\\.claude\\.credentials.json": "deny",
+      "*\\.local\\share\\opencode\\auth.json": "deny",
+      "*\\.config\\opencode\\opencode.jsonc": "deny",
+      "*credentials.toml": "deny"
+    },
+    // OpenCode evaluates read on a path relative to the project, so the secret
+    // denies carry both the absolute and the leading-* relative form. The
+    // engine's built-in `*.env` ask comes before our `"*": "allow"`, so a root
+    // `.env` needs its own deny after it (review finding 2).
+    "read": {
+      "*": "allow",
+      ".env*": "deny",
+      "*\\.env*": "deny",
+      "*\\.ssh\\*": "deny",
+      "*\\.codex\\auth.json": "deny",
+      "*\\.codex\\config.toml": "deny",
+      "*\\.codex\\*.config.toml": "deny",
+      "*\\.claude\\.credentials.json": "deny",
+      "*\\.local\\share\\opencode\\auth.json": "deny",
+      "*\\.config\\opencode\\opencode.jsonc": "deny",
+      "*credentials.toml": "deny"
     },
     // Reading these is fine; changing skills goes through ~/.agents and sync.py, and the app owns its folders.
+    // Edit is evaluated on a project-relative or drive-relative path, hence `..\` and `Users\`.
     "edit": {
       "*": "allow",
+      // Writes outside the repo stay denied (review finding 3).
+      "..\\*": "deny",
+      "Users\\*": "deny",
       "C:\\Users\\caspe\\.agents\\*": "deny",
+      "*\\.agents\\*": "deny",
       "C:\\Users\\caspe\\.claude\\skills\\*": "deny",
+      "*\\.claude\\skills\\*": "deny",
       "C:\\Users\\caspe\\.codex\\skills\\*": "deny",
+      "*\\.codex\\skills\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Roaming\\devin\\skills\\*": "deny",
+      "*\\AppData\\Roaming\\devin\\skills\\*": "deny",
+      "C:\\Users\\caspe\\.herdr-team\\*": "deny",
+      "*\\.herdr-team\\*": "deny",
+      "C:\\Users\\caspe\\Documents\\Notes\\FDE Knowledge\\*": "deny",
+      "*\\Documents\\Notes\\FDE Knowledge\\*": "deny",
       "C:\\Users\\caspe\\.config\\herdr-app\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr-core\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-core\\*": "deny",
-      "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "deny"
+      "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "deny",
+      "C:\\Users\\caspe\\.ssh\\*": "deny",
+      "C:\\Users\\caspe\\.codex\\auth.json": "deny",
+      "C:\\Users\\caspe\\.codex\\config.toml": "deny",
+      "C:\\Users\\caspe\\.codex\\*.config.toml": "deny",
+      "C:\\Users\\caspe\\.claude\\.credentials.json": "deny",
+      "C:\\Users\\caspe\\.local\\share\\opencode\\auth.json": "deny",
+      "C:\\Users\\caspe\\.config\\opencode\\opencode.jsonc": "deny",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\credentials.toml": "deny",
+      "*\\.env*": "deny",
+      "*credentials.toml": "deny"
     }
   }
 }

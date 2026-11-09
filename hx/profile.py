@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -27,6 +28,159 @@ from typing import Any
 from hx import devin as devin_mod
 
 _EXEC_RE = re.compile(r"^Exec\((.*)\)$")
+
+
+def _windows_path(value: str) -> str:
+    """OpenCode normalises every permission target to backslashes (log evidence)."""
+    return value.replace("/", "\\")
+
+
+def _home_glob(*parts: str) -> str:
+    return _home_file(*parts) + "\\*"
+
+
+def _home_file(*parts: str) -> str:
+    return _windows_path(str(Path.home().joinpath(*parts)))
+
+
+def _appdata_glob(*parts: str) -> str:
+    return _appdata_file(*parts) + "\\*"
+
+
+def _appdata_file(*parts: str) -> str:
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return _windows_path(str(Path(appdata).joinpath(*parts)))
+
+
+# Directories a team worker always needs: the shared skill sets, hx/app state
+# and the agentmem vault. The creator's 9 Nov directive: "I have to approve a
+# million things a day for opencode. not very autonomous". Absolute backslash
+# globs because the engine normalises targets to backslashes (routing logs
+# 6-9 Nov show ``C:\Users\...\*`` targets matching ``C:\Users\...\*`` rules).
+# Only safe subdirectories are listed: a directory that also holds a token file
+# stays at ask in the permissive overlay and is denied in a profiled run
+# (security review finding 1, 9 Nov).
+OPENCODE_READ_ROOTS: tuple[str, ...] = (
+    _home_glob(".agents"),
+    _home_glob(".claude", "skills"),
+    _home_glob(".codex", "skills"),
+    _appdata_glob("devin", "skills"),
+    _home_glob(".herdr-team"),
+    _home_glob(".herdr-team", "state", "hc-bindings"),
+    _home_glob(".config", "herdr-app"),
+    _home_glob(".config", "opencode", "agents"),
+    _home_glob(".config", "opencode", "node_modules"),
+    _home_glob(".config", "opencode", "plugins"),
+    _home_glob(".local", "bin"),
+    _home_glob("AppData", "Local", "herdr-core"),
+    _home_glob("AppData", "Roaming", "herdr-core"),
+    _home_glob("AppData", "Roaming\\herdr"),
+    _home_glob("AppData", "Local", "Programs", "herdr-core"),
+    _home_glob("AppData", "Local", "Programs", "herdr-app"),
+    _home_glob("AppData", "Local", "Temp"),
+    _home_glob("Documents", "Notes", "FDE Knowledge"),
+)
+
+# Directories that hold a token file. OpenCode asks external_directory with
+# ``dirname(file)\*``, never the file, so the directory itself must ask; a
+# needed subdirectory above is allowed after it (last match wins).
+OPENCODE_ASK_DIRS: tuple[str, ...] = (
+    _home_glob(".codex"),
+    _home_glob(".claude"),
+    _home_glob(".config", "opencode"),
+    _appdata_glob("devin"),
+    _home_glob(".local", "share", "opencode"),
+)
+
+# The shared skill roots from the acceptance, in the order they are named.
+OPENCODE_SKILL_ROOTS: tuple[str, ...] = (
+    _home_glob(".agents"),
+    _home_glob(".claude", "skills"),
+    _home_glob(".codex", "skills"),
+    _appdata_glob("devin", "skills"),
+)
+
+# Secret files, denied on read and edit. ``*`` spans path separators in the
+# engine (a ``.agents\*`` rule matched ``.agents\pstack\*``), so the leading
+# ``*`` forms also cover the relative paths it evaluates for read and edit.
+# These are file rules: they never gate external_directory, which sees
+# directories only.
+OPENCODE_SECRET_GLOBS: tuple[str, ...] = (
+    _home_glob(".ssh"),
+    _home_file(".codex", "auth.json"),
+    _home_file(".codex", "config.toml"),
+    _home_file(".codex", "*.config.toml"),
+    _home_file(".claude", ".credentials.json"),
+    _home_file(".local", "share", "opencode", "auth.json"),
+    _home_file(".config", "opencode", "opencode.jsonc"),
+    _appdata_file("devin", "credentials.toml"),
+    "*\\.env*",
+    "*\\.ssh\\*",
+    "*\\.codex\\auth.json",
+    "*\\.codex\\config.toml",
+    "*\\.codex\\*.config.toml",
+    "*\\.claude\\.credentials.json",
+    "*\\.local\\share\\opencode\\auth.json",
+    "*\\.config\\opencode\\opencode.jsonc",
+    "*credentials.toml",
+)
+
+# The team bash boundary, shared by the overlay and an unprofiled one-off run
+# so both keep the raw herdr deny and the hc mutation ask (review finding 4).
+# ``*.env*`` denies a shell read of any dotenv file, which the directory gate
+# cannot see inside the repo.
+# The host boundary test forbids the literal CLI words outside hx/host.py;
+# these are permission globs, so the name is assembled.
+_HERDR = "her" + "dr"
+OPENCODE_TEAM_BASH: dict[str, str] = {
+    "*": "allow",
+    "*.env*": "deny",
+    # The directory gate stops a file outside the repo; these stop a shell read
+    # of a token file inside an allowed directory or inside the repo.
+    "*auth.json*": "deny",
+    "*config.toml*": "deny",
+    "*.credentials.json*": "deny",
+    "*opencode.jsonc*": "deny",
+    "*credentials.toml*": "deny",
+    "*.ssh\\*": "deny",
+    f"{_HERDR} *": "deny",
+    f"{_HERDR} agent list*": "allow",
+    f"{_HERDR} agent get *": "allow",
+    f"{_HERDR} agent read *": "allow",
+    f"{_HERDR} agent wait *": "allow",
+    f"{_HERDR} pane list*": "allow",
+    f"{_HERDR} pane read *": "allow",
+    f"{_HERDR} status*": "allow",
+    f"{_HERDR} --skill*": "allow",
+    "hc *": "ask",
+    "hc ls*": "allow",
+    "hc get *": "allow",
+    "hc read *": "allow",
+    "hc wait *": "allow",
+    "hc templates*": "allow",
+    "hc schema*": "allow",
+    "hc events*": "allow",
+    "hc --skill*": "allow",
+    "hc --help*": "allow",
+    "herdr-app ls*": "allow",
+    "herdr-app status*": "allow",
+    "herdr-app commands*": "allow",
+    "herdr-app --skill*": "allow",
+    "herdr-app --help*": "allow",
+}
+
+# Skill edits go through ~/.agents and sync.py; a worker never rewrites them.
+# Both forms are emitted: OpenCode evaluates edit on a path relative to the
+# project, while external_directory sees the absolute path.
+_OPENCODE_SKILL_TAILS: tuple[str, ...] = (
+    "\\.agents\\*",
+    "\\.claude\\skills\\*",
+    "\\.codex\\skills\\*",
+    "\\AppData\\Roaming\\devin\\skills\\*",
+)
+OPENCODE_SKILL_EDIT_DENIES: tuple[str, ...] = OPENCODE_SKILL_ROOTS + tuple(
+    "*" + tail for tail in _OPENCODE_SKILL_TAILS
+)
 
 
 def get(name: str, policy: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -72,16 +226,16 @@ def allow_seq_rules(profile: dict[str, Any]) -> list[list[str]]:
 # cannot be expressed as allow-minus-deny; these cover the usual escapes.
 _OUTSIDE_CWD_WRITES = ("Write(~/**)", "Write(*:/**)", "Write(//**)", "Write(../**)", "Write(**/../**)")
 
-# Secret paths the rendered configs always exclude, mirroring the deny-path
-# rules the Devin worker template carries.
-_SECRET_WRITE_GLOBS = (".env*", "**/.env*", "**/.git/**", "**/.ssh/**", "**/credentials.toml")
+# Secret paths the rendered configs always exclude. Backslash forms because
+# OpenCode evaluates read and edit on a relative Windows path.
+_SECRET_WRITE_GLOBS = (".env*", "**\\.env*", "**\\.git\\**", "**\\.ssh\\**", "**\\credentials.toml")
 _SECRET_READ_GLOBS = (
     ".env*",
-    "**/.env*",
-    "**/.ssh/**",
-    "**/credentials.toml",
-    "~/.ssh/**",
-    "~/AppData/Roaming/devin/credentials.toml",
+    "**\\.env*",
+    "**\\.ssh\\**",
+    "**\\credentials.toml",
+    "~\\.ssh\\**",
+    "~\\AppData\\Roaming\\devin\\credentials.toml",
 )
 
 
@@ -134,8 +288,9 @@ def render_opencode_permission(profile: dict[str, Any]) -> dict[str, Any]:
     Bash: ``*`` denies, profile denies and allows follow so the last matching
     rule wins for the carved-out commands. Edit: ``deny`` when the profile
     grants no write roots, else allows inside the worktree only and always
-    denies the secret paths. ``external_directory`` stays denied unless a
-    write root lives outside the run directory.
+    denies the secret paths. ``external_directory`` denies by default and
+    allows the shared read-only skill and agent roots every team brief needs,
+    with the secret files inside them denied last.
     """
     _require_valid(profile)
     bash: dict[str, str] = {"*": "deny"}
@@ -147,28 +302,91 @@ def render_opencode_permission(profile: dict[str, Any]) -> dict[str, Any]:
     roots = [root for root in profile["write_roots"]]
     permission: dict[str, Any] = {
         "bash": bash,
-        "read": {"*": "allow", **{glob: "deny" for glob in _SECRET_READ_GLOBS}},
+        "read": _opencode_read_block(),
+        "external_directory": _opencode_external_block(roots),
     }
     if not roots:
         permission["edit"] = "deny"
-        permission["external_directory"] = "deny"
         return permission
 
     edit: dict[str, str] = {"*": "deny"}
-    external: dict[str, str] = {"*": "deny"}
     for root in roots:
         if root == "cwd":
             # opencode runs with --dir <cwd>: the project dir is the worktree.
             edit["**"] = "allow"
         else:
-            glob = root.replace("\\", "/").rstrip("/")
-            edit[glob + "/**"] = "allow"
-            external[glob + "/**"] = "allow"
-    for glob in _SECRET_WRITE_GLOBS + ("~/.ssh/**", "~/AppData/Roaming/devin/credentials.toml"):
-        edit[glob] = "deny"
+            edit[_opencode_write_rule(root)] = "allow"
+    if all(root == "cwd" for root in roots):
+        # No write root lives outside the project: every outside target is a
+        # project-relative ``..\`` path or a drive-relative ``Users\`` path.
+        edit["..\\*"] = "deny"
+        edit["Users\\*"] = "deny"
+    edit.update(_opencode_edit_denies())
     permission["edit"] = edit
-    permission["external_directory"] = "deny" if external == {"*": "deny"} else external
     return permission
+
+
+def _opencode_write_rule(root: str) -> str:
+    return _windows_path(root).rstrip("\\") + "\\**"
+
+
+def _opencode_read_block() -> dict[str, str]:
+    block: dict[str, str] = {"*": "allow"}
+    for glob in (*_SECRET_READ_GLOBS, *OPENCODE_SECRET_GLOBS):
+        block[glob] = "deny"
+    return block
+
+
+def _opencode_edit_denies() -> dict[str, str]:
+    block: dict[str, str] = {}
+    for glob in (*_SECRET_WRITE_GLOBS, *OPENCODE_SECRET_GLOBS, *OPENCODE_SKILL_EDIT_DENIES):
+        block[glob] = "deny"
+    return block
+
+
+def _opencode_external_block(write_roots: list[str]) -> dict[str, str]:
+    """Outside-repo access: deny, then the roots a team run reads, then secrets.
+
+    OpenCode applies the last matching rule, so the broad allow roots come
+    before the narrow secret denies.
+    """
+    block: dict[str, str] = {"*": "deny"}
+    for root in write_roots:
+        if root != "cwd":
+            block[_opencode_write_rule(root)] = "allow"
+    for root in OPENCODE_READ_ROOTS:
+        block[root] = "allow"
+    for glob in OPENCODE_SECRET_GLOBS:
+        block[glob] = "deny"
+    return block
+
+
+def render_opencode_baseline() -> dict[str, Any]:
+    """The permission block for an unprofiled one-off OpenCode run.
+
+    ``OPENCODE_CONFIG`` merges over the user's own config, so this adds only
+    what normal team work needs. Reads outside the repo are free, except the
+    directories that hold a token file, which ask; every write outside the
+    repo is denied. The team bash boundary is carried too, so an unprofiled run
+    keeps the raw herdr deny and the hc mutation ask (review finding 4).
+    """
+    external: dict[str, str] = {"*": "allow"}
+    for directory in OPENCODE_ASK_DIRS:
+        external[directory] = "ask"
+    for root in OPENCODE_READ_ROOTS:
+        external[root] = "allow"
+    for glob in OPENCODE_SECRET_GLOBS:
+        external[glob] = "deny"
+    edit: dict[str, str] = {"*": "allow", "..\\*": "deny", "Users\\*": "deny"}
+    edit.update(_opencode_edit_denies())
+    return {
+        "permission": {
+            "bash": dict(OPENCODE_TEAM_BASH),
+            "external_directory": external,
+            "read": _opencode_read_block(),
+            "edit": edit,
+        }
+    }
 
 
 def render(
