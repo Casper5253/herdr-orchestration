@@ -207,34 +207,35 @@ def test_unverified_reset_keeps_reservation_and_blocks_resend(pane, capsys, monk
     assert "reset:dev-opencode" not in json.loads(leases_path.read_text())["sessions"]
 
 
-def test_self_compacted_accepts_reset_providers_with_the_new_session(tmp_path, monkeypatch):
+def test_self_compacted_confirms_same_session_lower_telemetry(tmp_path, monkeypatch):
     led = ledger.Ledger(repo_root=tmp_path, ledger_path=tmp_path / 'ledger.json',
                         lock_path=tmp_path / 'lock', leases_path=tmp_path / 'leases.json')
     controller = context.Controller(led, {"team_prefix": "dev-", "lead_role": "lead"})
     member = host.member({"name": "dev-lead", "agent": "codex",
                           "agent_status": "idle",
-                          "agent_session": {"value": "new"},
+                          "agent_session": {"value": "sid"},
                           "pane_id": "t23", "cwd": str(tmp_path)})
     monkeypatch.setattr(context, "agent_info", lambda name: dict(member))
+    sample = {"session_id": "sid", "utilisation": .9,
+              "sampled_at": context._now().isoformat()}
+    monkeypatch.setattr(context, "telemetry", lambda agent, policy: dict(sample))
     pending = tmp_path / 'lead-recovery.json'
-    pending.write_text(json.dumps({"dev-lead": {"from_sid": "old",
+    pending.write_text(json.dumps({"dev-lead": {"session_id": "sid",
+                                                "utilisation": .9,
                                                 "work_item": "w1",
-                                                "at": context._now().isoformat()}}),
+                                                "at": (context._now() - dt.timedelta(seconds=1)).isoformat()}}),
                        encoding="utf-8")
-    # The old session id is refused: it proves nothing about the reset.
-    with pytest.raises(ValueError, match="new provider session"):
-        controller.self_compacted("dev-lead", "old", work_item="w1")
+    # A different session proves nothing about this compaction.
+    with pytest.raises(ValueError, match="same provider session"):
+        controller.self_compacted("dev-lead", "other", work_item="w1")
     assert json.loads(pending.read_text()).get("dev-lead")
-    # The new id completes the confirmation and clears the pending record.
-    assert controller.self_compacted("dev-lead", "new", work_item="w1")["action"] == "self-compacted"
+    # Same session with fresh lower telemetry completes the confirmation.
+    sample.update(utilisation=.2, sampled_at=context._now().isoformat())
+    assert controller.self_compacted("dev-lead", "sid", work_item="w1")["action"] == "self-compacted"
     assert json.loads(pending.read_text()).get("dev-lead") is None
-    # Without a pending reset recovery there is nothing to confirm.
+    # Without a pending compaction there is nothing to confirm.
     with pytest.raises(ValueError, match="pending"):
-        controller.self_compacted("dev-lead", "newer", work_item="w1")
-    # Devin still cannot be reset in place.
-    member["kind"] = "devin"
-    with pytest.raises(ValueError, match="in-place recovery"):
-        controller.self_compacted("dev-lead", "new", work_item="w1")
+        controller.self_compacted("dev-lead", "sid", work_item="w1")
 
 
 def test_a_failed_reset_send_marks_the_hold_recoverable(pane, capsys, monkeypatch, tmp_path):

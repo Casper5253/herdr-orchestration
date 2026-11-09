@@ -223,7 +223,8 @@
       "note": "No timezone is published, so free routing ends at the end of 30 Nov in UTC+14 (the earliest reading). After that, or if the live model list stops tagging the model Free, hx refuses Devin runs. Extending ends_at needs renewed pricing verification and the user's approval."
     },
     "note": "2026-11-06 creator correction: leverage free Devin SWE-2 and OpenCode equally while the promotion lasts, then OpenCode with deepseek-v4.1-flash first is the default and Devin is not routed. routing_balance holds the rule; Lightning variants are paid and never allowed. models maps hx effort to a SWE-2 id: high by default, max for hard work; dispatch swe-2-medium by hand when latency matters.",
-    "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-high, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees."
+    "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-high, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees.",
+    "compact_note": "2026-11-09 live-verified on the worker pane: /compact drops the footer 63% to 7% and keeps the session's brief; it needs a second Enter when the command menu stages it, which hx send_slash now handles. /compact is the recovery command for every provider; /clear stays a manual reset through context.reset_commands."
   },
   "profiles": {
     "research": {

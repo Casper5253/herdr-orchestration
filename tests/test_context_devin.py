@@ -1,4 +1,4 @@
-"""Devin pane footer telemetry and the clear-needed decision path."""
+"""Devin pane footer telemetry and the compaction decision path."""
 
 import copy
 import json
@@ -167,25 +167,26 @@ def test_devin_telemetry_unknown_when_read_fails(controller, monkeypatch):
     assert context.telemetry(controller.agent, {})["utilisation"] is None
 
 
-def test_decide_clear_needed_at_task_boundary(controller):
+def test_decide_compact_at_task_boundary(controller):
     decision = controller.decide("dev-devin")
-    assert decision["action"] == "clear-needed"
+    assert decision["action"] == "compact"
     assert decision["task_id"] == "t"
     assert decision["pressure"] is False
-    assert any("/clear" in step for step in decision["steps"])
+    assert any("/compact" in step for step in decision["steps"])
+    assert not any("/clear" in step for step in decision["steps"])
 
 
-def test_decide_clear_needed_under_pressure_mid_task(controller):
+def test_decide_compact_under_pressure_mid_task(controller):
     controller.ledger.set_status("t", "in_progress")
     controller.footer = "Context: 210k / 262k tokens (80%)\n"
     decision = controller.decide("dev-devin", related=True)
-    assert decision["action"] == "clear-needed"
+    assert decision["action"] == "compact"
     assert decision["pressure"] is True
     assert decision["mid_task"] is True
     assert "during active task" in decision["reason"]
 
 
-def test_decide_fresh_owner_handoff_without_registered_task(controller, tmp_path):
+def test_decide_compact_needed_without_registered_task(controller, tmp_path):
     controller.ledger = ledger.Ledger(
         repo_root=tmp_path,
         ledger_path=tmp_path / "empty-ledger.json",
@@ -194,9 +195,9 @@ def test_decide_fresh_owner_handoff_without_registered_task(controller, tmp_path
     )
     controller.footer = "Context: 210k / 262k tokens (80%)\n"
     decision = controller.decide("dev-devin")
-    assert decision["action"] == "handoff-needed"
+    assert decision["action"] == "compact-needed"
     assert "no hx task is registered" in decision["reason"]
-    assert "handoff" in " ".join(decision["steps"])
+    assert "hx compact" in " ".join(decision["steps"])
 
 
 def test_decide_keep_below_threshold(controller):
@@ -224,23 +225,15 @@ def test_decide_keep_when_busy(controller):
     assert "not idle" in decision["reason"]
 
 
-def test_compact_refuses_devin_without_compact_command(controller):
-    result = controller.compact("dev-devin")
-    assert result["action"] == "keep"
-    assert "/clear" in result["reason"]
-    assert not controller.calls
-
-
-def test_compact_refuses_devin_even_below_threshold(controller):
+def test_compact_keeps_devin_below_threshold(controller):
     controller.footer = "44k / 262k (16%)\n"
     result = controller.compact("dev-devin")
     assert result["action"] == "keep"
-    assert "/clear" in result["reason"]
+    assert "below boundary threshold" in result["reason"]
     assert not controller.calls
 
 
-def test_compact_command_policy_runs_standard_compaction(controller, monkeypatch):
-    controller.policy["devin"] = {"compact_command": "/compact"}
+def test_compact_runs_standard_compaction_for_devin(controller, monkeypatch):
     assert controller.decide("dev-devin")["action"] == "compact"
 
     def read(name, lines=200):
@@ -273,9 +266,115 @@ def test_compact_command_policy_runs_standard_compaction(controller, monkeypatch
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
 
 
-def test_compact_command_applies_to_devin_only(controller, monkeypatch):
-    """A configured devin.compact_command must never change what codex compaction sends."""
-    controller.policy["devin"] = {"compact_command": "/squash"}
+def test_devin_compaction_verifies_after_the_acknowledgement_turn(controller, monkeypatch):
+    """docs/audit/devin.md: a compacted Devin footer can lose its Context field
+    until the next turn; the acknowledgement turn restores it, and the drop is
+    proven then instead of failing compact-unknown."""
+    footer_gone = "SWE-2 High · accept edits\n"
+
+    def read(name, lines=200):
+        if lines <= 10:
+            return controller.footer
+        token = json.loads(controller.ledger.leases_path.read_text())["sessions"]["devin-pane:wN:p6"]["token"]
+        return f"{token} Run acceptance."
+
+    def send_checked(name, text, **kwargs):
+        controller.calls.append((name, text, kwargs))
+        # The acknowledgement turn runs and the footer comes back lower.
+        controller.footer = "Context: 40k / 262k tokens (15%)\n"
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
+
+    def send_slash(member, command):
+        controller.calls.append((member["name"], command, {}))
+        controller.footer = footer_gone
+        return True
+
+    monkeypatch.setattr(context, "_send_checked", send_checked)
+    monkeypatch.setattr(context, "_send_slash", send_slash)
+    monkeypatch.setattr(context, "_herdr_read", read)
+
+    result = controller.compact("dev-devin")
+    assert result["action"] == "compacted"
+    assert result["telemetry"]["utilisation"] == pytest.approx(40 / 262)
+    assert controller.calls[0][1] == "/compact"
+    assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
+
+
+def test_devin_compaction_continues_when_the_pane_goes_working_mid_send(controller, monkeypatch):
+    """Round-2 review finding 3: send_slash cannot verify submission once the
+    pane is working, but the working pane proves the Enter started compaction;
+    the deferred-footer reconciliation must still run rather than stranding a
+    compact-unknown hold."""
+    t = [0.0]
+    monkeypatch.setattr(context.time, "monotonic", lambda: t[0])
+    monkeypatch.setattr(context.time, "sleep", lambda s: t.__setitem__(0, t[0] + s))
+    controller.policy["context"]["compact_wait_seconds"] = 30
+    footer_gone = "SWE-2 High · accept edits\n"
+
+    def info(name):
+        agent = copy.deepcopy(controller.agent)
+        if agent["status"] == "working" and t[0] >= 2:
+            agent["status"] = "idle"  # the compaction turn finished between polls
+        return agent
+
+    def read(name, lines=200):
+        if lines <= 10:
+            return controller.footer
+        token = json.loads(controller.ledger.leases_path.read_text())["sessions"]["devin-pane:wN:p6"]["token"]
+        return f"{token} Run acceptance."
+
+    def send_checked(name, text, **kwargs):
+        controller.calls.append((name, text, kwargs))
+        # The acknowledgement turn runs and the footer comes back lower.
+        controller.footer = "Context: 40k / 262k tokens (15%)\n"
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
+
+    def send_slash(member, command):
+        controller.calls.append((member["name"], command, {}))
+        controller.footer = footer_gone
+        controller.agent["status"] = "working"  # the Enter started /compact
+        return False  # the composer check ran while the pane was working
+
+    monkeypatch.setattr(context, "agent_info", info)
+    monkeypatch.setattr(context, "_send_checked", send_checked)
+    monkeypatch.setattr(context, "_send_slash", send_slash)
+    monkeypatch.setattr(context, "_herdr_read", read)
+
+    result = controller.compact("dev-devin")
+    assert result["action"] == "compacted"
+    assert result["telemetry"]["utilisation"] == pytest.approx(40 / 262)
+    assert controller.calls[0][1] == "/compact"
+    assert any("Context compacted" in str(call[1]) for call in controller.calls)
+    assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
+
+
+def test_devin_compaction_still_unknown_when_the_footer_never_proves_it(controller, monkeypatch):
+    """A footer that stays absent or not-lower after the acknowledgement turn is
+    still an unverified compaction, never a success."""
+    footer_gone = "SWE-2 High · accept edits\n"
+
+    def read(name, lines=200):
+        if lines <= 10:
+            return controller.footer
+        token = json.loads(controller.ledger.leases_path.read_text())["sessions"]["devin-pane:wN:p6"]["token"]
+        return f"{token} Run acceptance."
+
+    def send_slash(member, command):
+        controller.calls.append((member["name"], command, {}))
+        controller.footer = footer_gone
+        return True
+
+    monkeypatch.setattr(context, "_send_slash", send_slash)
+    monkeypatch.setattr(context, "_herdr_read", read)
+
+    result = controller.compact("dev-devin")
+    assert result["action"] == "compact-unknown"
+    sessions = json.loads(controller.ledger.leases_path.read_text())["sessions"]
+    assert sessions["devin-pane:wN:p6"]["state"] == "compact-unknown"
+
+
+def test_compact_sends_slash_compact_for_codex_too(controller, monkeypatch):
+    """Every provider kind gets the same /compact keys."""
     controller.agent["kind"] = "codex"
     controller.agent["session_id"] = "sid"
     del controller.agent["address"]

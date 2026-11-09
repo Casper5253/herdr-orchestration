@@ -1,5 +1,6 @@
 """Boundary decisions are durable, including refused and unknown recovery."""
 
+import datetime as dt
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -85,17 +86,17 @@ def test_journal_failure_is_not_a_silent_success(boundary_controller):
         controller.boundary('dev-codex')
 
 
-@pytest.mark.parametrize('provider, action', [('devin', 'handoff-needed'), ('codex', 'compact-needed')])
-def test_unregistered_pressure_has_actionable_recovery(boundary_controller, provider, action):
+@pytest.mark.parametrize('provider', ['devin', 'codex'])
+def test_unregistered_pressure_has_actionable_recovery(boundary_controller, provider):
     controller, agent, sample = boundary_controller
     controller.ledger.set_status('one', 'done')
     agent.update(name='dev-pane', kind=provider)
     sample['utilisation'] = .89
     result = controller.boundary('dev-pane')
-    assert result['action'] == action
+    assert result['action'] == 'compact-needed'
     assert result['disposition'] == 'recovery-needed'
     assert result['steps']
-    assert 'checkpoint' in ' '.join(result['steps']).lower() or 'handoff' in ' '.join(result['steps']).lower()
+    assert 'checkpoint' in ' '.join(result['steps']).lower()
 
 
 def test_cli_pane_boundary_records_without_executing_recovery(boundary_controller, capsys):
@@ -114,8 +115,16 @@ def test_lead_guard_is_per_work_item(boundary_controller, monkeypatch):
     sample['utilisation'] = .8
     monkeypatch.setattr(context, '_lead_telemetry', lambda *args: dict(sample))
     controller.policy['context'] = {'min_interval_min': 0, 'max_per_task': 2}
-    controller.self_compacted('dev-claude', 'sid', work_item='release')
-    controller.self_compacted('dev-claude', 'sid', work_item='release')
+
+    def confirm(item):
+        ledger._atomic_write_json(controller.recovery_path, {'dev-claude': {
+            'session_id': 'sid', 'utilisation': .9, 'work_item': item,
+            'at': (context._now() - dt.timedelta(seconds=1)).isoformat()}})
+        sample['sampled_at'] = context._now().isoformat()
+        controller.self_compacted('dev-claude', 'sid', work_item=item)
+
+    confirm('release')
+    confirm('release')
     same = controller.decide('dev-claude', work_item='release')
     another = controller.decide('dev-claude', work_item='next-release')
     assert same['reason'] == 'task compaction loop guard'

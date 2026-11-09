@@ -404,11 +404,13 @@ def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
         return unknown
 
 
-def _devin_clear_steps(name: str, task_id: str) -> list[str]:
+def _compact_steps(name: str, task_id: str) -> list[str]:
     return [
         f"hx checkpoint write {task_id} --owner {name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
-        f"Send /clear to the pane from Python: {host.prompt_command(name, '/clear')} (never Git Bash; MSYS rewrites /clear as a Windows path)",
-        f"Re-brief the agent from .hx/checkpoints/{task_id}.md",
+        f"Run hx compact {name} --task {task_id}. It types the provider's /compact "
+        f"({host.prompt_command(name, '/compact')}), presses Enter again when the "
+        "command menu keeps it staged, proves the same session at lower "
+        "utilisation, and re-briefs the worker from the checkpoint.",
     ]
 
 
@@ -557,11 +559,6 @@ class Controller:
     def _is_lead(self, name: str) -> bool:
         return name == usage.lead_name(self.policy, usage.team_prefix(self.policy))
 
-    def _devin_compact_command(self) -> str | None:
-        # devin.compact_command defaults to null: interactive /compact is unverified for Devin.
-        value = (self.policy.get("devin") or {}).get("compact_command")
-        return str(value) if value else None
-
     def _task(self, name: str, task_id: str | None, allow_in_progress: bool = False) -> dict[str, Any]:
         tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
         unfinished_tasks = [t for t in tasks if t.get("status") not in ledger.Ledger.CLOSED_STATUSES]
@@ -636,14 +633,8 @@ class Controller:
                      task_id: str | None, work_item: str | None) -> dict[str, Any]:
         name = result["agent"]
         kind = agent.get("kind")
-        # The lead seat can be any family; each has its own in-place command.
-        lead_commands = {"claude": "/compact", "codex": "/clear", "opencode": "/new"}
-        if kind == "devin":
-            raise ValueError(
-                "a Devin lead cannot be reset in place; restart its pane and hand "
-                "the seat back with team\\Set-HerdrLead.ps1")
-        lead_command = lead_commands.get(str(kind))
-        if not lead_command:
+        # The lead seat can be any family; every provider recovers with /compact.
+        if kind not in ("claude", "codex", "opencode", "devin"):
             raise ValueError(f"no verified in-place recovery for a {kind} lead")
         sid = _session(agent) or session_id or ""
         sample = (_lead_telemetry(sid, self.policy) if kind == "claude"
@@ -668,46 +659,54 @@ class Controller:
             "claude_lead_threshold" if kind == "claude" else "pressure_threshold", 0.6)
         if sample["utilisation"] < threshold:
             raise _RetainContext("below lead recovery threshold")
-        if kind != "claude":
-            # Reset providers change their session id; self-compacted must
-            # prove the old session is gone before it records the cooldown.
-            # Written only once the decision survives every refusal check.
-            with self.ledger._leases_lock():
-                pending = ledger._load_json(self.recovery_path) or {}
-                pending[name] = {"from_sid": sid, "work_item": item, "at": _now().isoformat()}
-                ledger._atomic_write_json(self.recovery_path, pending)
+        # The pending record carries the session and utilisation the
+        # confirmation must beat: same provider session, fresh lower telemetry.
+        # Written only once the decision survives every refusal check.
+        with self.ledger._leases_lock():
+            pending = ledger._load_json(self.recovery_path) or {}
+            pending[name] = {"session_id": sid, "utilisation": sample["utilisation"],
+                             "work_item": item, "at": _now().isoformat()}
+            ledger._atomic_write_json(self.recovery_path, pending)
         quoted_name = "'" + name.replace("'", "''") + "'"
         quoted_sid = "'" + sid.replace("'", "''") + "'"
         quoted_item = "'" + item.replace("'", "''") + "'"
         # hc keys through the resolved executable: a typed slash command, never a
         # standalone herdr or a wrapped hc send (which the provider cannot run).
-        command = f"Start-Sleep 60; {host.prompt_command(quoted_name, lead_command)}"
+        command = f"Start-Sleep 60; {host.prompt_command(quoted_name, '/compact')}"
         background = "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '" + command.replace("'", "''") + "'"
-        result.update(action="self-compact", reason=f"{kind} lead above threshold; {lead_command} at the next turn boundary", steps=[
+        result.update(action="self-compact", reason=f"{kind} lead above threshold; /compact at the next turn boundary", steps=[
             f"hx checkpoint write lead --owner {quoted_name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
             background,
-            "End the turn so the background /compact prompt can reach the idle pane.",
-            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid if kind == 'claude' else '<new-session-id>'} --work-item {quoted_item}",
+            "End the turn so the background /compact prompt can reach the idle pane. If the provider's command menu keeps /compact staged, send one more `enter` keys call.",
+            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid} --work-item {quoted_item}",
         ])
         return result
 
     def self_compacted(self, name: str, session_id: str, work_item: str | None = None) -> dict[str, Any]:
         agent = self._agent(name)
         kind = agent.get("kind")
-        if not self._is_lead(name) or kind not in ("claude", "codex", "opencode"):
+        if not self._is_lead(name) or kind not in ("claude", "codex", "opencode", "devin"):
             raise ValueError("self-compacted requires a lead with an in-place recovery")
         live_sid = _session(agent)
-        if kind == "claude":
-            if not session_id or (live_sid and live_sid != session_id):
-                raise ValueError("--session must identify the current Claude session")
-        else:
-            pending = (ledger._load_json(self.recovery_path) or {}).get(name)
-            if not isinstance(pending, dict):
-                raise ValueError("no reset recovery is pending for this lead")
-            if (not session_id or session_id == pending.get("from_sid")
-                    or (live_sid and live_sid != session_id)):
-                raise ValueError("--session must name the new provider session after the reset")
-        item = self._lead_work_item(None, work_item)
+        pending = (ledger._load_json(self.recovery_path) or {}).get(name)
+        if not isinstance(pending, dict):
+            raise ValueError("no compaction recovery is pending for this lead")
+        held_sid = str(pending.get("session_id") or "")
+        if (not held_sid or not session_id or session_id != held_sid
+                or (live_sid and live_sid != held_sid)):
+            raise ValueError("--session must name the same provider session the compaction ran in")
+        item = pending.get("work_item")
+        if not isinstance(item, str) or not item:
+            raise ValueError("the pending compaction record carries no work item")
+        if work_item is not None and work_item != item:
+            raise ValueError("--work-item does not match the pending compaction")
+        before = pending.get("utilisation")
+        sample = (_lead_telemetry(held_sid, self.policy) if kind == "claude"
+                  else telemetry({**agent, "session_id": held_sid}, self.policy))
+        if (not isinstance(before, (int, float)) or isinstance(before, bool)
+                or not _fresh(sample, held_sid, _now(), after=_timestamp(pending.get("at")))
+                or not sample["utilisation"] < before):
+            raise ValueError("same-session compaction unproven: no fresh lower utilisation")
         with self.ledger._leases_lock():
             guards = ledger._load_json(self.guard_path) or {}
             guard = guards.setdefault(name, {"tasks": {}})
@@ -715,10 +714,9 @@ class Controller:
             task_guard["count"] += 1
             guard["last_at"] = _now().isoformat()
             ledger._atomic_write_json(self.guard_path, guards)
-            if kind != "claude":
-                remaining = ledger._load_json(self.recovery_path) or {}
-                remaining.pop(name, None)
-                ledger._atomic_write_json(self.recovery_path, remaining)
+            remaining = ledger._load_json(self.recovery_path) or {}
+            remaining.pop(name, None)
+            ledger._atomic_write_json(self.recovery_path, remaining)
         return {"action": "self-compacted", "agent": name, "session_id": session_id, "task_id": "lead", "work_item": item}
 
     def decide(self, name: str, task_id: str | None = None, related: bool = False,
@@ -747,27 +745,15 @@ class Controller:
                 result["reset_pending"] = True
                 raise _RetainContext("recent reset; awaiting the new session's first sample")
             context_policy = self.policy.get("context", {})
-            devin_clear = agent.get("kind") == "devin" and not self._devin_compact_command()
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
             owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
             if not owned_tasks and not task_id:
                 if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
                     raise _RetainContext("below boundary threshold")
-                if devin_clear:
-                    handoff = self.ledger.repo_root / ".hx" / "handoffs" / f"{name}.md"
-                    result.update(action="handoff-needed", reason="no hx task is registered; use a fresh-owner handoff because native Devin compaction is unverified", steps=[
-                        "Register the work with hx task add and checkpoint it, then run "
-                        f"`hx handoff write {name} --task <id>` (writes {handoff.parent}).",
-                        "Have the lead start a fresh owner in the same repository and send it "
-                        "the line `hx handoff brief <file>` prints; do not clear the current "
-                        "owner until its state is saved.",
-                        f"Run hx boundary {name} after the fresh owner acknowledges the next action.",
-                    ])
-                else:
-                    result.update(action="compact-needed", reason="no hx task is registered; native compaction recommended after registering the work and checkpointing", steps=[
-                        "Have the lead register the current work with hx task add and assign its actual files to this owner.",
-                        f"Write hx checkpoint write <task-id> with the current objective, decisions, errors, tests and next action, then run hx compact {name} --task <task-id>.",
-                    ])
+                result.update(action="compact-needed", reason="no hx task is registered; native compaction recommended after registering the work and checkpointing", steps=[
+                    "Have the lead register the current work with hx task add and assign its actual files to this owner.",
+                    f"Write hx checkpoint write <task-id> with the current objective, decisions, errors, tests and next action, then run hx compact {name} --task <task-id>.",
+                ])
                 return result
             task = self._task(name, task_id, allow_in_progress=pressure)
             result["task_id"] = task["id"]
@@ -789,20 +775,14 @@ class Controller:
             if related and not pressure:
                 raise _RetainContext("next task continues the same work; retain warm context")
             if pressure:
-                if devin_clear:
-                    reason = "idle under context pressure during active task" if mid_task else "idle under context pressure"
-                    result.update(action="clear-needed", reason=reason + "; Devin has no verified /compact, clear instead",
-                                  steps=_devin_clear_steps(name, task["id"]))
-                    return result
-                result.update(action="compact", reason="idle under context pressure during active task" if mid_task else "idle under context pressure")
+                result.update(action="compact",
+                              reason="idle under context pressure during active task" if mid_task else "idle under context pressure",
+                              steps=_compact_steps(name, task["id"]))
                 return result
             if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
                 raise _RetainContext("below boundary threshold")
-            if devin_clear:
-                result.update(action="clear-needed", reason="idle at task boundary above threshold; Devin has no verified /compact, clear instead",
-                              steps=_devin_clear_steps(name, task["id"]))
-                return result
-            result.update(action="compact", reason="idle at task boundary above threshold")
+            result.update(action="compact", reason="idle at task boundary above threshold",
+                          steps=_compact_steps(name, task["id"]))
         except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
             result["reason"] = str(exc)
             result["disposition"] = getattr(exc, "disposition", "refused")
@@ -825,8 +805,6 @@ class Controller:
 
     def compact(self, name: str, task_id: str | None = None, related: bool = False) -> dict[str, Any]:
         decision = self.decide(name, task_id, related)
-        if decision.get("agent_kind") == "devin" and not self._devin_compact_command():
-            return {**decision, "action": "keep", "reason": "hx compact does not run for Devin panes: /compact is unverified for Devin. Run the clear flow instead: write a checkpoint, send /clear from Python (never Git Bash), then re-brief from the checkpoint."}
         if decision["action"] != "compact":
             return decision
         sid, task_id = decision["session_id"], decision["task_id"]
@@ -900,12 +878,23 @@ class Controller:
             if _session(current) != sid or current.get("status") not in READY:
                 raise ValueError("session changed or agent became busy immediately before send")
             submitted = True
-            compact_command = self._devin_compact_command() if current.get("kind") == "devin" else "/compact"
             # Slash commands run only as typed keys; `hc send` wraps them so the
             # provider never sees a real /compact.
             sent_turn = current.get("turn")
-            if not _send_slash(current, compact_command):
-                raise RuntimeError("host did not accept the compaction keys")
+            if not _send_slash(current, "/compact"):
+                # A pane that went working inside the composer check proves the
+                # Enter started compaction even though send_slash could not
+                # verify it; the telemetry verification below — including
+                # Devin's deferred footer proof — must still run.
+                current = self._agent(name)
+                turn = current.get("turn")
+                turn_started = _session(current) == sid and (
+                    current.get("status") not in READY
+                    or (isinstance(sent_turn, int) and not isinstance(sent_turn, bool)
+                        and isinstance(turn, int) and not isinstance(turn, bool)
+                        and turn > sent_turn))
+                if not turn_started:
+                    raise RuntimeError("host did not accept the compaction keys")
             settle_deadline = time.monotonic() + float(
                 self.policy.get("context", {}).get("compact_wait_seconds", 300))
             # The turn must actually start: status leaves READY or the turn
@@ -933,6 +922,7 @@ class Controller:
                 time.sleep(0.5)
                 current = self._agent(name)
             deadline = settle_deadline
+            deferred = False
             while True:
                 current = self._agent(name)
                 after = telemetry(current, self.policy)
@@ -940,8 +930,19 @@ class Controller:
                         and _fresh(after, sid, _now(), after=started)
                         and after["utilisation"] < before["utilisation"]):
                     break
-                if _session(current) != sid or time.monotonic() >= deadline:
+                if _session(current) != sid:
                     raise ValueError("compaction completion not verified in same session with lower fresh telemetry")
+                if time.monotonic() >= deadline:
+                    # A compacted Devin pane can drop its Context field until the
+                    # next turn restores it (docs/audit/devin.md): the
+                    # acknowledgement turn brings it back, so the drop is proven
+                    # there instead of failing compact-unknown.
+                    if not (current.get("kind") == "devin"
+                            and current.get("status") in READY
+                            and after.get("utilisation") is None):
+                        raise ValueError("compaction completion not verified in same session with lower fresh telemetry")
+                    deferred = True
+                    break
                 time.sleep(.25)
             next_action = checkpoint._extract_section(text, "Next action")
             lead = usage.lead_name(self.policy, usage.team_prefix(self.policy))
@@ -953,6 +954,19 @@ class Controller:
             reply = _herdr_read(name)
             if _session(current) != sid or current.get("status") not in READY or not _has_acknowledgement(reply, f"{token} {next_action}"):
                 raise ValueError("checkpoint next action acknowledgement not verified")
+            if deferred:
+                verify_deadline = time.monotonic() + float(
+                    self.policy.get("context", {}).get("verification_timeout_seconds", 10))
+                while True:
+                    current = self._agent(name)
+                    after = telemetry(current, self.policy)
+                    if (_session(current) == sid
+                            and _fresh(after, sid, _now(), after=started)
+                            and after["utilisation"] < before["utilisation"]):
+                        break
+                    if _session(current) != sid or time.monotonic() >= verify_deadline:
+                        raise ValueError("post-acknowledgement telemetry never proved the compaction")
+                    time.sleep(.25)
             self._finish(sid, token, None, False)
             return {**decision, "action": "compacted", "telemetry": after}
         except Exception as exc:

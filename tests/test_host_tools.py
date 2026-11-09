@@ -189,7 +189,15 @@ def test_generated_commands_use_the_resolved_powershell_quoted_path(
     assert host.prompt_command("dev-codex", text) == expected
 
 
+_CODEX_IDLE = "› \n  gpt-5.2-codex high · 91% context left"
+_CODEX_STAGED = "› /compact\n  gpt-5.2-codex high · 91% context left"
+_DEVIN_RULE = "─" * 20
+_DEVIN_IDLE = "❭ \n" + _DEVIN_RULE + "\nSWE-2 High · accept edits"
+_DEVIN_STAGED = "❭ /compact\n" + _DEVIN_RULE + "\nSWE-2 High · accept edits"
+
+
 def test_send_slash_types_each_character_then_enter(fake: FakeHc) -> None:
+    fake.read_payload = {"how": "screen", "complete": True, "text": _CODEX_IDLE}
     assert host.HcHost().send_slash("dev-codex", "/compact") is True
     assert fake.keys == [
         ["hc", "keys", "t7", "/", "c", "o", "m", "p", "a", "c", "t"],
@@ -198,6 +206,7 @@ def test_send_slash_types_each_character_then_enter(fake: FakeHc) -> None:
 
 
 def test_send_slash_uses_a_member_address_without_a_roster_rescan(fake: FakeHc) -> None:
+    fake.read_payload = {"how": "screen", "complete": True, "text": _CODEX_IDLE}
     member = host.HcHost().info("dev-codex")
     before = len(fake.runs)
     assert host.HcHost().send_slash(member, "/clear") is True
@@ -218,6 +227,208 @@ def test_send_slash_reports_a_failed_key_call(fake: FakeHc) -> None:
     fake.keys_fail = True
     assert host.HcHost().send_slash("dev-codex", "/compact") is False
     assert len(fake.keys) == 1
+
+
+def test_send_slash_presses_enter_once_more_when_the_command_stays_staged(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Live repro: the first Enter landed in Devin's slash-command menu."""
+    enters = [0]
+    original = fake.run
+
+    def run(argv, **kwargs):
+        if argv[1] == "read":
+            staged = enters[0] < 2
+            return _completed(json.dumps({
+                "how": "screen", "complete": True,
+                "text": _DEVIN_STAGED if staged else _DEVIN_IDLE}))
+        result = original(argv, **kwargs)
+        if argv[1] == "keys" and argv[3] == "enter":
+            enters[0] += 1
+        return result
+
+    monkeypatch.setattr(host.subprocess, "run", run)
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/compact") is True
+    assert fake.keys == [
+        ["hc", "keys", "t9", "/", "c", "o", "m", "p", "a", "c", "t"],
+        ["hc", "keys", "t9", "enter"],
+        ["hc", "keys", "t9", "enter"],
+    ]
+
+
+def test_send_slash_is_unverified_when_the_command_stays_staged(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Still staged after the retry: unverified, and Enter was pressed exactly once more."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": _DEVIN_STAGED}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 2
+
+
+def test_send_slash_never_retries_enter_for_a_submitted_command(
+    fake: FakeHc, monkeypatch
+) -> None:
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "some output\n" + _CODEX_IDLE}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_never_enters_for_prompt_shaped_output_while_working(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Review finding 2: a Markdown `> /compact` quote in task output is not a
+    composer. The pane is working, so no live composer exists to stage it."""
+    fake.terminals["t7"]["status"]["state"] = "working"
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "Model output only\n> /compact\nworking..."}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "Model output only\n> /compact\nworking...",
+    "Model output only\n> /compact",
+])
+def test_send_slash_never_enters_for_prompt_shaped_output_while_idle(
+    fake: FakeHc, monkeypatch, text: str
+) -> None:
+    """Round-2 review finding 1: an idle screen whose `> /compact` sits in
+    output — not at the codex composer position above its model status line —
+    never earns the second Enter."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": text}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_ignores_a_devin_prompt_not_above_the_footer_rule(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Round-2 review finding 1: `❭ /compact` in output — above ordinary text,
+    not the footer rule — is not Devin's composer."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "❭ /compact\nmore output\n" + _DEVIN_RULE +
+                                 "\nSWE-2 High · accept edits"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_retries_enter_for_the_codex_composer_position(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """`› /compact` directly above the codex model status line is the staged composer."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": _CODEX_STAGED}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 2
+
+
+def test_send_slash_retries_enter_for_the_opencode_input_box(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """`┃  /compact` inside the input box directly above `Build` is the staged
+    composer — the OpenCode menu needs the second Enter."""
+    fake.terminals["t8"]["status"] = {"app": "opencode", "state": "idle"}
+    enters = [0]
+    original = fake.run
+
+    def run(argv, **kwargs):
+        if argv[1] == "read":
+            staged = enters[0] < 2
+            return _completed(json.dumps({
+                "how": "screen", "complete": True,
+                "text": ("┃  /compact\nBuild · opencode" if staged
+                         else "┃  \nBuild · opencode")}))
+        result = original(argv, **kwargs)
+        if argv[1] == "keys" and argv[3] == "enter":
+            enters[0] += 1
+        return result
+
+    monkeypatch.setattr(host.subprocess, "run", run)
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-opencode", "/compact") is True
+    enters_sent = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters_sent) == 2
+
+
+def test_send_slash_is_unverified_for_a_provider_without_a_composer_position(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """A kind with no defined composer position never earns Enter: unverified,
+    not submitted."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": "> /compact"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-claude", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_is_unverified_without_a_visible_composer(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Review finding 2: no composer line means unverified, never submitted."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "No composer currently rendered"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_is_unverified_when_the_screen_cannot_be_read(
+    fake: FakeHc, monkeypatch
+) -> None:
+    fake.read_fail = True
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+
+
+def test_send_slash_ignores_the_command_in_output_above_the_composer(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """A submitted command's echo in output never earns another Enter."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "Finished /compact successfully.\n" + _DEVIN_IDLE}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/compact") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_send_slash_ignores_a_scrollback_echo_above_an_empty_prompt(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """A submitted `❭ /compact` in scrollback above the live composer is not staged."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "❭ /compact\nFinished /compact successfully.\n" + _DEVIN_IDLE}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/compact") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
+
+
+def test_staged_command_matches_the_exact_command_only(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """`❭ /compactx` is not the `/compact` send_slash typed."""
+    fake.read_payload = {"how": "screen", "complete": True,
+                         "text": "❭ /compactx\n" + _DEVIN_RULE + "\nSWE-2 High · accept edits"}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    assert host.HcHost().send_slash("dev-devin", "/compact") is True
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 1
 
 
 def test_send_slash_to_a_vanished_member_was_never_attempted(fake: FakeHc) -> None:

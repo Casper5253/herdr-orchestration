@@ -62,8 +62,10 @@ Questlog is reachable through the user-scope MCP entry `questlog` → `team/ques
 - Whether usage of free SWE-2 shows up on the account's quota page. Check app.devin.ai usage after a day of work.
 - Whether a local `-p` run can start a cloud session on its own. Docs only describe `--cloud`, `/cloud` and `/handoff`; hx never passes `--cloud`, and the worker denies `Exec(devin)`.
 
-## Interactive /compact on a pane (live check, 2026-10-31)
+## Interactive /compact on a pane (live checks, 2026-10-31 and 2026-11-09)
 
 Sent `/compact` from PowerShell (`herdr agent prompt dev-devin "/compact"`) to an idle `dev-devin` pane at 70k / 262k tokens (26%). Devin printed `Context compacted` and returned to idle in the same session. Afterwards the footer showed only `SWE-2 High · accept edits` with no `Context:` field, and the field came back on the next turn.
 
-Consequence: keep `policy.devin.compact_command` null. `hx compact` verifies "same session, fresh telemetry lower than before" before it sends the acknowledgement prompt. On Devin there is no fresh telemetry at that point, so every compaction would end as `compact-unknown` and stay reserved. Devin panes therefore use the clear-needed flow (checkpoint, `/clear`, re-brief). To enable `/compact` later, run verification after the acknowledgement turn for `agent_kind == "devin"` (the reply turn restores the footer), then set `compact_command` to `/compact`.
+On 2026-11-09 the command went out as typed keys (`hc keys … / c o m p a c t` then `enter`). The first Enter only selected the menu entry "Force conversation compaction"; a second Enter ran it. The footer dropped 63% to 7% in the same session, and the pane still named its last brief afterwards. OpenCode behaves the same way: its "Compact session" menu entry needs the second Enter too, and one run went 36.8K to 5.6K tokens in-session.
+
+Consequence, updated: `/compact` is hx's recovery command for every provider, and `hx compact` sends it for Devin panes like any other. `send_slash` reads the screen after the first Enter and presses exactly one more while the composer still stages the exact command, which is what the command menus need. When the post-compact footer has no `Context:` field, `hx compact` proves the drop after the acknowledgement turn instead, since the reply turn restores it. The proof is unchanged: same session, fresh lower utilisation. `/clear` survives only as a manual reset through `hx reset`.

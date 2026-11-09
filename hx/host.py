@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
@@ -22,6 +23,51 @@ STATUSES = frozenset({"idle", "working", "done", "blocked", "error"})
 SETTLED = frozenset({"idle", "done"})
 ERROR_TYPES = frozenset({"timeout", "agent_prompt_stalled", "agent_blocked", "error"})
 WAIT_DEFAULT_MS = 300000
+# A typed slash command's Enter press gets a beat before the composer check.
+SLASH_ENTER_SETTLE_SECONDS = 0.75
+# The composer sits at a fixed position per provider: Devin's `❭` input line
+# directly above the footer rule, OpenCode's `┃` input-box line directly above
+# the `Build` status line, Codex's `›` input line directly above its model
+# status line. A prompt-shaped line anywhere else is output, never the
+# composer — Markdown `> /compact` and scrollback echoes earn nothing.
+_DEVIN_FOOTER_RULE = re.compile(r"[─—\-=\s]*[─—\-=][─—\-=\s]*")
+_CODEX_STATUS_LINE = re.compile(r"context left|^\s*gpt-", re.IGNORECASE)
+
+
+def _composer_text(text: str, kind: str) -> str | None:
+    """The text staged in the provider's composer at its fixed position.
+
+    An empty string means the composer rendered with nothing staged — the
+    typed command provably left. None means no composer was identified: an
+    unknown provider kind or a screen without the position anchors.
+    """
+    lines = (text or "").rstrip().splitlines()
+    if kind == "devin":
+        for index in range(len(lines) - 2, -1, -1):
+            if (lines[index].lstrip().startswith("❭")
+                    and _DEVIN_FOOTER_RULE.fullmatch(lines[index + 1].strip())):
+                return lines[index].lstrip()[1:].strip()
+        return None
+    if kind == "opencode":
+        status = next((index for index in range(len(lines) - 1, -1, -1)
+                       if lines[index].strip().startswith("Build")), None)
+        if status is None:
+            return None
+        box = status - 1
+        while box >= 0 and lines[box].lstrip().startswith("┃"):
+            inner = lines[box].strip().strip("┃").strip()
+            if inner:
+                return inner
+            box -= 1
+        return "" if box < status - 1 else None
+    if kind == "codex":
+        for index in range(len(lines) - 2, -1, -1):
+            if (lines[index].lstrip().startswith("›")
+                    and _CODEX_STATUS_LINE.search(lines[index + 1])):
+                return lines[index].lstrip()[1:].strip()
+    return None
+
+
 # The 7501 `app` word, the only evidence of which provider runs in a terminal.
 HC_APP_KINDS = {
     "claude-code": "claude",
@@ -759,11 +805,61 @@ class HcHost:
 
         `hc send` wraps text in `<hc from=...>`, so a slash command sent as a
         message never reaches the provider's native command handling. Typing
-        the keys does. True only when both key calls were accepted.
+        the keys does. The first Enter can land in the provider's
+        slash-command menu instead of submitting: the screen is read, one
+        more Enter goes out only while the command still sits in the
+        composer, and True means the staged text is verifiably gone.
         """
         if not command.startswith("/"):
             raise ValueError("send_slash types slash commands like /compact or /clear")
-        return self.press(member, *command) and self.press(member, "enter")
+        if isinstance(member, dict):
+            resolved = member
+        else:
+            try:
+                resolved = self._member_named(member)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise SendNotAttempted(str(exc)) from exc
+        address = str(resolved.get("address") or "")
+        if not address:
+            raise SendNotAttempted("the member's terminal has no address")
+        kind = str(resolved.get("kind") or "")
+        if not (self._run("keys", address, *command, timeout=30).returncode == 0
+                and self._run("keys", address, "enter", timeout=30).returncode == 0):
+            return False
+        time.sleep(SLASH_ENTER_SETTLE_SECONDS)
+        staged = self._staged_command(address, command, kind)
+        if staged is not True:
+            return staged is False
+        if self._run("keys", address, "enter", timeout=30).returncode != 0:
+            return False
+        time.sleep(SLASH_ENTER_SETTLE_SECONDS)
+        return self._staged_command(address, command, kind) is False
+
+    def _staged_command(self, address: str, command: str, kind: str) -> bool | None:
+        """Whether the typed slash command still sits in the provider's composer.
+
+        The pane must report idle/done and the composer — identified by its
+        fixed position for this provider kind, never by a prompt glyph's
+        shape — must hold exactly the typed command. A working pane, an
+        unreadable screen, or a screen with no identifiable composer is no
+        evidence at all: None, never a reason to press Enter again.
+        """
+        try:
+            detail = self._detail(address)
+            completed = self._run("read", address, "--json", "--lines", "12")
+            data = self._json(completed)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        state = detail.get("status") if isinstance(detail, dict) else None
+        if not isinstance(state, dict) or state.get("state") not in SETTLED:
+            return None
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str):
+            return None
+        staged = _composer_text(text, kind)
+        if staged is None:
+            return None
+        return staged == command
 
     def send_checked(
         self,

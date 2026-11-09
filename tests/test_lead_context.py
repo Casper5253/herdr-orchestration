@@ -37,6 +37,21 @@ def lead(tmp_path, monkeypatch):
     return c
 
 
+def _set_lead_usage(lead, tokens, when):
+    """A fresh status file at `when` carrying `tokens` of current usage."""
+    lead.status["timestamp"] = when.isoformat()
+    lead.status["context_window"]["current_usage"] = {"input_tokens": tokens}
+    lead.path.write_text(json.dumps(lead.status))
+
+
+def _confirm_compaction(lead, monkeypatch, when, tokens=20000, session="lead-sid"):
+    """Same-session compaction proof: the status file drops below the pending
+    utilisation, then `self_compacted` confirms it."""
+    monkeypatch.setattr(context, "_now", lambda: when)
+    _set_lead_usage(lead, tokens, when)
+    return lead.self_compacted("test-claude", session)
+
+
 @pytest.mark.parametrize("tokens,action", [(239999, "keep"), (240000, "self-compact"), (300000, "self-compact")])
 def test_lead_threshold_uses_tokens_and_effective_limit(lead, tokens, action):
     lead.status["context_window"]["current_usage"] = {"input_tokens": tokens}
@@ -119,7 +134,13 @@ def test_cli_session_fallback_and_herdr_precedence(lead, capsys):
     assert result["session_id"] == "lead-sid"
 
 
-def test_cli_confirmation_records_guard_and_interval(lead, capsys):
+def test_cli_confirmation_records_guard_and_interval(lead, capsys, monkeypatch):
+    lead.decide("test-claude")
+    with pytest.raises(ValueError, match="unproven"):
+        lead.self_compacted("test-claude", "lead-sid")  # telemetry did not drop
+    later = context._now() + dt.timedelta(seconds=2)
+    monkeypatch.setattr(context, "_now", lambda: later)
+    _set_lead_usage(lead, 20000, later)
     assert cli.main(["context", "self-compacted", "test-claude", "--session", "lead-sid"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "self-compacted"
     guard = json.loads(lead.guard_path.read_text())["test-claude"]
@@ -130,15 +151,21 @@ def test_cli_confirmation_records_guard_and_interval(lead, capsys):
     assert decision["reason"] == "minimum compaction interval"
 
 
-def test_confirmation_works_without_herdr_session(lead):
+def test_confirmation_works_without_herdr_session(lead, monkeypatch):
     del lead.agent["session_id"]
-    assert lead.self_compacted("test-claude", "lead-sid")["action"] == "self-compacted"
+    lead.decide("test-claude", session_id="lead-sid")
+    later = context._now() + dt.timedelta(seconds=2)
+    _confirm_compaction(lead, monkeypatch, later)
     assert lead.decide("test-claude", session_id="lead-sid")["action"] == "keep"
 
 
 def test_confirmation_preserves_worker_guard_and_leases(lead, monkeypatch):
     other = {"last_at": "2026-01-01T00:00:00+00:00", "tasks": {"work": {"count": 1}}}
     ledger._atomic_write_json(lead.guard_path, {"worker-sid": other})
+    requested = context._now() - dt.timedelta(seconds=1)
+    ledger._atomic_write_json(lead.recovery_path, {"test-claude": {
+        "session_id": "lead-sid", "utilisation": .625, "work_item": "w",
+        "at": requested.isoformat()}})
     original_write = ledger._atomic_write_json
 
     def locked_write(path, data):
@@ -146,26 +173,42 @@ def test_confirmation_preserves_worker_guard_and_leases(lead, monkeypatch):
         original_write(path, data)
 
     monkeypatch.setattr(ledger, "_atomic_write_json", locked_write)
-    lead.self_compacted("test-claude", "lead-sid")
+    later = context._now() + dt.timedelta(seconds=2)
+    _confirm_compaction(lead, monkeypatch, later)
     assert json.loads(lead.guard_path.read_text())["worker-sid"] == other
     assert not lead.ledger.leases_path.exists()
 
 
 def test_lead_max_per_task_guard_after_interval(lead, monkeypatch):
     now = context._now()
-    lead.self_compacted("test-claude", "lead-sid")
-    monkeypatch.setattr(context, "_now", lambda: now + dt.timedelta(minutes=21))
+    lead.decide("test-claude")
+    _confirm_compaction(lead, monkeypatch, now + dt.timedelta(seconds=2))
+    t2 = now + dt.timedelta(minutes=21)
+    monkeypatch.setattr(context, "_now", lambda: t2)
+    _set_lead_usage(lead, 250000, t2)
     assert lead.decide("test-claude")["action"] == "self-compact"
-    lead.self_compacted("test-claude", "lead-sid")
-    monkeypatch.setattr(context, "_now", lambda: now + dt.timedelta(minutes=42))
+    _confirm_compaction(lead, monkeypatch, t2 + dt.timedelta(seconds=2))
+    t4 = t2 + dt.timedelta(minutes=21)
+    monkeypatch.setattr(context, "_now", lambda: t4)
+    _set_lead_usage(lead, 250000, t4)
     assert lead.decide("test-claude")["reason"] == "task compaction loop guard"
 
 
 def test_lead_changed_checkpoint_objective_starts_a_new_work_item(lead, monkeypatch):
     lead.policy['context']['min_interval_min'] = 0
+    now = context._now()
     first = lead.decide('test-claude')['work_item']
-    lead.self_compacted('test-claude', 'lead-sid')
-    lead.self_compacted('test-claude', 'lead-sid')
+    t1 = now + dt.timedelta(seconds=2)
+    _confirm_compaction(lead, monkeypatch, t1)
+    t2 = t1 + dt.timedelta(seconds=2)
+    monkeypatch.setattr(context, "_now", lambda: t2)
+    _set_lead_usage(lead, 250000, t2)
+    lead.decide('test-claude')
+    t3 = t2 + dt.timedelta(seconds=2)
+    _confirm_compaction(lead, monkeypatch, t3)
+    t4 = t3 + dt.timedelta(seconds=2)
+    monkeypatch.setattr(context, "_now", lambda: t4)
+    _set_lead_usage(lead, 250000, t4)
     assert lead.decide('test-claude')['reason'] == 'task compaction loop guard'
     lead.checkpoint.write_text('## Objective\nShip the next release.\n')
     decision = lead.decide('test-claude')
@@ -192,6 +235,79 @@ def test_confirmation_rejects_wrong_session_or_provider(lead, change, sid):
     with pytest.raises(ValueError):
         lead.self_compacted("test-claude", sid)
     assert not lead.guard_path.exists()
+
+
+def test_self_compacted_binds_the_confirmation_to_the_pending_work_item(lead, monkeypatch):
+    """Round-2 review finding 2: a confirmation under a different work item is
+    refused and leaves the pending record and every guard untouched; omitting
+    --work-item confirms under the item the compaction was decided for."""
+    lead.decide("test-claude")
+    pending = json.loads(lead.recovery_path.read_text())["test-claude"]
+    later = context._now() + dt.timedelta(seconds=2)
+    monkeypatch.setattr(context, "_now", lambda: later)
+    _set_lead_usage(lead, 20000, later)
+    with pytest.raises(ValueError, match="work.item"):
+        lead.self_compacted("test-claude", "lead-sid", work_item="other-work")
+    assert json.loads(lead.recovery_path.read_text())["test-claude"] == pending
+    assert not lead.guard_path.exists()
+    confirmed = lead.self_compacted("test-claude", "lead-sid")
+    assert confirmed["action"] == "self-compacted"
+    assert confirmed["work_item"] == pending["work_item"]
+    guard = json.loads(lead.guard_path.read_text())["test-claude"]
+    assert guard["tasks"] == {pending["work_item"]: {"count": 1}}
+    assert json.loads(lead.recovery_path.read_text()).get("test-claude") is None
+
+
+def test_self_compacted_needs_the_pending_session_and_a_lower_sample(lead):
+    with pytest.raises(ValueError, match="pending"):
+        lead.self_compacted("test-claude", "lead-sid")
+    lead.decide("test-claude")
+    with pytest.raises(ValueError, match="same provider session"):
+        lead.self_compacted("test-claude", "other-session")
+    with pytest.raises(ValueError, match="unproven"):
+        lead.self_compacted("test-claude", "lead-sid")  # telemetry did not drop
+    assert json.loads(lead.recovery_path.read_text())["test-claude"]
+    assert not lead.guard_path.exists()
+
+
+@pytest.mark.parametrize("kind", ["codex", "opencode"])
+def test_decide_lead_recommends_compact_for_reset_providers(lead, monkeypatch, kind):
+    """Review finding 1: a codex or opencode lead gets /compact, never /clear."""
+    lead.agent = host.member({"name": "test-claude", "agent": kind,
+                              "agent_status": "idle",
+                              "agent_session": {"value": "lead-sid"}})
+    monkeypatch.setattr(context, "session_telemetry", lambda agent, policy: (
+        "lead-sid", {"session_id": "lead-sid", "utilisation": .9,
+                     "sampled_at": context._now().isoformat()}))
+    decision = lead.decide("test-claude")
+    assert decision["action"] == "self-compact"
+    text = json.dumps(decision["steps"])
+    assert "/compact" in text
+    assert "/clear" not in text and "/new" not in text and "<new-session-id>" not in text
+    pending = json.loads(lead.recovery_path.read_text())["test-claude"]
+    assert pending["session_id"] == "lead-sid"
+    assert pending["utilisation"] == .9
+
+
+@pytest.mark.parametrize("kind", ["codex", "opencode"])
+def test_self_compacted_confirms_same_session_lower_telemetry(lead, monkeypatch, kind):
+    """Review finding 1: confirmation accepts the same session id at lower
+    utilisation; a different id proves nothing."""
+    lead.agent = host.member({"name": "test-claude", "agent": kind,
+                              "agent_status": "idle",
+                              "agent_session": {"value": "lead-sid"}})
+    sample = {"session_id": "lead-sid", "utilisation": .9,
+              "sampled_at": context._now().isoformat()}
+    monkeypatch.setattr(context, "telemetry", lambda agent, policy: dict(sample))
+    monkeypatch.setattr(context, "session_telemetry", lambda agent, policy: ("lead-sid", dict(sample)))
+    lead.decide("test-claude")
+    with pytest.raises(ValueError, match="same provider session"):
+        lead.self_compacted("test-claude", "other-session")
+    later = context._now() + dt.timedelta(seconds=2)
+    monkeypatch.setattr(context, "_now", lambda: later)
+    sample.update(utilisation=.1, sampled_at=later.isoformat())
+    assert lead.self_compacted("test-claude", "lead-sid")["action"] == "self-compacted"
+    assert json.loads(lead.recovery_path.read_text()).get("test-claude") is None
 
 
 def test_policy_declares_lead_threshold():
