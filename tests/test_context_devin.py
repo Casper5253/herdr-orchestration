@@ -19,7 +19,7 @@ def controller(tmp_path, monkeypatch):
     cp.write_text("## Decisions\nKeep the design.\n\n## Exact errors\nNone.\n\n## Next action\nRun acceptance.\n\n## References\nDocs.\n", encoding="utf-8")
     monkeypatch.setattr(checkpoint, "validate_checkpoint", lambda *a, **kw: {"ok": True, "checkpoint": str(cp)})
     monkeypatch.setattr(checkpoint, "_run_git", lambda *a: (0, "", ""))
-    c = context.Controller(led, {"team_prefix": "dev-", "context": {"verification_timeout_seconds": 0}})
+    c = context.Controller(led, {"team_prefix": "dev-", "context": {"verification_timeout_seconds": 0, "compact_wait_seconds": 0}})
     c.agent = host.member({"name": "dev-devin", "agent": "devin", "agent_status": "idle",
                            "pane_id": "wN:p6", "cwd": str(tmp_path)})
     c.footer = "SWE-2 High · accept edits    Context: 157k / 262k tokens (59%)\n"
@@ -191,13 +191,18 @@ def test_compact_command_policy_runs_standard_compaction(controller, monkeypatch
 
     def send_checked(name, text, **kwargs):
         controller.calls.append((name, text, kwargs))
-        if text == "/compact":
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
+
+    def send_slash(member, command):
+        controller.calls.append((member["name"], command, {}))
+        if command == "/compact":
             lease = json.loads(controller.ledger.leases_path.read_text())["sessions"]["devin-pane:wN:p6"]
             assert lease["state"] == "compacting"
             controller.footer = "Context: 40k / 262k tokens (15%)\n"
-        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
+        return True
 
     monkeypatch.setattr(context, "_send_checked", send_checked)
+    monkeypatch.setattr(context, "_send_slash", send_slash)
     monkeypatch.setattr(context, "_herdr_read", read)
 
     result = controller.compact("dev-devin")
@@ -222,11 +227,16 @@ def test_compact_command_applies_to_devin_only(controller, monkeypatch):
 
     def send_checked(name, text, **kwargs):
         controller.calls.append((name, text, kwargs))
-        if text == "/compact":
-            controller.sample.update(utilisation=.2, sampled_at=context._now().isoformat())
         return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
 
+    def send_slash(member, command):
+        controller.calls.append((member["name"], command, {}))
+        if command == "/compact":
+            controller.sample.update(utilisation=.2, sampled_at=context._now().isoformat())
+        return True
+
     monkeypatch.setattr(context, "_send_checked", send_checked)
+    monkeypatch.setattr(context, "_send_slash", send_slash)
 
     result = controller.compact("dev-devin")
     assert result["action"] == "compacted"

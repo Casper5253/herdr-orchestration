@@ -24,7 +24,7 @@ def controller(tmp_path, monkeypatch):
     cp.write_text("## Decisions\nKeep the design.\n\n## Exact errors\nNone.\n\n## Next action\nRun acceptance.\n\n## References\nDocs.\n", encoding="utf-8")
     monkeypatch.setattr(checkpoint, "validate_checkpoint", lambda *a, **kw: {"ok": True, "checkpoint": str(cp)})
     monkeypatch.setattr(checkpoint, "_run_git", lambda *a: (0, "", ""))
-    c = context.Controller(led, {"context": {"verification_timeout_seconds": 0}})
+    c = context.Controller(led, {"context": {"verification_timeout_seconds": 0, "compact_wait_seconds": 0}})
     c.agent = host.member({"name": "hx-codex", "agent": "codex", "agent_status": "idle",
                            "agent_session": {"value": "sid"}, "cwd": str(tmp_path)})
     c.calls = []
@@ -35,13 +35,18 @@ def controller(tmp_path, monkeypatch):
 
     def send_checked(name, text, **kwargs):
         c.calls.append((name, text, kwargs))
-        if text == "/compact":
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
+
+    def send_slash(member, command):
+        c.calls.append((member["name"], command, {}))
+        if command == "/compact":
             lease = json.loads(led.leases_path.read_text())["sessions"]["sid"]
             assert lease["state"] == "compacting"
             c.sample.update(utilisation=.2, sampled_at=context._now().isoformat())
-        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
+        return True
 
     monkeypatch.setattr(context, "_send_checked", send_checked)
+    monkeypatch.setattr(context, "_send_slash", send_slash)
     # The pane read returns plain text, not JSON.
     monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: (
         json.loads(led.leases_path.read_text())["sessions"]["sid"]["token"] + " Run acceptance."))
@@ -279,9 +284,7 @@ def test_busy_immediately_before_send_rejected(controller, monkeypatch):
 
 
 def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
-    def timeout(name, text, **kwargs):
-        return {"started": True, "status": "unknown", "turn": None, "ended": False, "reason": "timeout"}
-    monkeypatch.setattr(context, "_send_checked", timeout)
+    monkeypatch.setattr(context, "_send_slash", lambda member, command: False)
     monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: "")
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
     assert "leased" in controller.decide("hx-codex")["reason"]
@@ -296,11 +299,10 @@ def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
 
 @pytest.mark.parametrize("failure", ["session", "telemetry-session", "stale", "unchanged", "ack"])
 def test_unverified_completion_is_unknown(controller, monkeypatch, failure):
-    original = context._send_checked
-    def send_checked(name, text, **kwargs):
-        before = dict(controller.sample)
-        result = original(name, text, **kwargs)
-        if text == "/compact":
+    before = dict(controller.sample)
+
+    def send_slash(member, command):
+        if command == "/compact":
             if failure == "session":
                 controller.agent["session_id"] = "new"
             elif failure == "telemetry-session":
@@ -309,8 +311,8 @@ def test_unverified_completion_is_unknown(controller, monkeypatch, failure):
                 controller.sample["sampled_at"] = before["sampled_at"]
             elif failure == "unchanged":
                 controller.sample["utilisation"] = .7
-        return result
-    monkeypatch.setattr(context, "_send_checked", send_checked)
+        return True
+    monkeypatch.setattr(context, "_send_slash", send_slash)
 
     def read(name, lines=60):
         if failure == "ack":
@@ -459,8 +461,17 @@ def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeyp
             return {"started": True, "status": "unknown", "turn": None, "ended": False, "reason": "timeout"}
         return original_send(name, text, **kwargs)
 
+    def send_slash(member, command):
+        assert not led.leases_lock_path.exists(), "the host must run outside the shared lock"
+        assert not led.lock_path.exists(), "the host must run outside the repo lock"
+        if outcome == "timeout":
+            return False
+        return original_send_slash(member, command)
+
+    original_send_slash = context._send_slash
     monkeypatch.setattr(led, "_load_leases", load_leases)
     monkeypatch.setattr(context, "_send_checked", send_checked)
+    monkeypatch.setattr(context, "_send_slash", send_slash)
 
     def read(name, lines=60):
         assert not led.leases_lock_path.exists(), "the host must run outside the shared lock"
@@ -567,3 +578,30 @@ def test_herdr_read_window_includes_long_wrapped_acknowledgement(monkeypatch):
 
     assert requested[0] > 60
     assert context._has_acknowledgement(reply, expected)
+
+
+def test_compaction_waits_for_the_post_send_settle(controller, monkeypatch):
+    """Finding: a worker busy 20s must compact under compact_wait_seconds, not
+    die compact-unknown at the 10s verification cap."""
+    t = [0.0]
+    monkeypatch.setattr(context.time, "monotonic", lambda: t[0])
+    monkeypatch.setattr(context.time, "sleep", lambda s: t.__setitem__(0, t[0] + s))
+    controller.policy["context"]["compact_wait_seconds"] = 300
+    controller.policy["context"]["verification_timeout_seconds"] = 10
+
+    def send_slash(member, command):
+        controller.calls.append((member["name"], command))
+        controller.agent["status"] = "working"  # the compaction turn starts
+        return True
+    monkeypatch.setattr(context, "_send_slash", send_slash)
+
+    def info(name):
+        if t[0] >= 20:
+            controller.agent["status"] = "idle"
+            controller.sample.update(utilisation=.2, sampled_at=context._now().isoformat())
+        return copy.deepcopy(controller.agent)
+    monkeypatch.setattr(context, "agent_info", info)
+
+    result = controller.compact("hx-codex")
+    assert result["action"] == "compacted"
+    assert t[0] < 300

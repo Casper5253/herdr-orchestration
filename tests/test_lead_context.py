@@ -122,7 +122,7 @@ def test_cli_session_fallback_and_herdr_precedence(lead, capsys):
 def test_cli_confirmation_records_guard_and_interval(lead, capsys):
     assert cli.main(["context", "self-compacted", "test-claude", "--session", "lead-sid"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "self-compacted"
-    guard = json.loads(lead.guard_path.read_text())["lead-sid"]
+    guard = json.loads(lead.guard_path.read_text())["test-claude"]
     assert guard["tasks"][lead._lead_work_item(None, None)]["count"] == 1
     assert context._timestamp(guard["last_at"]) is not None
     decision = lead.decide("test-claude")

@@ -27,11 +27,12 @@ def _member(
     session_reason: str | None = None,
     cwd: str = "repo",
     focused: bool | None = None,
+    turn: int | None = None,
 ) -> host.Member:
     return host.Member(
         name=name, team=team, role=role, kind=kind, status=status,
         cwd=cwd, address=address, session_id=session_id,
-        session_reason=session_reason, focused=focused,
+        session_reason=session_reason, focused=focused, turn=turn,
     )
 
 
@@ -80,6 +81,7 @@ class MinimalHost:
         until: tuple[str, ...] = (), timeout_ms: int | None = None,
     ) -> host.SendResult:
         self.checked.append((name, text, wait, until, timeout_ms))
+        self.info(name)["turn"] = 2  # the receiver takes its next turn
         return host.SendResult(
             started=True, status="working", turn=1, ended=wait, reason=None)
 
@@ -123,7 +125,7 @@ def test_all_members_parses_a_subprocess_roster(monkeypatch):
     assert calls == [(["herdr", "agent", "list"], {"stderr": subprocess.DEVNULL, "timeout": 30})]
     assert members[0] == _member(
         "dev-devin", role="devin", kind="devin", address="t12",
-        session_id="s1", session_reason="agent_session", cwd="C:\\work", focused=True)
+        session_id="s1", session_reason="agent_session", cwd="C:\\work", focused=True, turn=None)
     assert members[1]["kind"] == "unknown"
     assert members[1]["status"] == "working"
     assert members[1]["address"] == "t20"

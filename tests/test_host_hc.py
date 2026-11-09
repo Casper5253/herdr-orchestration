@@ -84,6 +84,7 @@ class FakeHc:
         self.read_fail = False
         self.keys_fail = False
         self.timeout_send = False
+        self.advance = True
 
     def _lookup(self, target: str) -> str | None:
         if target in self.terminals:
@@ -117,6 +118,10 @@ class FakeHc:
                 "started": True, "status": "working", "turn": 1, "wait": None}
             if not isinstance(reply, dict) or "error" not in reply:
                 self.sent.append((address, argv[3]))
+                if self.advance and isinstance(reply, dict):
+                    # The receiver takes its next turn: hc get turn outranks the
+                    # send-turn, which is the only submission proof.
+                    self.terminals[address]["turn"] = (reply.get("turn") or 0) + 1
             return _completed(json.dumps(reply))
         if command == "read":
             if self._lookup(argv[2]) is None:
@@ -313,10 +318,10 @@ def test_authorization_uses_the_sender_team_label_not_the_joined_name(
 def test_outbox_keys_do_not_collide_for_ambiguous_joined_names() -> None:
     left = host.Member(name="dev-foo-bar", team="dev-foo", role="bar", kind="codex",
                       status="idle", cwd="", address="a", session_id=None,
-                      session_reason=None, focused=None)
+                      session_reason=None, focused=None, turn=None)
     right = host.Member(name="dev-foo-bar", team="dev", role="foo-bar", kind="codex",
                        status="idle", cwd="", address="b", session_id=None,
-                       session_reason=None, focused=None)
+                       session_reason=None, focused=None, turn=None)
     assert left["name"] == right["name"]
     assert say._sender_key(left) != say._sender_key(right)
     assert say._outbox_dir(say._sender_key(left)).name == "dev-foo__bar"
@@ -470,13 +475,14 @@ def test_pending_retry_after_recovery_delivers(fake: FakeHc, tmp_path: Path) -> 
 
 
 def test_pending_retry_refuses_a_target_that_left_the_team(fake: FakeHc, tmp_path: Path) -> None:
+    """A record whose target is no longer on the team resolves once, undeliverable."""
     path = _pending_record(fake, tmp_path)
     fake.terminals["t1"]["labels"] = {"team": "other", "role": "claude"}
     fake.terminals["t1"]["status"] = {"app": "claude-code", "state": "idle"}
     assert main(["say", "--pending"]) == 1
     assert fake.sent == []
     record = json.loads(path.read_text(encoding="utf-8"))
-    assert record["state"] == "pending"
+    assert record["state"] == "failed"
 
 
 def test_pending_retry_rechecks_blocked(fake: FakeHc, tmp_path: Path) -> None:
@@ -612,10 +618,11 @@ def test_the_claim_is_held_through_the_outcome_write(
     assert seen == ["busy"]
 
 
-def test_a_short_message_with_no_started_signal_is_delivered(fake: FakeHc, tmp_path: Path) -> None:
+def test_a_short_message_with_no_turn_advance_is_uncertain(fake: FakeHc, tmp_path: Path) -> None:
+    fake.advance = False
     fake.replies = [{"started": None, "status": None, "turn": 1, "wait": None}]
-    assert main(["say", "claude", "ping"]) == 0
-    assert json.loads(_outbox(tmp_path)[0].read_text(encoding="utf-8"))["state"] == "delivered"
+    assert main(["say", "claude", "ping"]) == 1
+    assert json.loads(_outbox(tmp_path)[0].read_text(encoding="utf-8"))["state"] == "uncertain"
 
 
 def test_an_uncertain_delivery_is_never_replayed(fake: FakeHc, tmp_path: Path) -> None:

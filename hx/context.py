@@ -112,6 +112,11 @@ def _send_checked(name: str, text: str, *, wait: bool = False,
     return _detect().send_checked(name, text, wait=wait, until=until, timeout_ms=timeout_ms)
 
 
+def _send_slash(member: host.Member, command: str) -> bool:
+    """Type a slash command as keys through the host; the one native-reset transport."""
+    return _detect().send_slash(member, command)
+
+
 def agent_info(name: str) -> host.Member:
     return _detect().info(name)
 
@@ -368,6 +373,7 @@ class Controller:
         self.ledger = led if led is not None else ledger.default_ledger()
         self.policy = policy if policy is not None else usage.load_policy()
         self.guard_path = Path(os.environ.get("HX_COMPACT_GUARD_PATH", self.ledger.leases_path.parent / "compact-guard.json"))
+        self.recovery_path = self.ledger.leases_path.parent / "lead-recovery.json"
         self.resets_path = default_resets_path(self.ledger.leases_path)
         self.boundary_path = self.ledger.repo_root / ".hx" / "context-boundaries.jsonl"
 
@@ -389,10 +395,67 @@ class Controller:
                 f"no reset command is configured for {agent.get('kind')}; "
                 f"send the reset yourself and record it with hx boundary {name} --reset-sent")
         sid = session_id or _session(agent)
-        sent = _send_checked(name, command, timeout_ms=60000)
-        if sent["started"] is not True or sent["reason"]:
-            raise RuntimeError(sent["reason"] or "host did not send the reset")
-        return {"action": "reset-sent", "command": command, **write_reset(self.resets_path, name, sid)}
+        hold = f"reset:{name}"
+
+        def reserve(leases: dict[str, Any]) -> dict[str, Any]:
+            entry = leases.setdefault("sessions", {}).get(hold)
+            if isinstance(entry, dict):
+                observed = _session(agent)
+                if (entry.get("state") == "reset-unknown" and observed
+                        and observed != entry.get("session_id")):
+                    del leases["sessions"][hold]
+                    return {"action": "verified", "session_id": observed,
+                            "from_sid": entry.get("session_id")}
+                return {"action": "blocked"}
+            leases["sessions"][hold] = {
+                "agent": name, "state": "resetting", "reset_of": name,
+                "session_id": sid, "requested_at": _now().isoformat()}
+            return {"action": "reserved"}
+
+        verdict = self.ledger.mutate_leases(reserve)
+        if verdict["action"] == "verified":
+            return {"action": "reset-verified", "command": command,
+                    "new_session_id": verdict["session_id"],
+                    **write_reset(self.resets_path, name, verdict.get("from_sid") or sid)}
+        if verdict["action"] == "blocked":
+            raise RuntimeError(
+                f"a reset for {name} is still unverified; its reservation blocks another send")
+        try:
+            accepted = _send_slash(agent, command)
+        except Exception:
+            accepted = False
+        if not accepted:
+            def fail(leases: dict[str, Any]) -> None:
+                entry = leases.get("sessions", {}).get(hold)
+                if isinstance(entry, dict):
+                    entry["state"] = "reset-unknown"
+            self.ledger.mutate_leases(fail)
+            raise RuntimeError("host did not accept the reset keys")
+        # Proof of reset is a new provider session id through the binding, not the
+        # key call's exit code; without it the outcome is unknown, not "sent".
+        deadline = time.monotonic() + float(
+            self.policy.get("context", {}).get("verification_timeout_seconds", 10))
+        new_sid = ""
+        while time.monotonic() < deadline:
+            current = self._agent(name)
+            observed = _session(current)
+            if observed and observed != sid:
+                new_sid = observed
+                break
+            time.sleep(0.25)
+
+        def finish(leases: dict[str, Any]) -> None:
+            sessions = leases.setdefault("sessions", {})
+            if new_sid:
+                sessions.pop(hold, None)
+            elif isinstance(sessions.get(hold), dict):
+                sessions[hold]["state"] = "reset-unknown"
+
+        self.ledger.mutate_leases(finish)
+        if not new_sid:
+            raise RuntimeError("reset keys went out but no new provider session was observed; outcome unknown")
+        return {"action": "reset-verified", "command": command,
+                "new_session_id": new_sid, **write_reset(self.resets_path, name, sid)}
 
     def boundary(self, name: str, task_id: str | None = None, *,
                  work_item: str | None = None, session_id: str | None = None,
@@ -513,53 +576,90 @@ class Controller:
     def _decide_lead(self, result: dict[str, Any], agent: host.Member, session_id: str | None,
                      task_id: str | None, work_item: str | None) -> dict[str, Any]:
         name = result["agent"]
+        kind = agent.get("kind")
+        # The lead seat can be any family; each has its own in-place command.
+        lead_commands = {"claude": "/compact", "codex": "/clear", "opencode": "/new"}
+        if kind == "devin":
+            raise ValueError(
+                "a Devin lead cannot be reset in place; restart its pane and hand "
+                "the seat back with team\\Set-HerdrLead.ps1")
+        lead_command = lead_commands.get(str(kind))
+        if not lead_command:
+            raise ValueError(f"no verified in-place recovery for a {kind} lead")
         sid = _session(agent) or session_id or ""
-        sample = _lead_telemetry(sid, self.policy)
-        result.update(session_id=sid, telemetry=sample)
+        sample = (_lead_telemetry(sid, self.policy) if kind == "claude"
+                  else session_telemetry(agent, self.policy)[1])
+        result.update(session_id=sid, telemetry=sample, agent_kind=kind)
         result.setdefault("task_id", "lead")
         if not sid:
-            raise ValueError("Claude session id unavailable from Herdr; pass --session <claude-session-id>")
+            raise ValueError("provider session id unavailable; pass --session <session-id>")
         if not _fresh(sample, sid, _now()):
             raise _UnknownContext("session telemetry unknown or stale")
         item = self._lead_work_item(task_id, work_item)
         result["work_item"] = item
         with self.ledger._leases_lock():
-            guard = (ledger._load_json(self.guard_path) or {}).get(sid, {})
+            guard = (ledger._load_json(self.guard_path) or {}).get(name, {})
             task_guard = guard.get("tasks", {}).get(item, {})
             if task_guard.get("failed") or task_guard.get("count", 0) >= self.policy.get("context", {}).get("max_per_task", 2):
                 raise ValueError("task compaction loop guard")
             last = _timestamp(guard.get("last_at"))
             if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
                 raise _DeferredContext("minimum compaction interval")
-        if sample["utilisation"] < self.policy.get("context", {}).get("claude_lead_threshold", 0.6):
-            raise _RetainContext("below Claude lead threshold")
+        threshold = self.policy.get("context", {}).get(
+            "claude_lead_threshold" if kind == "claude" else "pressure_threshold", 0.6)
+        if sample["utilisation"] < threshold:
+            raise _RetainContext("below lead recovery threshold")
+        if kind != "claude":
+            # Reset providers change their session id; self-compacted must
+            # prove the old session is gone before it records the cooldown.
+            # Written only once the decision survives every refusal check.
+            with self.ledger._leases_lock():
+                pending = ledger._load_json(self.recovery_path) or {}
+                pending[name] = {"from_sid": sid, "work_item": item, "at": _now().isoformat()}
+                ledger._atomic_write_json(self.recovery_path, pending)
         quoted_name = "'" + name.replace("'", "''") + "'"
         quoted_sid = "'" + sid.replace("'", "''") + "'"
         quoted_item = "'" + item.replace("'", "''") + "'"
-        command = f"Start-Sleep 60; {host.prompt_command(quoted_name, '/compact')}"
+        # hc keys through the resolved executable: a typed slash command, never a
+        # standalone herdr or a wrapped hc send (which the provider cannot run).
+        command = f"Start-Sleep 60; {host.prompt_command(quoted_name, lead_command)}"
         background = "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '" + command.replace("'", "''") + "'"
-        result.update(action="self-compact", reason="Claude lead above threshold; compact at the next turn boundary", steps=[
+        result.update(action="self-compact", reason=f"{kind} lead above threshold; {lead_command} at the next turn boundary", steps=[
             f"hx checkpoint write lead --owner {quoted_name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
             background,
             "End the turn so the background /compact prompt can reach the idle pane.",
-            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid} --work-item {quoted_item}",
+            f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid if kind == 'claude' else '<new-session-id>'} --work-item {quoted_item}",
         ])
         return result
 
     def self_compacted(self, name: str, session_id: str, work_item: str | None = None) -> dict[str, Any]:
         agent = self._agent(name)
-        if not self._is_lead(name) or agent.get("kind") != "claude":
-            raise ValueError("self-compacted requires a Claude lead")
-        if not session_id or (_session(agent) and _session(agent) != session_id):
-            raise ValueError("--session must identify the current Claude session")
+        kind = agent.get("kind")
+        if not self._is_lead(name) or kind not in ("claude", "codex", "opencode"):
+            raise ValueError("self-compacted requires a lead with an in-place recovery")
+        live_sid = _session(agent)
+        if kind == "claude":
+            if not session_id or (live_sid and live_sid != session_id):
+                raise ValueError("--session must identify the current Claude session")
+        else:
+            pending = (ledger._load_json(self.recovery_path) or {}).get(name)
+            if not isinstance(pending, dict):
+                raise ValueError("no reset recovery is pending for this lead")
+            if (not session_id or session_id == pending.get("from_sid")
+                    or (live_sid and live_sid != session_id)):
+                raise ValueError("--session must name the new provider session after the reset")
         item = self._lead_work_item(None, work_item)
         with self.ledger._leases_lock():
             guards = ledger._load_json(self.guard_path) or {}
-            guard = guards.setdefault(session_id, {"tasks": {}})
+            guard = guards.setdefault(name, {"tasks": {}})
             task_guard = guard.setdefault("tasks", {}).setdefault(item, {"count": 0})
             task_guard["count"] += 1
             guard["last_at"] = _now().isoformat()
             ledger._atomic_write_json(self.guard_path, guards)
+            if kind != "claude":
+                remaining = ledger._load_json(self.recovery_path) or {}
+                remaining.pop(name, None)
+                ledger._atomic_write_json(self.recovery_path, remaining)
         return {"action": "self-compacted", "agent": name, "session_id": session_id, "task_id": "lead", "work_item": item}
 
     def decide(self, name: str, task_id: str | None = None, related: bool = False,
@@ -577,8 +677,6 @@ class Controller:
         try:
             agent = self._agent(name)
             if self._is_lead(name):
-                if agent.get("kind") != "claude":
-                    raise ValueError("lead self-compaction supports a Claude lead only")
                 return self._decide_lead(result, agent, session_id, task_id, work_item)
             sid, sample = session_telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("kind"))
@@ -743,12 +841,39 @@ class Controller:
             if _session(current) != sid or current.get("status") not in READY:
                 raise ValueError("session changed or agent became busy immediately before send")
             submitted = True
-            compact_command = self._devin_compact_command() if current.get("kind") == "devin" else None
-            sent = _send_checked(name, compact_command or "/compact", wait=True,
-                                 until=("idle", "done"), timeout_ms=300000)
-            if not sent["ended"]:
-                raise RuntimeError(sent["reason"] or "host did not confirm the compaction turn ended")
-            deadline = time.monotonic() + self.policy.get("context", {}).get("verification_timeout_seconds", 10)
+            compact_command = self._devin_compact_command() if current.get("kind") == "devin" else "/compact"
+            # Slash commands run only as typed keys; `hc send` wraps them so the
+            # provider never sees a real /compact.
+            sent_turn = current.get("turn")
+            if not _send_slash(current, compact_command):
+                raise RuntimeError("host did not accept the compaction keys")
+            settle_deadline = time.monotonic() + float(
+                self.policy.get("context", {}).get("compact_wait_seconds", 300))
+            # The turn must actually start: status leaves READY or the turn
+            # advances. Members with no turn counter cannot prove a start, so
+            # the telemetry verification below stays the arbiter for them.
+            if isinstance(sent_turn, int) and not isinstance(sent_turn, bool):
+                while True:
+                    current = self._agent(name)
+                    if _session(current) != sid:
+                        raise ValueError("session changed during compaction")
+                    if (current.get("status") not in READY
+                            or (isinstance(current.get("turn"), int)
+                                and current["turn"] > sent_turn)):
+                        break
+                    if time.monotonic() >= settle_deadline:
+                        raise RuntimeError("compaction turn never started")
+                    time.sleep(0.5)
+            while current.get("status") not in READY:
+                after = telemetry(current, self.policy)
+                if (_session(current) == sid and _fresh(after, sid, _now())
+                        and after["utilisation"] < before["utilisation"]):
+                    break  # finished between polls without a visible turn bump
+                if time.monotonic() >= settle_deadline:
+                    raise RuntimeError("compaction turn did not end before timeout")
+                time.sleep(0.5)
+                current = self._agent(name)
+            deadline = settle_deadline
             while True:
                 current = self._agent(name)
                 after = telemetry(current, self.policy)
@@ -760,7 +885,8 @@ class Controller:
                     raise ValueError("compaction completion not verified in same session with lower fresh telemetry")
                 time.sleep(.25)
             next_action = checkpoint._extract_section(text, "Next action")
-            message = f"[team from {usage.team_prefix(self.policy)}claude] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
+            lead = usage.lead_name(self.policy, usage.team_prefix(self.policy))
+            message = f"[team from {lead}] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
             sent = _send_checked(name, message, wait=True, until=("idle", "done"), timeout_ms=300000)
             if not sent["ended"]:
                 raise RuntimeError(sent["reason"] or "host did not confirm the acknowledgement turn ended")
@@ -781,13 +907,25 @@ class Controller:
         sample = telemetry(agent, self.policy)
 
         def recover(leases: dict[str, Any]) -> dict[str, Any]:
-            lease = leases.get("sessions", {}).get(sid)
-            if not lease or lease.get("agent") != name or lease.get("state") != "compact-unknown":
-                return {"action": "keep", "reason": "no matching unknown compaction"}
-            requested = _timestamp(lease.get("requested_at"))
-            if not requested or agent.get("status") not in READY or not _fresh(sample, sid, _now(), after=requested):
-                return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
-            del leases["sessions"][sid]
-            return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}
+            sessions = leases.get("sessions", {})
+            lease = sessions.get(sid)
+            if lease and lease.get("agent") == name and lease.get("state") == "compact-unknown":
+                requested = _timestamp(lease.get("requested_at"))
+                if not requested or agent.get("status") not in READY or not _fresh(sample, sid, _now(), after=requested):
+                    return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
+                del sessions[sid]
+                return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}
+            reset_hold = sessions.get(f"reset:{name}")
+            if isinstance(reset_hold, dict) and reset_hold.get("state") == "reset-unknown":
+                held_sid = reset_hold.get("session_id")
+                # The session moved on: the reset provably ran — or the agent is
+                # idle on the same session: the send never landed. Both are safe
+                # to release; a busy agent keeps the reservation.
+                if sid != held_sid or agent.get("status") in READY:
+                    del sessions[f"reset:{name}"]
+                    return {"action": "recovered", "session_id": sid,
+                            "reason": "reset reservation released"}
+                return {"action": "keep", "reason": "reset outcome still unverified"}
+            return {"action": "keep", "reason": "no matching unknown outcome"}
 
         return self.ledger.mutate_leases(recover)

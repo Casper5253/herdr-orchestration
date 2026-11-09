@@ -87,6 +87,7 @@ class Member(TypedDict):
     session_id: str | None
     session_reason: str | None
     focused: bool | None
+    turn: int | None
 
 
 class SendResult(TypedDict):
@@ -124,6 +125,8 @@ class Host(Protocol):
 
     def send_slash(self, member: Member | str, command: str) -> bool: ...
 
+    def press(self, member: Member | str, *keys: str) -> bool: ...
+
 
 def _split_name(name: str) -> tuple[str, str]:
     head, sep, role = name.rpartition("-")
@@ -152,6 +155,8 @@ def member(raw: dict[str, Any]) -> Member:
         session_id=session,
         session_reason="agent_session" if session else "no agent_session reported",
         focused=focused if isinstance(focused, bool) else None,
+        turn=raw.get("turn") if isinstance(raw.get("turn"), int)
+            and not isinstance(raw.get("turn"), bool) else None,
     )
 
 
@@ -248,6 +253,10 @@ class HerdrHost:
         """A native prompt carries the slash command on the standalone host."""
         name = str(member["name"]) if isinstance(member, dict) else member
         return self.send(name, command) == 0
+
+    def press(self, member: Member | str, *keys: str) -> bool:
+        # The standalone herdr CLI has no key-press transport.
+        return False
 
     def send_checked(
         self,
@@ -528,6 +537,8 @@ def hc_member(raw: dict[str, Any], *, parents: dict[int, int] | None = None) -> 
         session_id=session,
         session_reason=session_reason,
         focused=None,
+        turn=raw.get("turn") if isinstance(raw.get("turn"), int)
+            and not isinstance(raw.get("turn"), bool) else None,
     )
 
 
@@ -721,6 +732,21 @@ class HcHost:
     def send(self, name: str, text: str) -> int:
         return self._run("send", self._send_address(name), text, timeout=60).returncode
 
+    def press(self, member: Member | str, *keys: str) -> bool:
+        """Press `keys` in the member's terminal via the resolved `hc` path.
+
+        `hc keys <address> <key names...>` types them exactly; True only when
+        the key call was accepted. Resolution failures are SendNotAttempted:
+        nothing was pressed.
+        """
+        if isinstance(member, dict):
+            address = str(member.get("address") or "")
+            if not address:
+                raise SendNotAttempted("the member's terminal has no address")
+        else:
+            address = self._send_address(member)
+        return self._run("keys", address, *keys, timeout=30).returncode == 0
+
     def send_slash(self, member: Member | str, command: str) -> bool:
         """Type a slash command into the member's terminal as keys, then Enter.
 
@@ -730,16 +756,7 @@ class HcHost:
         """
         if not command.startswith("/"):
             raise ValueError("send_slash types slash commands like /compact or /clear")
-        if isinstance(member, dict):
-            address = str(member.get("address") or "")
-            if not address:
-                raise SendNotAttempted("the member's terminal has no address")
-        else:
-            address = self._send_address(member)
-        pressed = self._run("keys", address, *command, timeout=30)
-        if pressed.returncode != 0:
-            return False
-        return self._run("keys", address, "enter", timeout=30).returncode == 0
+        return self.press(member, *command) and self.press(member, "enter")
 
     def send_checked(
         self,

@@ -141,17 +141,36 @@ def test_fake_reset_holds_again_after_the_grace_window(pane, capsys, monkeypatch
     assert '299%' in capsys.readouterr().err
 
 
-def test_hx_reset_sends_new_then_records_it(pane, capsys):
+def test_hx_reset_sends_new_then_records_it(pane, capsys, monkeypatch):
     agent, append, sent = pane
     append('old', 598000)
+    slashes = []
+
+    def send_slash(member, command):
+        slashes.append((member["name"], command))
+        agent["session_id"] = "new"
+        return True
+    monkeypatch.setattr(context, "_send_slash", send_slash)
+
     assert cli.main(['reset', 'dev-opencode']) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result['action'] == 'reset-sent'
+    assert result['action'] == 'reset-verified'
     assert result['command'] == '/new'
-    assert result['session_id'] == 'old'
-    assert sent == [['herdr', 'agent', 'prompt', 'dev-opencode', '/new']]
+    assert result['session_id'] == 'old' and result['new_session_id'] == 'new'
+    assert slashes == [('dev-opencode', '/new')]
+    assert sent == []
     assert cli.main(['say', 'opencode', 'first message of the new session']) == 0
-    assert len(sent) == 2
+    assert len(sent) == 1
+
+
+def test_hx_reset_without_a_new_session_is_unknown(pane, capsys, monkeypatch):
+    agent, append, sent = pane
+    append('old', 598000)
+    monkeypatch.setattr(context, "_send_slash", lambda member, command: True)
+    monkeypatch.setattr(
+        context, "_now", lambda: context.dt.datetime.now(context.dt.timezone.utc))
+    assert cli.main(['reset', 'dev-opencode']) == 1
+    assert 'no new provider session' in capsys.readouterr().err
 
 
 def test_hx_reset_refuses_a_busy_agent(pane, capsys):
@@ -160,3 +179,96 @@ def test_hx_reset_refuses_a_busy_agent(pane, capsys):
     assert cli.main(['reset', 'dev-opencode']) == 1
     assert sent == []
     assert 'not idle' in capsys.readouterr().err
+
+
+def test_unverified_reset_keeps_reservation_and_blocks_resend(pane, capsys, monkeypatch, tmp_path):
+    agent, append, sent = pane
+    append('old', 598000)
+    slashes = []
+    monkeypatch.setattr(context, "_send_slash",
+                        lambda member, command: slashes.append(command) or True)
+    leases_path = tmp_path / 'leases.json'
+
+    assert cli.main(['reset', 'dev-opencode']) == 1
+    assert 'no new provider session' in capsys.readouterr().err
+    # The durable unknown outcome keeps its reservation.
+    leases = json.loads(leases_path.read_text())
+    hold = leases["sessions"].get("reset:dev-opencode")
+    assert hold is not None and hold["state"] == "reset-unknown"
+    assert hold["session_id"] == "old"
+    # A second call must not send keys again while the outcome is unknown.
+    assert cli.main(['reset', 'dev-opencode']) == 1
+    assert 'still unverified' in capsys.readouterr().err
+    assert len(slashes) == 1
+    # Once the provider session changes, the hold resolves instead of blocking.
+    agent['session_id'] = 'new'
+    assert cli.main(['reset', 'dev-opencode']) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "reset-verified"
+    assert "reset:dev-opencode" not in json.loads(leases_path.read_text())["sessions"]
+
+
+def test_self_compacted_accepts_reset_providers_with_the_new_session(tmp_path, monkeypatch):
+    led = ledger.Ledger(repo_root=tmp_path, ledger_path=tmp_path / 'ledger.json',
+                        lock_path=tmp_path / 'lock', leases_path=tmp_path / 'leases.json')
+    controller = context.Controller(led, {"team_prefix": "dev-", "lead_role": "lead"})
+    member = host.member({"name": "dev-lead", "agent": "codex",
+                          "agent_status": "idle",
+                          "agent_session": {"value": "new"},
+                          "pane_id": "t23", "cwd": str(tmp_path)})
+    monkeypatch.setattr(context, "agent_info", lambda name: dict(member))
+    pending = tmp_path / 'lead-recovery.json'
+    pending.write_text(json.dumps({"dev-lead": {"from_sid": "old",
+                                                "work_item": "w1",
+                                                "at": context._now().isoformat()}}),
+                       encoding="utf-8")
+    # The old session id is refused: it proves nothing about the reset.
+    with pytest.raises(ValueError, match="new provider session"):
+        controller.self_compacted("dev-lead", "old", work_item="w1")
+    assert json.loads(pending.read_text()).get("dev-lead")
+    # The new id completes the confirmation and clears the pending record.
+    assert controller.self_compacted("dev-lead", "new", work_item="w1")["action"] == "self-compacted"
+    assert json.loads(pending.read_text()).get("dev-lead") is None
+    # Without a pending reset recovery there is nothing to confirm.
+    with pytest.raises(ValueError, match="pending"):
+        controller.self_compacted("dev-lead", "newer", work_item="w1")
+    # Devin still cannot be reset in place.
+    member["kind"] = "devin"
+    with pytest.raises(ValueError, match="in-place recovery"):
+        controller.self_compacted("dev-lead", "new", work_item="w1")
+
+
+def test_a_failed_reset_send_marks_the_hold_recoverable(pane, capsys, monkeypatch, tmp_path):
+    agent, append, sent = pane
+    append('old', 598000)
+    monkeypatch.setattr(context, "_send_slash", lambda member, command: False)
+    leases_path = tmp_path / 'leases.json'
+
+    assert cli.main(['reset', 'dev-opencode']) == 1
+    assert 'did not accept' in capsys.readouterr().err
+    hold = json.loads(leases_path.read_text())["sessions"].get("reset:dev-opencode")
+    assert hold is not None and hold["state"] == "reset-unknown"
+
+    # recover releases a dead-send hold: idle agent, session unchanged.
+    out = cli.context.Controller().recover("dev-opencode")
+    assert out["action"] == "recovered"
+    assert "reset:dev-opencode" not in json.loads(leases_path.read_text())["sessions"]
+
+
+def test_refused_lead_decide_writes_no_pending_recovery(tmp_path, monkeypatch):
+    led = ledger.Ledger(repo_root=tmp_path, ledger_path=tmp_path / 'ledger.json',
+                        lock_path=tmp_path / 'lock', leases_path=tmp_path / 'leases.json')
+    controller = context.Controller(led, {"team_prefix": "dev-", "lead_role": "lead"})
+    member = host.member({"name": "dev-lead", "agent": "codex",
+                          "agent_status": "idle",
+                          "agent_session": {"value": "old"},
+                          "pane_id": "t23", "cwd": str(tmp_path)})
+    monkeypatch.setattr(context, "agent_info", lambda name: dict(member))
+    monkeypatch.setattr(context, "telemetry",
+                        lambda agent, policy: {"session_id": "old", "utilisation": .3,
+                                               "sampled_at": context._now().isoformat()})
+    try:
+        controller._decide_lead({"agent": "dev-lead"}, member, "old", None, "w1")
+    except Exception as exc:
+        assert "threshold" in str(exc) or "Retain" in type(exc).__name__
+    pending = controller.recovery_path
+    assert not pending.exists() or "dev-lead" not in json.loads(pending.read_text())

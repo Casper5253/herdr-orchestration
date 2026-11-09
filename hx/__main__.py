@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, context, doctor, handoff, ledger, ocrun, profile, review, route, say, usage
+from hx import checkpoint, context, doctor, handoff, ledger, ocrun, profile, review, route, say, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -164,6 +164,15 @@ def _build_parser() -> argparse.ArgumentParser:
     compact.add_argument("--task")
     compact.add_argument("--related", action="store_true")
     compact.set_defaults(func=_compact)
+    team_parser = subparsers.add_parser("team", help="Team observer commands.")
+    team_sub = team_parser.add_subparsers(dest="team_command", required=True)
+    watch_parser = team_sub.add_parser(
+        "watch",
+        help="Wake once when a worker goes from working to idle/done/blocked or exits; prints one JSON event line.")
+    watch_parser.add_argument("--team", help="Team name; default is this pane's own team.")
+    watch_parser.add_argument("--interval", type=float, default=1.0, help="Roster rescan period in seconds.")
+    watch_parser.add_argument("--timeout", type=float, default=None, help="Seconds to watch before exiting quietly.")
+    watch_parser.set_defaults(func=lambda args: _team_watch(args))
     return parser
 
 
@@ -176,6 +185,10 @@ def _boundary(args: argparse.Namespace) -> None:
     else:
         result = controller.boundary(args.agent, args.task, work_item=args.work_item, session_id=args.session)
     print(json.dumps(result))
+
+
+def _team_watch(args: argparse.Namespace) -> int:
+    return team_watch.watch(args.team, interval=args.interval, timeout=args.timeout)
 
 
 def _compact(args: argparse.Namespace) -> None:

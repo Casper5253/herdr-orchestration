@@ -34,6 +34,10 @@ CLAIM_STALE_SECONDS = 120
 UNCONFIRMED_LONG_CHARS = 1000
 # The pointer must stay inside the transport bound that the probe showed works.
 POINTER_MAX_CHARS = 280
+# How long `hx say` watches an idle receiver for a turn to start before it
+# checks for unsubmitted text, and how long the Enter press gets to settle.
+SUBMIT_POLL_SECONDS = 10.0  # a busy receiver's turn advances at its next provider turn
+ENTER_SETTLE_SECONDS = 0.75
 # The host explicitly refused or never accepted the text; a retry is safe.
 UNSENT_REASONS = frozenset({
     "blocked", "finished", "unavailable", "status_mismatch", "not_found",
@@ -116,6 +120,109 @@ def _denied_line_for(destination: host.Member) -> str:
         return ""
 
 
+def _host_member(detected: host.Host, name: str) -> host.Member | None:
+    try:
+        return detected.info(name)
+    except Exception:
+        return None
+
+
+def _host_status(detected: host.Host, name: str) -> str:
+    member = _host_member(detected, name)
+    return str(member["status"]) if member else "unknown"
+
+
+def _await_advance(detected: host.Host, name: str, sent_turn: int | None, seconds: float) -> bool:
+    """Submission evidence: the receiver's turn number advanced past ours.
+
+    `hc get` reports no progress counter finer than `turn`. Status alone is
+    never proof — a stale or unrelated working status would mark an
+    unsubmitted message delivered and prevent retry.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        member = _host_member(detected, name)
+        if member is None:
+            return False
+        turn = member.get("turn")
+        if (isinstance(sent_turn, int) and not isinstance(sent_turn, bool)
+                and isinstance(turn, int) and not isinstance(turn, bool)
+                and turn > sent_turn):
+            return True
+        if member["status"] in ("blocked", "error"):
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
+def _sits_unsubmitted(detected: host.Host, name: str, text: str) -> bool:
+    """The pasted text is still in the receiver's composer.
+
+    `hc send` wraps the body in <hc from=...> tags; a stuck paste shows the
+    whole blob above the prompt line, ending in </hc>. Enter is pressed only
+    when that shape is visible, and never twice for one delivery.
+    """
+    try:
+        view = str(detected.read(name, 60))
+    except Exception:
+        return False
+    tail = text[-20:]
+    return bool(tail) and tail in view[-400:] and "</hc>" in view[-200:]
+
+
+def _submission_evidence(
+    detected: host.Host,
+    name: str,
+    text: str,
+    result: host.SendResult,
+) -> str:
+    """What an accepted hc send actually did: submitted, queued, or uncertain.
+
+    hc's exit code says nothing about submission: a paste can sit in the
+    receiver's composer while hc reports started. A receiver already working
+    got the text queued to its turn; an idle one is watched briefly, then the
+    unsubmitted-paste check decides whether one Enter press is owed.
+    """
+    if result["status"] == "working":
+        if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
+            return "queued"
+        return "uncertain"
+    if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
+        return "submitted"
+    member = _host_member(detected, name)
+    if member is None or member["status"] not in ("idle", "done"):
+        return "uncertain"
+    # Settled with no visible paste and no turn advance proves nothing: an
+    # incomplete read, an unavailable composer, or a vanished paste would all
+    # look identical — the outcome stays uncertain, never delivered.
+    if not _sits_unsubmitted(detected, name, text):
+        return "uncertain"
+    if member["status"] != "idle":
+        return "uncertain"
+    try:
+        pressed = detected.press(member, "enter")
+    except Exception:
+        pressed = False
+    if not pressed:
+        return "uncertain"
+    time.sleep(ENTER_SETTLE_SECONDS)
+    fresh = _host_member(detected, name)
+    if (fresh is not None and isinstance(fresh.get("turn"), int)
+            and isinstance(result["turn"], int) and not isinstance(result["turn"], bool)
+            and fresh["turn"] > result["turn"]):
+        return "submitted"
+    return "uncertain"
+
+
+_OUTCOME_WORDS = {
+    "delivered": "submitted",
+    "pending": "pending",
+    "uncertain": "uncertain",
+    "failed": "failed",
+}
+
+
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -192,7 +299,7 @@ def _read_record(path: Path) -> dict | None:
 
 def _record_state(record: dict) -> str:
     state = record.get("state")
-    if state in ("pending", "delivered", "uncertain"):
+    if state in ("pending", "delivered", "uncertain", "failed"):
         return state
     return "delivered" if record.get("delivered") else "pending"
 
@@ -216,7 +323,7 @@ def records_for(sender: str) -> list[tuple[str, Path, dict | None]]:
     directories = {_outbox_dir(sender), _outbox_dir(sender, legacy=True)}
     for path in (path for directory in directories for path in directory.glob("*.json")):
         record = _read_record(path)
-        if record is not None and _record_state(record) == "delivered":
+        if record is not None and _record_state(record) in ("delivered", "failed"):
             continue
         stamp = str(record.get("created_at") or "") if record else ""
         try:
@@ -303,16 +410,29 @@ def _deliver(
     path: Path,
     *,
     force: bool = False,
-) -> tuple[str, str | None]:
-    """The one guarded delivery path, shared by a first send and a retry."""
+) -> tuple[str, str | None, tuple[str, str]]:
+    """The one guarded delivery path, shared by a first send and a retry.
+
+    Returns the durable record state, a reason, and a `(where, outcome)` receipt:
+    the destination address plus `submitted`, `queued`, `pending`, `uncertain`
+    or `failed` — the short line `hx say` prints.
+    """
     sender = sender_member["name"]
     try:
         name, destination = resolve(sender_member, target)
+    except ValueError as exc:
+        # The role is gone (a lead handover left records for the old name):
+        # report it once with the reason and resolve the record, never reprint.
+        _write_state(path, "failed", note=f"undeliverable: {exc}")
+        return "failed", f"undeliverable: {exc}", (target, "failed")
+    try:
         text = with_header(sender, body)
     except ValueError as exc:
-        return "pending", str(exc)
+        _write_state(path, "failed", note=f"undeliverable: {exc}")
+        return "failed", f"undeliverable: {exc}", (name, "failed")
+    where = str(destination["address"]) or name
     if not force and _under_pressure(name):
-        return "pending", "pressure"
+        return "pending", "pressure", (where, "pending")
     line = _denied_line_for(destination)
     if line:
         text += " " + line
@@ -325,27 +445,35 @@ def _deliver(
         short = _pointer_message(sender, path)
         if short is None:
             _write_state(path, "pending", note="pointer too long")
-            return "pending", "pointer too long"
+            return "pending", "pointer too long", (where, "pending")
         text = short
     claimed = _claim(path)
     if claimed == "busy":
-        return "pending", "delivery in flight"
+        return "pending", "delivery in flight", (where, "pending")
     if claimed == "stale":
-        return "uncertain", "stale delivery claim"
+        return "uncertain", "stale delivery claim", (where, "uncertain")
     release = True
     try:
         current = _read_record(path)
         if current is None:
-            return "uncertain", "record unreadable under claim"
+            return "uncertain", "record unreadable under claim", (where, "uncertain")
         current_state = _record_state(current)
         if current_state != "pending":
-            return current_state, current.get("note")
+            return current_state, current.get("note"), (where, _OUTCOME_WORDS.get(current_state, "uncertain"))
         _write_state(path, "pending", body=body, target=name, text=text,
                      pointer=pointer)
         if destination["status"] == "blocked":
-            return "pending", "blocked"
+            return "pending", "blocked", (where, "pending")
         try:
             result = detected.send_checked(name, text)
+        except host.SendNotAttempted as exc:
+            # Provably never sent (vanished target, missing hc): pending, and
+            # the claim releases so --pending can retry it immediately.
+            try:
+                _write_state(path, "pending", note=str(exc))
+            except OSError:
+                pass
+            return "pending", str(exc), (where, "pending")
         except Exception:
             # The send may have happened. Keep the claim so a later retry sees
             # an in-flight or stale claim and never replays it blindly.
@@ -356,10 +484,20 @@ def _deliver(
                 pass
             raise
         state, reason = _delivery_state(result)
+        outcome = _OUTCOME_WORDS.get(state, "uncertain")
+        if state == "delivered":
+            # Turn/paste evidence applies to every host except the standalone
+            # herdr CLI, which reports the provider response inline and can
+            # press no keys.
+            if not isinstance(detected, host.HerdrHost):
+                outcome = _submission_evidence(detected, name, text, result)
+            if outcome == "uncertain":
+                state = "uncertain"
+                reason = "sent; no submission evidence"
         # Keep the claim until the outcome is durable: releasing it first lets a
         # second sender claim the same still-pending record and send twice.
         try:
-            _write_state(path, state, note=reason)
+            _write_state(path, state, note=reason, receipt=outcome)
         except OSError:
             try:
                 _write_state(path, "uncertain", note="outcome write failed")
@@ -367,9 +505,9 @@ def _deliver(
                 # No durable state and no durable outcome: retain the claim so
                 # the next retry treats it as in flight, then as uncertain.
                 release = False
-                return "uncertain", "outcome write failed; claim retained"
-            return "uncertain", "outcome write failed"
-        return state, reason
+                return "uncertain", "outcome write failed; claim retained", (where, "uncertain")
+            return "uncertain", "outcome write failed", (where, "uncertain")
+        return state, reason, (where, outcome)
     finally:
         if release:
             _release_claim(path)
@@ -417,12 +555,11 @@ def retry_pending() -> int:
             unresolved += 1
             continue
         print(f"Pending {message_id} -> {target} ({record.get('created_at')})")
-        outcome, reason = _deliver(detected, sender_member, target, body, path)
-        if outcome == "delivered":
-            print(f"Delivered {message_id} -> {target}")
-        else:
+        outcome, reason, (where, word) = _deliver(detected, sender_member, target, body, path)
+        suffix = f" ({reason})" if reason and outcome != "delivered" else ""
+        print(f"{message_id} -> {where}: {word}{suffix}")
+        if outcome != "delivered":
             unresolved += 1
-            print(f"Still {outcome} {message_id} -> {target} ({reason or 'not sent'})")
     return 0 if unresolved == 0 else 1
 
 
@@ -440,8 +577,8 @@ def say(target: str | None, message: str, *, force: bool = False) -> int:
     text = with_header(sender, message)
     key = _sender_key(sender_member)
     path = _write_outbox(key, sender, name, message, text)
-    outcome, reason = _deliver(detected, sender_member, target, message, path, force=force)
-    if outcome == "delivered":
-        return 0
-    print(f"hx: message {path.stem} to {name} is {outcome} ({reason or 'not sent'})", file=sys.stderr)
-    return 1
+    outcome, reason, (where, word) = _deliver(
+        detected, sender_member, target, message, path, force=force)
+    suffix = f" ({reason})" if reason and outcome != "delivered" else ""
+    print(f"{path.stem} -> {where}: {word}{suffix}")
+    return 0 if outcome == "delivered" else 1
