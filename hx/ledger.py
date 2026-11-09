@@ -525,6 +525,51 @@ class Ledger:
             self._save(ledger, leases)
             return task
 
+    def update_task_files(
+        self,
+        task_id: str,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Extend or shrink a task's owned files in place.
+
+        Added paths are canonicalised exactly as :meth:`add_task` does it,
+        relative to the task's worktree (the repo root when it has none), and
+        checked against other open tasks' leases. Removing a path the task does
+        not own is a no-op. The task's checkpoint is left untouched and the
+        derived file leases are rebuilt from the resulting list.
+        """
+        added_raw = list(add or [])
+        removed_raw = list(remove or [])
+        if not added_raw and not removed_raw:
+            raise ValueError("nothing to change: pass paths to add or remove")
+        with self._dual_lock():
+            ledger = self._load_ledger()
+            leases = self._load_leases()
+            task = ledger.get("tasks", {}).get(task_id)
+            if task is None:
+                raise TaskNotFound(task_id)
+            worktree = task.get("worktree")
+            self._verify_worktree(worktree)
+            file_base = Path(worktree) if worktree else self.repo_root
+            added = [_canonical_path(Path(file_base) / f) for f in added_raw]
+            removed = {_canonical_path(Path(file_base) / f) for f in removed_raw}
+            self._check_conflicts(
+                added,
+                leases,
+                exclude_task_id=task_id,
+                new_worktree=worktree,
+            )
+            files = [f for f in task.get("files", []) if f not in removed]
+            files.extend(f for f in added if f not in files)
+            task["files"] = files
+            task["updated"] = _utcnow().isoformat()
+            task["rev"] = task.get("rev", 0) + 1
+            self._next_rev(ledger)
+            leases = self._recompute_leases(ledger, leases)
+            self._save(ledger, leases)
+            return task
+
     @staticmethod
     def _resolve_session(sessions: dict[str, Any], agent: str) -> tuple[str | None, dict[str, Any] | None]:
         """Find a session lease by agent key or by its ``agent`` field.

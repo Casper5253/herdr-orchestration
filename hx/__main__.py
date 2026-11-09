@@ -71,6 +71,12 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     release.add_argument("id")
     release.set_defaults(func=_task_release)
 
+    files = task_sub.add_parser("files", help="Add or remove files a task owns.")
+    files.add_argument("id")
+    files.add_argument("--add", nargs="+", default=[])
+    files.add_argument("--remove", nargs="+", default=[])
+    files.set_defaults(func=_task_files)
+
     list_ = task_sub.add_parser("list", help="List tasks.")
     list_.add_argument("--status")
     list_.set_defaults(func=_task_list)
@@ -267,6 +273,12 @@ def _task_release(args: argparse.Namespace) -> None:
     led = ledger.default_ledger()
     released = led.release_task_reservations(args.id)
     print(json.dumps({"task": args.id, "released": released}, indent=2))
+
+
+def _task_files(args: argparse.Namespace) -> None:
+    led = ledger.default_ledger()
+    task = led.update_task_files(args.id, add=args.add, remove=args.remove)
+    print(json.dumps(task, indent=2))
 
 
 def _task_list(args: argparse.Namespace) -> None:
