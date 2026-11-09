@@ -2,12 +2,12 @@
 # the lead (this terminal) top-left, codex to its right, devin below it, opencode below codex.
 # Usage:
 #   & team\Start-HerdrAppTeam.ps1 -Project C:\path\to\repo [-Team dev] [-DevinCwd <dir>] [-DryRun]
-# Safe to run twice: a role that already has a live <team>-<role> terminal is left alone and its
-# pane is not moved. -DevinCwd defaults to -Project. -DryRun prints every hc and herdr-app command
+# Safe to run twice: validated live roles are reused and missing panes are restored.
+# Existing panes are not moved. -DevinCwd defaults to -Project. -DryRun prints every hc and herdr-app command
 # it would run and runs none of them (roster queries still run).
 param(
     [Parameter(Mandatory)][string]$Project,
-    [ValidatePattern('^[a-z0-9][a-z0-9-]*$')][string]$Team = 'dev',
+    [ValidateSet('dev')][string]$Team = 'dev',
     [string]$DevinCwd,
     [switch]$DryRun
 )
@@ -69,33 +69,42 @@ function Invoke-Planned([string[]]$Argv) {
 
 # A terminal has a pane once herdr-app ls lists it under a tab; a sub-agent without one sits in
 # its parent's sub_agents. pane.focus errors with "no such pane" before that.
-function Test-AppPane([string]$Terminal) {
+function Get-AppPanes {
     $out = herdr-app ls | Out-String
-    $ls = try { $out | ConvertFrom-Json } catch { throw "herdr-app ls returned no JSON: $out" }
+    if ($LASTEXITCODE -ne 0) { throw 'herdr-app ls failed.' }
+    $ls = try { $out | ConvertFrom-Json } catch { throw 'herdr-app ls returned no JSON.' }
+    if ($ls -isnot [pscustomobject] -or $ls.spaces -isnot [array]) { throw 'Invalid herdr-app roster.' }
     foreach ($space in $ls.spaces) {
+        if ($space.tabs -isnot [array]) { throw 'Invalid herdr-app tabs.' }
         foreach ($tab in $space.tabs) {
+            if ($tab.terminals -isnot [array]) { throw 'Invalid herdr-app terminals.' }
             foreach ($t in $tab.terminals) {
-                if ($t.terminal -eq $Terminal -and $t.pane) { return $true }
+                if (-not $t.terminal) { throw 'Invalid herdr-app terminal.' }
+                if ($t.pane) { $t.terminal }
             }
         }
     }
-    return $false
 }
 
 function Wait-AppPane([string]$Terminal) {
     if ($DryRun) { return }
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
-    while (-not (Test-AppPane $Terminal)) {
+    while ($Terminal -notin @(Get-AppPanes)) {
         if ([DateTime]::UtcNow -gt $deadline) { throw "herdr-app shows no pane for $Terminal; refusing to focus it." }
         Start-Sleep -Milliseconds 250
     }
 }
 
 $lsOut = & hc ls --json
-$terminals = try { ($lsOut | Out-String | ConvertFrom-Json).terminals } catch { throw "hc ls --json returned no JSON: $lsOut" }
-if ($null -eq $terminals) { $terminals = @() }
-
-Invoke-Planned @('hc', 'label', $lead, "team=$Team", 'role=claude') | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'hc ls --json failed.' }
+$roster = try { $lsOut | Out-String | ConvertFrom-Json } catch { throw 'hc ls --json returned no JSON.' }
+if ($roster -isnot [pscustomobject] -or $roster.terminals -isnot [array]) { throw 'Invalid hc roster.' }
+$terminals = $roster.terminals
+foreach ($t in $terminals) {
+    if (-not $t.address -or $t.state -notin @('live', 'finished')) { throw 'Invalid hc terminal.' }
+}
+$panes = @(Get-AppPanes)
+if ($lead -notin $panes) { throw "Lead $lead has no app pane." }
 
 $roles = [ordered]@{
     codex = @{
@@ -115,22 +124,58 @@ $roles = [ordered]@{
     }
 }
 
-$started = [ordered]@{}
 $live = @{}
 foreach ($role in $roles.Keys) {
     $name = "$Team-$role"
-    $existing = @($terminals | Where-Object { $_.name -eq $name -and $_.state -eq 'live' }) | Select-Object -First 1
-    if ($existing) {
-        $live[$role] = $existing.address
-        Write-Output "already live $($existing.address)"
+    $matches = @($terminals | Where-Object { $_.name -eq $name -and $_.state -eq 'live' })
+    if ($matches.Count -gt 1) { throw "Conflicting live name $name at $(($matches | ForEach-Object { $_.address }) -join ', '); correct it before retrying." }
+    if ($matches.Count -eq 1) {
+        $address = $matches[0].address
+        $out = hc get $address --json | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "hc get $address failed." }
+        $detail = try { $out | ConvertFrom-Json } catch { throw "Invalid terminal details for $address." }
+        $sameCwd = $false
+        try { $sameCwd = (Resolve-Path $detail.cwd).Path -eq $roles[$role].Cwd } catch {}
+        $argv = @($detail.argv)
+        $programOK = $false
+        if ($role -eq 'devin') {
+            $programOK = $argv.Count -gt 0 -and [IO.Path]::GetFileNameWithoutExtension($argv[0]) -eq 'devin'
+        } elseif ($argv.Count -ge 3 -and [IO.Path]::GetFileNameWithoutExtension($argv[0]) -in @('powershell', 'pwsh')) {
+            $commandIndex = [array]::IndexOf($argv, '-Command')
+            $programOK = $commandIndex -ge 0 -and $commandIndex + 1 -lt $argv.Count -and
+                $argv[$commandIndex + 1] -match "(?:^|;)\s*$role(?:\s|$)"
+        }
+        if ($detail.address -ne $address -or $detail.name -ne $name -or $detail.state -ne 'live' -or
+            -not $sameCwd -or $detail.labels.team -ne $Team -or $detail.labels.role -ne $role -or -not $programOK) {
+            throw "Conflicting live terminal $address ($name); expected cwd $($roles[$role].Cwd), team=$Team, role=$role and program $role. Correct it before retrying."
+        }
+        $live[$role] = $address
+    }
+}
+
+if (-not $live.ContainsKey('devin')) {
+    if ($policy.devin.enabled -ne $true) { throw 'policy.devin.enabled must be true.' }
+    if ($devinModel -cnotin $policy.devin.allowed_models) { throw 'Devin model is not in policy.devin.allowed_models.' }
+    $promoEnd = $null
+    try { $promoEnd = [DateTimeOffset]::Parse($policy.devin.promo.ends_at) } catch {}
+    if (-not $promoEnd -or [DateTimeOffset]::UtcNow -ge $promoEnd) {
+        throw 'SWE-2 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before starting a Devin pane.'
+    }
+    $modelOut = devin models list --format json | Out-String
+    if ($LASTEXITCODE -ne 0) { throw 'devin models list failed.' }
+    $catalog = try { $modelOut | ConvertFrom-Json } catch { throw 'devin models list returned no JSON.' }
+    $variants = @($catalog.families | ForEach-Object { $_.variants } | Where-Object { $_.model_uid -ceq $devinModel })
+    if ($variants.Count -ne 1 -or $variants[0].cost_tier -cne 'Free') { throw 'Devin model is unavailable or not Free; refusing launch.' }
+}
+
+Invoke-Planned @('hc', 'label', $lead, "team=$Team", 'role=claude') | Out-Null
+foreach ($role in $roles.Keys) {
+    if ($live.ContainsKey($role)) {
+        Write-Output "already live $($live[$role])"
         continue
     }
+    $name = "$Team-$role"
     if ($role -eq 'devin') {
-        $promoEnd = $null
-        try { $promoEnd = [DateTimeOffset]::Parse($policy.devin.promo.ends_at) } catch {}
-        if (-not $promoEnd -or [DateTimeOffset]::UtcNow -ge $promoEnd) {
-            throw 'SWE-2 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before starting a Devin pane.'
-        }
         if (-not $DryRun) {
             New-Item -ItemType Directory -Force $devinState | Out-Null
             Copy-Item (Join-Path $dir 'devin-pane.config.json') (Join-Path $devinState 'config.json') -Force
@@ -140,24 +185,19 @@ foreach ($role in $roles.Keys) {
     $runArgv = @('hc', 'run', '--bg', '--outlive-parent', '--name', $name, '--cwd', $spec.Cwd,
         '--label', "team=$Team", '--label', "role=$role", '--json', '--') + $spec.Argv
     $out = Invoke-Planned $runArgv
-    $started[$role] = if ($DryRun) { $name } else { ($out | Out-String | ConvertFrom-Json).address }
-    if (-not $DryRun) { Write-Output "started $($started[$role])" }
+    $live[$role] = if ($DryRun) { $name } else { ($out | Out-String | ConvertFrom-Json).address }
+    if (-not $live[$role]) { throw "hc run returned no address for $name." }
+    if (-not $DryRun) { Write-Output "started $($live[$role])" }
 }
 
-if ($started.Contains('codex')) {
-    Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $lead) | Out-Null
-    Invoke-Planned @('herdr-app', 'do', 'terminal.keep', '--terminal', $started.codex, '--place', 'right') | Out-Null
-    Wait-AppPane $started.codex
-}
-if ($started.Contains('devin')) {
-    Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $lead) | Out-Null
-    Invoke-Planned @('herdr-app', 'do', 'terminal.keep', '--terminal', $started.devin, '--place', 'down') | Out-Null
-    Wait-AppPane $started.devin
-}
-if ($started.Contains('opencode')) {
-    $codexTerminal = if ($started.Contains('codex')) { $started.codex } else { $live.codex }
-    Wait-AppPane $codexTerminal
-    Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $codexTerminal) | Out-Null
-    Invoke-Planned @('herdr-app', 'do', 'terminal.keep', '--terminal', $started.opencode, '--place', 'down') | Out-Null
-    Wait-AppPane $started.opencode
+foreach ($role in $roles.Keys) {
+    $terminal = $live[$role]
+    if (-not $DryRun) { $panes = @(Get-AppPanes) }
+    if ($terminal -in $panes) { continue }
+    $anchor = if ($role -eq 'opencode') { $live.codex } else { $lead }
+    $place = if ($role -eq 'codex') { 'right' } else { 'down' }
+    Wait-AppPane $anchor
+    Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $anchor) | Out-Null
+    Invoke-Planned @('herdr-app', 'do', 'terminal.keep', '--terminal', $terminal, '--place', $place) | Out-Null
+    Wait-AppPane $terminal
 }

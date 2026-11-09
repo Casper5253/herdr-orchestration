@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 export const APP = "opencode";
 export const STATES = new Set(["idle", "working", "done", "blocked", "error"]);
@@ -66,10 +67,11 @@ export function enabled(env = {}) {
   return Boolean(env.HC_TERMINAL_ID) && TEAM_OVERLAY.test(env.OPENCODE_CONFIG || "");
 }
 
-export function sessionIDFrom(properties = {}) {
+export function sessionIDFrom(properties = {}, type) {
   const direct = properties.sessionID;
   if (typeof direct === "string" && direct) return direct;
-  const id = properties.info?.id;
+  const id = type === "session.created" || type === "session.updated"
+    ? properties.info?.id : type === "message.updated" ? properties.info?.sessionID : null;
   return typeof id === "string" && id ? id : null;
 }
 
@@ -86,8 +88,12 @@ export function bindingPath(stateDir, terminal) {
 export function atomicWriteJson(file, data, io = fs) {
   io.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.${tmpSeq++}.tmp`;
-  io.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
-  io.renameSync(tmp, file);
+  try {
+    io.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+    io.renameSync(tmp, file);
+  } finally {
+    try { io.unlinkSync(tmp); } catch {}
+  }
   return file;
 }
 
@@ -109,6 +115,18 @@ function writeRecord(stream, text) {
   }
 }
 
+export function readBinding(file, { terminal, core, cwd, isAlive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+} }, io = fs) {
+  const data = readJson(file, io);
+  const claim = readJson(`${file}.owner`, io);
+  return data?.terminal === terminal && data.core === core && data.cwd === cwd &&
+    typeof data.owner === "string" && data.owner === claim?.owner &&
+    data.pid === claim.pid && data.terminal === claim.terminal && data.core === claim.core &&
+    data.cwd === claim.cwd && typeof data.session_id === "string" && Boolean(data.session_id) &&
+    Number.isInteger(data.pid) && data.pid > 0 && isAlive(data.pid) ? data : null;
+}
+
 export function createPlugin(options = {}) {
   return async (input = {}) => {
     const env = options.env ?? process.env;
@@ -123,18 +141,28 @@ export function createPlugin(options = {}) {
     const stderr = options.stderr ?? process.stderr;
     const stream = stdout?.isTTY ? stdout : (stderr?.isTTY ? stderr : null);
     const childSessions = new Map();
-    let boundSession = null;
+    const prompts = new Map();
+    const io = options.fs ?? fs;
+    const file = bindingPath(stateDir, terminal);
+    const claimFile = `${file}.owner`;
+    const owner = randomUUID();
+    const core = JSON.stringify([env.HC_SESSION || "default", env.HC_SOCKET || ""]);
+    const initial = JSON.stringify(readJson(claimFile, io));
+    let claimed = false;
+    let activeRoot = null;
+    let startedAt = now().toISOString();
+    let rootStatus = {state: "idle"};
 
-    const bind = (sessionID) => {
-      if (!sessionID || childSessions.has(sessionID)) return false;
-      const file = bindingPath(stateDir, terminal);
-      const existing = readJson(file, options.fs);
-      const startedAt = existing?.session_id === sessionID && existing.started_at
-        ? existing.started_at
-        : now().toISOString();
+    const bind = () => {
+      const existing = readJson(claimFile, io);
+      if (claimed ? existing?.owner !== owner : JSON.stringify(existing) !== initial) return false;
       try {
-        atomicWriteJson(file, bindingFor(terminal, sessionID, cwd, pid, startedAt),
-          options.fs ?? fs);
+        if (!claimed) {
+          // Only startup replaces the ownership claim. A late binding rename cannot reclaim it.
+          atomicWriteJson(claimFile, {...bindingFor(terminal, null, cwd, pid, startedAt), owner, core}, io);
+          claimed = true;
+        }
+        atomicWriteJson(file, {...bindingFor(terminal, activeRoot, cwd, pid, startedAt), owner, core}, io);
         return true;
       } catch {
         // Status reporting must never disturb the agent; retry on a later event.
@@ -142,35 +170,67 @@ export function createPlugin(options = {}) {
       }
     };
 
-    const bindOnce = (sessionID) => {
-      if (!sessionID || childSessions.has(sessionID) || boundSession === sessionID) return;
-      if (bind(sessionID)) boundSession = sessionID;
-    };
+    bind();
+    const ownsTerminal = () => claimed && readJson(claimFile, io)?.owner === owner;
 
-    const emit = (state, kind) => writeRecord(stream, record(state, kind));
+    const select = (sessionID) => {
+      if (typeof sessionID !== "string" || !sessionID || childSessions.has(sessionID)) return false;
+      if (activeRoot !== sessionID) {
+        activeRoot = sessionID;
+        startedAt = now().toISOString();
+        prompts.clear();
+      }
+      bind();
+      return ownsTerminal();
+    };
+    const belongs = (sessionID) => {
+      const seen = new Set();
+      while (sessionID && !seen.has(sessionID)) {
+        if (sessionID === activeRoot) return true;
+        seen.add(sessionID);
+        sessionID = childSessions.get(sessionID);
+      }
+      return false;
+    };
+    const emit = () => {
+      if (!ownsTerminal()) return;
+      const prompt = prompts.values().next().value;
+      const status = prompt ? {state: "blocked", kind: prompt.kind} : rootStatus;
+      writeRecord(stream, record(status.state, status.kind));
+    };
 
     return {
       event: async ({ event } = {}) => {
         const type = event?.type;
         const properties = event?.properties ?? {};
         const info = properties.info;
-        if (info?.id && info.parentID) childSessions.set(info.id, info.parentID);
-        const sessionID = sessionIDFrom(properties);
-        if (sessionID && childSessions.has(sessionID)) {
-          const mapped = stateForEvent(type, properties);
-          if (mapped) emit(mapped.state, mapped.kind);
-          return;
+        if (type === "session.created" || type === "session.updated") {
+          if (info?.id && info.parentID) childSessions.set(info.id, info.parentID);
+          if (!activeRoot && info?.id && !info.parentID) select(info.id);
         }
-        bindOnce(sessionID);
+        const sessionID = sessionIDFrom(properties, type);
+        if (!activeRoot || !belongs(sessionID)) return;
+        bind();
+        if (!ownsTerminal()) return;
         const mapped = stateForEvent(type, properties);
-        if (mapped) emit(mapped.state, mapped.kind);
+        if (!mapped) return;
+        const match = /^(permission|question)\.(asked|replied|rejected)$/.exec(type);
+        if (match) {
+          const [, kind, action] = match;
+          const key = JSON.stringify([sessionID, kind, properties.requestID ?? properties.id ?? ""]);
+          if (action === "asked") prompts.set(key, {kind});
+          else prompts.delete(key);
+        } else if (sessionID !== activeRoot) return;
+        if (sessionID === activeRoot) rootStatus = mapped;
+        emit();
       },
       "chat.message": async ({ sessionID } = {}) => {
-        bindOnce(sessionID);
-        emit("working");
+        if (!select(sessionID)) return;
+        rootStatus = {state: "working"};
+        emit();
       },
       "experimental.chat.system.transform": async (input = {}) => {
-        bindOnce(input.sessionID);
+        if (!activeRoot) select(input.sessionID);
       },
     };
   };

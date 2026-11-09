@@ -130,6 +130,8 @@ console.log(JSON.stringify({writes, binding, tmp}));
         f"{ESC}]7501;state=idle:app=opencode{ESC}\\",
         f"{ESC}]7501;state=error:app=opencode{ESC}\\",
     ]
+    assert out["binding"].pop("owner")
+    assert out["binding"].pop("core") == '["default",""]'
     assert out["binding"] == {
         "terminal": "t8",
         "session_id": "ses_one",
@@ -174,12 +176,12 @@ console.log(JSON.stringify({before, after}));
     )
     out = _run(tmp_path, body)
     assert out["before"]["t8"]["session_id"] == "ses_one"
-    assert out["before"]["t8"]["started_at"] == "2026-11-09T00:00:00.000Z"
+    assert out["before"]["t8"]["started_at"] == "2026-11-09T00:02:00.000Z"
     assert out["before"]["t9"]["session_id"] == "ses_two"
     assert out["after"]["t8"]["session_id"] == "ses_three"
     assert out["after"]["t8"]["started_at"] == "2026-11-09T00:02:00.000Z"
     assert out["after"]["t9"] == out["before"]["t9"]
-    assert out["after"]["files"] == ["t8.json", "t9.json"]
+    assert out["after"]["files"] == ["t8.json", "t8.json.owner", "t9.json", "t9.json.owner"]
 
 
 def test_child_session_does_not_replace_the_root_binding(tmp_path: Path) -> None:
@@ -265,3 +267,190 @@ console.log(JSON.stringify({
         "error": {"state": "error"},
         "status": {"state": "working"},
     }
+
+
+def _replay(tmp_path, events):
+    return _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+import fs from "node:fs";
+const writes = [];
+const hooks = await p.createPlugin({
+ env: {HC_TERMINAL_ID: "t1", HC_SESSION: "core-one", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
+ stdout: {isTTY: true, write(s) { writes.push(s); }}, stderr: null,
+ stateDir: __STATE__, pid: 100, cwd: "repo",
+})({});
+const event = async (type, properties) => hooks.event({event: {type, properties}});
+await hooks["chat.message"]({sessionID: "root"});
+__EVENTS__
+console.log(JSON.stringify({writes, binding: JSON.parse(fs.readFileSync(__STATE__ + "/hc-bindings/t1.json"))}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")).replace("__EVENTS__", events))
+
+
+def test_message_and_unrecognized_ids_cannot_become_sessions(tmp_path):
+    out = _replay(tmp_path, '''
+await event("message.updated", {info: {id: "msg_1", sessionID: "root", role: "assistant"}});
+await event("unknown", {info: {id: "alien"}});
+''')
+    assert out["binding"]["session_id"] == "root"
+
+
+def test_child_completion_and_error_do_not_complete_busy_root(tmp_path):
+    out = _replay(tmp_path, '''
+await event("session.created", {info: {id: "child", parentID: "root"}});
+await event("session.idle", {sessionID: "child"});
+await event("session.error", {sessionID: "child"});
+''')
+    assert out["writes"] == [f"{ESC}]7501;state=working:app=opencode{ESC}\\"]
+
+
+def test_concurrent_child_prompts_stay_blocked_until_all_resolve(tmp_path):
+    out = _replay(tmp_path, '''
+await event("session.updated", {info: {id: "a", parentID: "root"}});
+await event("session.updated", {info: {id: "b", parentID: "root"}});
+await event("permission.asked", {sessionID: "a", id: "p1"});
+await event("question.asked", {sessionID: "b", id: "q1"});
+await event("permission.replied", {sessionID: "a", requestID: "p1"});
+await event("session.status", {sessionID: "root", status: {type: "busy"}});
+''')
+    assert "state=blocked" in out["writes"][-1]
+
+
+def test_previous_root_lifecycle_cannot_undo_local_selection(tmp_path):
+    out = _replay(tmp_path, '''
+await hooks["chat.message"]({sessionID: "new-root"});
+await event("session.idle", {sessionID: "root"});
+await event("session.created", {info: {id: "unrelated", parentID: null}});
+''')
+    assert out["binding"]["session_id"] == "new-root"
+    assert all("state=working" in w for w in out["writes"])
+
+
+def test_new_process_invalidates_binding_and_fences_old_writer(tmp_path):
+    out = _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+import fs from "node:fs";
+const file = __STATE__ + "/hc-bindings/t1.json";
+const make = async (pid) => p.createPlugin({
+ env: {HC_TERMINAL_ID: "t1", HC_SESSION: "core-one", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
+ stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, pid,
+ now: () => new Date(pid === 100 ? "2026-01-01" : "2026-01-02"),
+})({});
+const old = await make(100);
+await old["chat.message"]({sessionID: "old"});
+const fresh = await make(200);
+const startup = JSON.parse(fs.readFileSync(file));
+await old["chat.message"]({sessionID: "stale"});
+await fresh["chat.message"]({sessionID: "old"});
+await old.event({event: {type: "session.created", properties: {info: {id: "alien"}}}});
+console.log(JSON.stringify({startup, binding: JSON.parse(fs.readFileSync(file))}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
+    assert out["startup"]["session_id"] is None
+    assert out["startup"]["pid"] == 200
+    assert out["binding"]["session_id"] == "old"
+    assert out["binding"]["pid"] == 200
+    assert out["binding"]["started_at"].startswith("2026-01-02")
+
+
+def test_reader_rejects_an_inflight_stale_writer_and_dead_or_wrong_identity(tmp_path):
+    out = _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+import fs from "node:fs";
+const file = __STATE__ + "/hc-bindings/t1.json";
+const expected = {terminal: "t1", core: '["core-one",""]', cwd: "repo", isAlive: () => true};
+const make = (pid) => p.createPlugin({
+ env: {HC_TERMINAL_ID: "t1", HC_SESSION: "core-one", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
+ stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, pid, cwd: "repo",
+})({});
+const old = await make(100);
+await old["chat.message"]({sessionID: "old"});
+const stale = fs.readFileSync(file);
+const fresh = await make(200);
+await fresh["chat.message"]({sessionID: "new"});
+fs.writeFileSync(file, stale);
+const raced = p.readBinding(file, expected);
+await fresh["chat.message"]({sessionID: "new"});
+console.log(JSON.stringify({raced, current: p.readBinding(file, expected),
+ dead: p.readBinding(file, {...expected, isAlive: () => false}),
+ wrongCore: p.readBinding(file, {...expected, core: "other"}),
+ wrongTerminal: p.readBinding(file, {...expected, terminal: "t9"}),
+ wrongCwd: p.readBinding(file, {...expected, cwd: "other"}),
+}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
+    assert out["raced"] is None
+    assert out["current"]["session_id"] == "new"
+    assert all(out[k] is None for k in ["dead", "wrongCore", "wrongTerminal", "wrongCwd"])
+
+
+@pytest.mark.parametrize("failure", ["write", "rename"])
+def test_failed_binding_io_is_cleaned_and_retried(tmp_path, failure):
+    out = _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+import fs from "node:fs";
+const file = __STATE__ + "/hc-bindings/t1.json";
+let fail = false;
+const io = {...fs,
+ writeFileSync(...args) {
+   fs.writeFileSync(...args);
+   if (fail && __FAILURE__ === "write") throw new Error("write failed");
+ },
+ renameSync(...args) {
+   if (fail && __FAILURE__ === "rename") throw new Error("rename failed");
+   fs.renameSync(...args);
+ },
+};
+const writes = [];
+const hooks = await p.createPlugin({
+ env: {HC_TERMINAL_ID: "t1", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
+ stdout: {isTTY: false, write(s) { writes.push(s); }},
+ stderr: {isTTY: false, write(s) { writes.push(s); }}, stateDir: __STATE__, fs: io,
+})({});
+fail = true;
+await hooks["chat.message"]({sessionID: "root"});
+const failed = JSON.parse(fs.readFileSync(file));
+const temps = fs.readdirSync(__STATE__ + "/hc-bindings").filter(s => s.endsWith(".tmp"));
+fail = false;
+await hooks.event({event: {type: "session.status", properties: {sessionID: "root", status: "busy"}}});
+console.log(JSON.stringify({failed, recovered: JSON.parse(fs.readFileSync(file)), writes, temps}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state"), FAILURE=failure))
+    assert out["failed"]["session_id"] is None
+    assert out["recovered"]["session_id"] == "root"
+    assert out["writes"] == out["temps"] == []
+
+
+def test_multiple_prompts_for_one_child_resolve_independently(tmp_path):
+    out = _replay(tmp_path, '''
+await event("session.updated", {info: {id: "child", parentID: "root"}});
+await event("permission.asked", {sessionID: "child", id: "p1"});
+await event("permission.asked", {sessionID: "child", id: "p2"});
+await event("permission.replied", {sessionID: "child", requestID: "p1"});
+const stillBlocked = writes.at(-1);
+await event("permission.replied", {sessionID: "child", requestID: "p2"});
+if (!stillBlocked.includes("state=blocked")) throw new Error("second prompt was lost");
+''')
+    assert "state=working" in out["writes"][-1]
+
+
+def test_binding_failure_does_not_discard_a_permission_prompt(tmp_path):
+    out = _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+import fs from "node:fs";
+let fail = false;
+const io = {...fs, renameSync(...args) {
+ if (fail) throw new Error("rename failed");
+ fs.renameSync(...args);
+}};
+const writes = [];
+const hooks = await p.createPlugin({
+ env: {HC_TERMINAL_ID: "t1", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
+ stdout: {isTTY: true, write(s) { writes.push(s); }}, stderr: null,
+ stateDir: __STATE__, fs: io,
+})({});
+await hooks["chat.message"]({sessionID: "root"});
+fail = true;
+await hooks.event({event: {type: "permission.asked", properties: {sessionID: "root", id: "p1"}}});
+fail = false;
+await hooks.event({event: {type: "session.status", properties: {sessionID: "root", status: "busy"}}});
+console.log(JSON.stringify({writes}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
+    assert all("state=blocked" in w for w in out["writes"][1:])
+    assert len(out["writes"]) == 3
