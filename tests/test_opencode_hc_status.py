@@ -106,8 +106,10 @@ const writes = [];
 const stream = { isTTY: true, write(s) { writes.push(s); } };
 const factory = p.createPlugin({
   env: {HC_TERMINAL_ID: "t8", OPENCODE_CONFIG: "C:/repo/opencode-trusted-dev.jsonc"},
-  stdout: stream, stderr: null, stateDir: __STATE__, cwd: "C:/repo", pid: 4242,
+  stdout: stream, stderr: null, stateDir: __STATE__, pid: 4242,
   now: () => new Date("2026-11-09T00:00:00.000Z"),
+  terminalInfo: () => ({terminal_created_ms: 111}),
+  writtenMs: () => 222,
 });
 const hooks = await factory({directory: "C:/repo"});
 await hooks["chat.message"]({ sessionID: "ses_one" }, {});
@@ -130,14 +132,14 @@ console.log(JSON.stringify({writes, binding, tmp}));
         f"{ESC}]7501;state=idle:app=opencode{ESC}\\",
         f"{ESC}]7501;state=error:app=opencode{ESC}\\",
     ]
-    assert out["binding"].pop("owner")
-    assert out["binding"].pop("core") == '["default",""]'
     assert out["binding"] == {
+        "v": 2,
         "terminal": "t8",
+        "terminal_created_ms": 111,
+        "provider": "opencode",
         "session_id": "ses_one",
-        "cwd": "C:/repo",
-        "pid": 4242,
-        "started_at": "2026-11-09T00:00:00.000Z",
+        "provider_pid": 4242,
+        "written_ms": 222,
     }
     assert out["tmp"] == []
 
@@ -150,8 +152,9 @@ import * as p from __PLUGIN__;
 import fs from "node:fs";
 const options = (terminal, now) => p.createPlugin({
   env: {HC_TERMINAL_ID: terminal, OPENCODE_CONFIG: "C:/repo/opencode-trusted-dev.jsonc"},
-  stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, cwd: "C:/repo",
-  pid: 1000, now: () => new Date(now),
+  stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__,
+  pid: 1000, now: () => new Date(now), terminalInfo: () => ({terminal_created_ms: 111}),
+  writtenMs: () => Date.parse(now),
 });
 const t8 = await options("t8", "2026-11-09T00:00:00.000Z")({});
 await t8["chat.message"]({sessionID: "ses_one"}, {});
@@ -176,10 +179,10 @@ console.log(JSON.stringify({before, after}));
     )
     out = _run(tmp_path, body)
     assert out["before"]["t8"]["session_id"] == "ses_one"
-    assert out["before"]["t8"]["started_at"] == "2026-11-09T00:02:00.000Z"
     assert out["before"]["t9"]["session_id"] == "ses_two"
     assert out["after"]["t8"]["session_id"] == "ses_three"
-    assert out["after"]["t8"]["started_at"] == "2026-11-09T00:02:00.000Z"
+    assert out["after"]["t8"]["written_ms"] == out["before"]["t8"]["written_ms"]
+    assert out["before"]["t8"]["written_ms"] > out["before"]["t9"]["written_ms"]
     assert out["after"]["t9"] == out["before"]["t9"]
     assert out["after"]["files"] == ["t8.json", "t8.json.owner", "t9.json", "t9.json.owner"]
 
@@ -194,8 +197,9 @@ const writes = [];
 const hooks = await p.createPlugin({
   env: {HC_TERMINAL_ID: "t10", OPENCODE_CONFIG: "C:/repo/opencode-trusted-dev.jsonc"},
   stdout: {isTTY: true, write(s) { writes.push(s); }}, stderr: null,
-  stateDir: __STATE__, cwd: "C:/repo", pid: 1001,
+  stateDir: __STATE__, pid: 1001,
   now: () => new Date("2026-11-09T00:00:00.000Z"),
+  terminalInfo: () => ({terminal_created_ms: 111}),
 })({});
 await hooks.event({event: {type: "session.created", properties: {info: {id: "root", parentID: null}}}});
 await hooks.event({event: {type: "session.created", properties: {info: {id: "child", parentID: "root"}}}});
@@ -277,7 +281,8 @@ const writes = [];
 const hooks = await p.createPlugin({
  env: {HC_TERMINAL_ID: "t1", HC_SESSION: "core-one", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
  stdout: {isTTY: true, write(s) { writes.push(s); }}, stderr: null,
- stateDir: __STATE__, pid: 100, cwd: "repo",
+ stateDir: __STATE__, pid: 100,
+ terminalInfo: () => ({terminal_created_ms: 111}), writtenMs: () => 222,
 })({});
 const event = async (type, properties) => hooks.event({event: {type, properties}});
 await hooks["chat.message"]({sessionID: "root"});
@@ -334,6 +339,7 @@ const make = async (pid) => p.createPlugin({
  env: {HC_TERMINAL_ID: "t1", HC_SESSION: "core-one", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
  stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, pid,
  now: () => new Date(pid === 100 ? "2026-01-01" : "2026-01-02"),
+ terminalInfo: () => ({terminal_created_ms: 111}), writtenMs: () => pid === 100 ? 1000 : 2000,
 })({});
 const old = await make(100);
 await old["chat.message"]({sessionID: "old"});
@@ -345,21 +351,22 @@ await old.event({event: {type: "session.created", properties: {info: {id: "alien
 console.log(JSON.stringify({startup, binding: JSON.parse(fs.readFileSync(file))}));
 ''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
     assert out["startup"]["session_id"] is None
-    assert out["startup"]["pid"] == 200
+    assert out["startup"]["provider_pid"] == 200
     assert out["binding"]["session_id"] == "old"
-    assert out["binding"]["pid"] == 200
-    assert out["binding"]["started_at"].startswith("2026-01-02")
+    assert out["binding"]["provider_pid"] == 200
+    assert out["binding"]["written_ms"] == 2000
 
 
-def test_reader_rejects_an_inflight_stale_writer_and_dead_or_wrong_identity(tmp_path):
+def test_reader_rejects_stale_v1_dead_and_wrong_identity(tmp_path):
     out = _run(tmp_path, _body('''
 import * as p from __PLUGIN__;
 import fs from "node:fs";
 const file = __STATE__ + "/hc-bindings/t1.json";
-const expected = {terminal: "t1", core: '["core-one",""]', cwd: "repo", isAlive: () => true};
+const expected = {terminal: "t1", createdMs: 111, isAlive: (pid) => pid === 200};
 const make = (pid) => p.createPlugin({
  env: {HC_TERMINAL_ID: "t1", HC_SESSION: "core-one", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
- stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, pid, cwd: "repo",
+ stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, pid,
+ terminalInfo: () => ({terminal_created_ms: 111}), writtenMs: () => pid === 100 ? 1000 : 2000,
 })({});
 const old = await make(100);
 await old["chat.message"]({sessionID: "old"});
@@ -369,16 +376,19 @@ await fresh["chat.message"]({sessionID: "new"});
 fs.writeFileSync(file, stale);
 const raced = p.readBinding(file, expected);
 await fresh["chat.message"]({sessionID: "new"});
-console.log(JSON.stringify({raced, current: p.readBinding(file, expected),
+fs.writeFileSync(file, JSON.stringify({terminal: "t1", session_id: "v1", pid: 200}));
+const v1 = p.readBinding(file, expected);
+await fresh["chat.message"]({sessionID: "new"});
+console.log(JSON.stringify({raced, current: p.readBinding(file, expected), v1,
  dead: p.readBinding(file, {...expected, isAlive: () => false}),
- wrongCore: p.readBinding(file, {...expected, core: "other"}),
+ wrongProvider: p.readBinding(file, {...expected, provider: "codex"}),
  wrongTerminal: p.readBinding(file, {...expected, terminal: "t9"}),
- wrongCwd: p.readBinding(file, {...expected, cwd: "other"}),
+ wrongCreated: p.readBinding(file, {...expected, createdMs: 999}),
 }));
 ''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
     assert out["raced"] is None
     assert out["current"]["session_id"] == "new"
-    assert all(out[k] is None for k in ["dead", "wrongCore", "wrongTerminal", "wrongCwd"])
+    assert all(out[k] is None for k in ["v1", "dead", "wrongProvider", "wrongTerminal", "wrongCreated"])
 
 
 @pytest.mark.parametrize("failure", ["write", "rename"])
@@ -403,6 +413,7 @@ const hooks = await p.createPlugin({
  env: {HC_TERMINAL_ID: "t1", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
  stdout: {isTTY: false, write(s) { writes.push(s); }},
  stderr: {isTTY: false, write(s) { writes.push(s); }}, stateDir: __STATE__, fs: io,
+ terminalInfo: () => ({terminal_created_ms: 111}),
 })({});
 fail = true;
 await hooks["chat.message"]({sessionID: "root"});
@@ -443,7 +454,7 @@ const writes = [];
 const hooks = await p.createPlugin({
  env: {HC_TERMINAL_ID: "t1", OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
  stdout: {isTTY: true, write(s) { writes.push(s); }}, stderr: null,
- stateDir: __STATE__, fs: io,
+ stateDir: __STATE__, fs: io, terminalInfo: () => ({terminal_created_ms: 111}),
 })({});
 await hooks["chat.message"]({sessionID: "root"});
 fail = true;
@@ -454,3 +465,74 @@ console.log(JSON.stringify({writes}));
 ''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
     assert all("state=blocked" in w for w in out["writes"][1:])
     assert len(out["writes"]) == 3
+
+
+def test_terminal_info_requires_live_ancestor_and_generation(tmp_path: Path) -> None:
+    body = _body(
+        """
+import * as p from __PLUGIN__;
+const live = (extra = {}) => ({address: "t1", state: "live", pid: 50, created_ms: 111, ...extra});
+const info = (data, ancestors = [50]) => p.terminalInfo("t1", {
+  hcGet: () => data, ancestors: () => ancestors, ownPid: 100,
+});
+console.log(JSON.stringify({
+  ok: info(live()),
+  own: info(live({pid: 100})),
+  finished: info(live({state: "finished"})),
+  foreign: info(live({address: "t9"})),
+  noGeneration: info(live({created_ms: null})),
+  notAncestor: info(live(), []),
+  wrongAncestor: info(live(), [99]),
+  missing: info(null),
+  unsafe: p.terminalInfo("../t1", {hcGet: () => live(), ancestors: () => [50], ownPid: 100}),
+}));
+""",
+        PLUGIN=PLUGIN.as_uri(),
+    )
+    out = _run(tmp_path, body)
+    assert out["ok"] == {"terminal_created_ms": 111}
+    assert out["own"] == {"terminal_created_ms": 111}
+    assert all(out[key] is None for key in [
+        "finished", "foreign", "noGeneration", "notAncestor", "wrongAncestor", "missing", "unsafe",
+    ])
+
+
+def test_plugin_refuses_unset_terminal_with_one_diagnostic(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    out = _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+const diagnostics = [];
+const hooks = await p.createPlugin({
+  env: {OPENCODE_CONFIG: "opencode-trusted-dev.jsonc"},
+  stateDir: __STATE__, stderr: {write(s) { diagnostics.push(s); }},
+})({});
+console.log(JSON.stringify({hooks: Object.keys(hooks), diagnostics}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(state)))
+    assert out["hooks"] == []
+    assert out["diagnostics"] == ["hc-binding: refusing: HC_TERMINAL_ID is not set\n"]
+    assert not state.exists()
+
+
+def test_plugin_refuses_a_stale_terminal_with_one_diagnostic(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    body = _body(
+        """
+import * as p from __PLUGIN__;
+const diagnostics = [];
+const hooks = await p.createPlugin({
+  env: {HC_TERMINAL_ID: "t1", OPENCODE_CONFIG: "C:/repo/opencode-trusted-dev.jsonc"},
+  stdout: {isTTY: true, write() {}}, stderr: {write(s) { diagnostics.push(s); }},
+  stateDir: __STATE__, pid: 100,
+  terminalInfo: () => null,
+})({});
+console.log(JSON.stringify({hooks: Object.keys(hooks), diagnostics}));
+""",
+        PLUGIN=PLUGIN.as_uri(),
+        STATE=str(state),
+    )
+    out = _run(tmp_path, body)
+    assert out["hooks"] == []
+    assert len(out["diagnostics"]) == 1
+    assert "refusing t1" in out["diagnostics"][0]
+    assert not (state / "hc-bindings" / "t1.json").exists()
+    assert not (state / "hc-bindings" / "t1.json.owner").exists()

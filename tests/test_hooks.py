@@ -339,3 +339,14 @@ def test_statusline_records_the_herdr_pane(tmp_path: Path) -> None:
     assert proc.returncode == 0
     record = json.loads((state_dir / "claude-status-worker-sid.json").read_text(encoding="utf-8"))
     assert record["herdr_pane_id"] == "wA:p3"
+
+
+def test_statusline_refuses_a_binding_without_hc_terminal(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    payload = {"session_id": "sid", "context_window": {"used_percentage": 12}}
+    proc = _run_hook("claude_statusline.py", payload, tmp_path, {"HX_STATE_DIR": str(state_dir)})
+    assert proc.returncode == 0
+    assert (state_dir / "claude-status-sid.json").exists()
+    assert not (state_dir / "hc-bindings").exists()
+    assert proc.stderr.count("\n") == 1
+    assert "HC_TERMINAL_ID" in proc.stderr

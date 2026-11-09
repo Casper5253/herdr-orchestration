@@ -11,12 +11,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 export const APP = "opencode";
+export const PROVIDER = "opencode";
+export const BINDING_VERSION = 2;
 export const STATES = new Set(["idle", "working", "done", "blocked", "error"]);
 export const KINDS = new Set(["permission", "question", "auth"]);
 const TEAM_OVERLAY = /(^|[\\/])opencode-trusted-dev\.jsonc$/i;
+const TERMINAL = /^[A-Za-z0-9_-]+$/;
+const MAX_ANCESTORS = 64;
 const WORKING_STATUSES = new Set([
   "active", "busy", "pending", "retry", "running", "streaming", "working",
 ]);
@@ -75,12 +80,90 @@ export function sessionIDFrom(properties = {}, type) {
   return typeof id === "string" && id ? id : null;
 }
 
-export function bindingFor(terminal, sessionID, cwd, pid, startedAt) {
-  return { terminal, session_id: sessionID, cwd: cwd || "", pid: Number(pid), started_at: startedAt };
+export function bindingFor(terminal, sessionID, observed, pid, writtenMs) {
+  return {
+    v: BINDING_VERSION,
+    terminal,
+    terminal_created_ms: observed.terminal_created_ms,
+    provider: PROVIDER,
+    session_id: sessionID,
+    provider_pid: Number(pid),
+    written_ms: writtenMs,
+  };
 }
 
 export function bindingPath(stateDir, terminal) {
   return path.join(stateDir, "hc-bindings", `${terminal}.json`);
+}
+
+export function defaultHcGet(terminal) {
+  const out = execFileSync("hc", ["get", terminal, "--json"], {
+    encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"],
+  });
+  const data = JSON.parse(out);
+  return data && typeof data === "object" ? data : null;
+}
+
+export function defaultAncestors(pid) {
+  if (process.platform === "win32") {
+    const script = '$rows = Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId)" }; $rows -join ";"';
+    let rows;
+    try {
+      rows = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      return [];
+    }
+    const parents = new Map();
+    for (const row of rows.trim().split(";")) {
+      const [child, parent] = row.split(",").map((value) => Number.parseInt(value, 10));
+      if (Number.isInteger(child) && child > 0) parents.set(child, Number.isInteger(parent) ? parent : 0);
+    }
+    return walkParents(parents, pid);
+  }
+  const parents = new Map();
+  for (let current = pid, depth = 0; depth < MAX_ANCESTORS; depth++) {
+    try {
+      const stat = fs.readFileSync(`/proc/${current}/stat`, "utf8");
+      const rest = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      parents.set(current, Number.parseInt(rest[1], 10));
+    } catch {
+      break;
+    }
+    const parent = parents.get(current);
+    if (!Number.isInteger(parent) || parent <= 0) break;
+    current = parent;
+  }
+  return walkParents(parents, pid);
+}
+
+function walkParents(parents, pid) {
+  const chain = [];
+  let current = pid;
+  for (let depth = 0; depth < MAX_ANCESTORS; depth++) {
+    const parent = parents.get(current);
+    if (!Number.isInteger(parent) || parent <= 0 || parent === pid || chain.includes(parent)) break;
+    chain.push(parent);
+    current = parent;
+  }
+  return chain;
+}
+
+export function terminalInfo(terminal, { hcGet = defaultHcGet, ancestors = defaultAncestors, ownPid = process.pid } = {}) {
+  if (typeof terminal !== "string" || !TERMINAL.test(terminal)) return null;
+  let data;
+  try {
+    data = hcGet(terminal);
+  } catch {
+    return null;
+  }
+  if (!data || data.state !== "live") return null;
+  if (data.address && data.address !== terminal) return null;
+  if (!Number.isInteger(data.created_ms)) return null;
+  if (!Number.isInteger(data.pid) || data.pid <= 0) return null;
+  if (data.pid !== ownPid && !ancestors(ownPid).includes(data.pid)) return null;
+  return { terminal_created_ms: data.created_ms };
 }
 
 // Write the terminal's binding through a sibling temp file, then rename it.
@@ -115,26 +198,38 @@ function writeRecord(stream, text) {
   }
 }
 
-export function readBinding(file, { terminal, core, cwd, isAlive = (pid) => {
+function writeDiagnostic(stream, text) {
+  if (!text || !stream || typeof stream.write !== "function") return false;
+  try {
+    stream.write(text + "\n");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readBinding(file, { terminal, createdMs, provider = PROVIDER, isAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 } }, io = fs) {
   const data = readJson(file, io);
-  const claim = readJson(`${file}.owner`, io);
-  return data?.terminal === terminal && data.core === core && data.cwd === cwd &&
-    typeof data.owner === "string" && data.owner === claim?.owner &&
-    data.pid === claim.pid && data.terminal === claim.terminal && data.core === claim.core &&
-    data.cwd === claim.cwd && typeof data.session_id === "string" && Boolean(data.session_id) &&
-    Number.isInteger(data.pid) && data.pid > 0 && isAlive(data.pid) ? data : null;
+  return data?.v === BINDING_VERSION && data.terminal === terminal &&
+    data.provider === provider && data.terminal_created_ms === createdMs &&
+    typeof data.session_id === "string" && Boolean(data.session_id) &&
+    Number.isInteger(data.provider_pid) && data.provider_pid > 0 && isAlive(data.provider_pid)
+    ? data : null;
 }
 
 export function createPlugin(options = {}) {
-  return async (input = {}) => {
+  return async () => {
     const env = options.env ?? process.env;
+    if (TEAM_OVERLAY.test(env.OPENCODE_CONFIG || "") && !env.HC_TERMINAL_ID) {
+      writeDiagnostic(options.stderr ?? process.stderr, "hc-binding: refusing: HC_TERMINAL_ID is not set");
+      return {};
+    }
     if (!enabled(env)) return {};
 
     const terminal = env.HC_TERMINAL_ID;
     const stateDir = options.stateDir ?? env.HX_STATE_DIR ?? path.join(os.homedir(), ".herdr-team", "state");
-    const cwd = input.directory || options.cwd || process.cwd();
     const pid = options.pid ?? process.pid;
     const now = options.now ?? (() => new Date());
     const stdout = options.stdout ?? process.stdout;
@@ -143,11 +238,19 @@ export function createPlugin(options = {}) {
     const childSessions = new Map();
     const prompts = new Map();
     const io = options.fs ?? fs;
+    const observe = options.terminalInfo ?? ((name) => terminalInfo(name, {
+      hcGet: options.hcGet, ancestors: options.ancestors, ownPid: pid,
+    }));
+    const observed = observe(terminal);
+    if (!observed) {
+      writeDiagnostic(stderr, `hc-binding: refusing ${terminal}: terminal is not live or not this process's ancestor`);
+      return {};
+    }
     const file = bindingPath(stateDir, terminal);
     const claimFile = `${file}.owner`;
     const owner = randomUUID();
-    const core = JSON.stringify([env.HC_SESSION || "default", env.HC_SOCKET || ""]);
     const initial = JSON.stringify(readJson(claimFile, io));
+    const writtenMs = options.writtenMs ?? (() => Date.now());
     let claimed = false;
     let activeRoot = null;
     let startedAt = now().toISOString();
@@ -159,10 +262,10 @@ export function createPlugin(options = {}) {
       try {
         if (!claimed) {
           // Only startup replaces the ownership claim. A late binding rename cannot reclaim it.
-          atomicWriteJson(claimFile, {...bindingFor(terminal, null, cwd, pid, startedAt), owner, core}, io);
+          atomicWriteJson(claimFile, {terminal, owner, provider_pid: pid, started_at: startedAt}, io);
           claimed = true;
         }
-        atomicWriteJson(file, {...bindingFor(terminal, activeRoot, cwd, pid, startedAt), owner, core}, io);
+        atomicWriteJson(file, bindingFor(terminal, activeRoot, observed, pid, writtenMs()), io);
         return true;
       } catch {
         // Status reporting must never disturb the agent; retry on a later event.

@@ -2,7 +2,8 @@
 
 Reads the status line JSON payload on stdin, writes it atomically to
 ``~/.herdr-team/state/claude-status-<session_id>.json`` (and the aggregate
-``claude-status.json`` consumed by ``hx usage``), prints a one-line status.
+``claude-status.json`` consumed by ``hx usage``), prints a one-line status, and
+publishes the v2 hc binding when ``HC_TERMINAL_ID`` names this terminal.
 
 Sets HX_STATE_DIR to redirect the state dir (used by tests).
 Hooks must never fail the session: every error is caught and exit code is 0.
@@ -17,6 +18,10 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hc_binding
 
 
 def state_dir() -> Path:
@@ -96,8 +101,19 @@ def main() -> int:
     _atomic_write_json(per_session, record)
     _atomic_write_json(target_dir / "claude-status.json", record)
 
+    _publish_binding(record["session_id"])
+
     print(status_line(record, per_session.name))
     return 0
+
+
+def _publish_binding(session_id: Any) -> None:
+    if not isinstance(session_id, str) or not session_id:
+        return
+    try:
+        hc_binding.publish("claude", session_id)
+    except BaseException:
+        pass
 
 
 def _entry() -> int:
