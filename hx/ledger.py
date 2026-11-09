@@ -406,7 +406,7 @@ class Ledger:
         partitions = dict(existing.get("files", {}))
         mine: dict[str, Any] = {}
         for task_id, task in ledger.get("tasks", {}).items():
-            if task.get("status") in self.CLOSED_STATUSES:
+            if task.get("status") in self.CLOSED_STATUSES or task.get("released"):
                 continue
             owner = task.get("owner", "")
             worktree = task.get("worktree")
@@ -621,6 +621,7 @@ class Ledger:
             )
             task["owner"] = owner
             task["status"] = "assigned"
+            task.pop("released", None)  # re-dispatch re-claims the task's files
             task["updated"] = _utcnow().isoformat()
             task["rev"] = task.get("rev", 0) + 1
             self._next_rev(ledger)
@@ -669,12 +670,33 @@ class Ledger:
         return len(doomed)
 
     def release_task_reservations(self, task_id: str) -> int:
-        """Release stranded session reservations for a closed/lost task."""
-        with self._leases_lock():
-            leases = self._load_leases()
-            released = self._release_task_reservations(leases, task_id)
-            self._save_leases(leases)
-            return released
+        """Free a task's stranded reservations and return how many were freed.
+
+        File leases are derived from each open task's ``files`` list, so
+        dropping entries under ``leases.files`` would silently grow back at
+        the next recompute. Instead the task gets a ``released`` tombstone:
+        ``_recompute_leases`` stops counting its files (the list stays for
+        history) and ``assign`` clears the tombstone on re-dispatch. Session
+        holds are dropped outright; hx.context token leases are never touched.
+        A missing task is a loud failure, not a quiet zero.
+        """
+        def release(ledger_data: dict[str, Any], leases: dict[str, Any]) -> int:
+            task = ledger_data.get("tasks", {}).get(task_id)
+            if task is None:
+                raise TaskNotFound(task_id)
+            freed = self._release_task_reservations(leases, task_id)
+            if not task.get("released") and task.get("status") not in self.CLOSED_STATUSES:
+                freed += len(task.get("files", []))
+                task["released"] = _utcnow().isoformat()
+                task["updated"] = task["released"]
+                task["rev"] = task.get("rev", 0) + 1
+                self._next_rev(ledger_data)
+            leases.clear()
+            leases.update(self._recompute_leases(ledger_data, {
+                "files": leases.get("files", {}), "sessions": leases.get("sessions", {})}))
+            return freed
+
+        return self.mutate_leases_with_repo(release)
 
     def update_task(self, task_id: str, **fields: Any) -> dict[str, Any]:
         with self._dual_lock():

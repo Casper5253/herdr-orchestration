@@ -663,8 +663,48 @@ def test_task_release_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         code = cli.main(["task", "release", "t1"])
     assert code == 0
     payload = json.loads(buf.getvalue())
-    assert payload["released"] == 1
+    assert payload["released"] == 2  # one session hold + one file claim
     assert led.get_session("hx-opencode") is None
+
+
+def test_task_release_frees_file_reservations(ledger: ledger_mod.Ledger) -> None:
+    """The live defect: release returned but the task still owned its files."""
+    ledger.add_task("stuck", title="S", owner="dev-opencode", files=["hx/host.py"])
+    ledger.assign_task("stuck", owner="dev-opencode")
+    with pytest.raises(ledger_mod.OwnershipConflict):
+        ledger.add_task("review", title="R", owner="dev-devin", files=["hx/host.py"])
+
+    assert ledger.release_task_reservations("stuck") == 1  # the file claim
+    freed = ledger.add_task("review", title="R", owner="dev-devin", files=["hx/host.py"])
+    assert freed["files"]
+    # The released task keeps its file list for history but no longer claims it.
+    assert ledger.get_task("stuck")["files"]
+    assert ledger.get_task("stuck")["released"]
+
+
+def test_task_release_on_a_closed_task_frees_nothing(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="w", files=["a.py"])
+    ledger.set_status("t1", "done")
+    assert ledger.release_task_reservations("t1") == 0
+
+
+def test_task_release_unknown_task_fails_loudly(ledger: ledger_mod.Ledger) -> None:
+    with pytest.raises(ledger_mod.TaskNotFound):
+        ledger.release_task_reservations("ghost")
+
+
+def test_assign_after_release_reclaims_the_files(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="w", files=["a.py"])
+    ledger.release_task_reservations("t1")
+    ledger.assign_task("t1", owner="w")
+    with pytest.raises(ledger_mod.OwnershipConflict):
+        ledger.add_task("t2", title="U", owner="w", files=["a.py"])
+
+
+def test_release_twice_is_not_double_counted(ledger: ledger_mod.Ledger) -> None:
+    ledger.add_task("t1", title="T", owner="w", files=["a.py"])
+    assert ledger.release_task_reservations("t1") == 1
+    assert ledger.release_task_reservations("t1") == 0
 
 
 def test_mutate_leases_runs_under_shared_lock_and_saves(
