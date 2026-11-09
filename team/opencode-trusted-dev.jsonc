@@ -68,6 +68,8 @@
       "*": "allow",
       "C:\\Users\\caspe\\.agents\\*": "deny",
       "C:\\Users\\caspe\\.claude\\skills\\*": "deny",
+      "C:\\Users\\caspe\\.codex\\skills\\*": "deny",
+      "C:\\Users\\caspe\\AppData\\Roaming\\devin\\skills\\*": "deny",
       "C:\\Users\\caspe\\.config\\herdr-app\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\*": "deny",
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr-core\\*": "deny",

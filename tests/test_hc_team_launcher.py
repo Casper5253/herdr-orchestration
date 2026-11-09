@@ -213,8 +213,18 @@ def test_dry_run_no_team_starts_all_three(stage):
     assert "--permission-mode dangerous" in devin
     keeps = [line for line in lines if line.startswith("herdr-app do terminal.keep")]
     assert [line.rsplit(" ", 1)[-1] for line in keeps] == ["right", "down", "down"]
-    assert "hc label t1 team=dev role=claude" in lines
+    assert "hc label t1 team=dev role=lead" in lines
     assert calls == [["ls", "--json"], ["ls"]]
+
+
+def test_a_second_lead_is_refused(stage):
+    roster = _hc_ls()
+    roster["terminals"].append({"address": "t5", "name": None, "state": "live", "agent": "devin",
+                                "labels": {"team": "dev", "role": "lead"}})
+    proc, calls = stage.run(roster, dry=False)
+    assert proc.returncode != 0, proc.stdout
+    assert "t5 already holds role=lead" in proc.stdout
+    assert not [c for c in calls if c[0] in {"run", "label", "do"}]
 
 
 def test_dry_run_all_live_starts_nothing(stage):

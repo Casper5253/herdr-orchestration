@@ -1,6 +1,10 @@
 """hx say reaches only the sender's own team."""
 from __future__ import annotations
 
+import json
+import os
+import time
+
 import pytest
 
 from hx import host, say, usage
@@ -87,6 +91,15 @@ def test_a_new_role_can_send(monkeypatch: pytest.MonkeyPatch, sent: list[list[st
     assert sent == [["herdr", "agent", "prompt", "dev-claude", "[team from dev-gemini] report"]]
 
 
+def test_a_long_message_on_the_old_host_still_sends_the_full_text(monkeypatch, sent):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p3")
+    body = "q" * 1312
+    assert main(["say", "codex", body]) == 0
+    assert sent == [
+        ["herdr", "agent", "prompt", "dev-codex", "[team from dev-opencode] " + body]
+    ]
+
+
 @pytest.mark.parametrize("utilisation", [.75, .89, 1.23])
 def test_say_holds_worker_above_pressure(monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], capsys: pytest.CaptureFixture[str], utilisation) -> None:
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
@@ -148,3 +161,86 @@ def test_say_unknown_telemetry_does_not_warn_or_block(monkeypatch: pytest.Monkey
     assert main(["say", "opencode", "continue"]) == 0
     assert capsys.readouterr().err == ""
     assert sent == [["herdr", "agent", "prompt", "dev-opencode", "[team from dev-codex] continue"]]
+
+
+def _legacy_record(tmp_path):
+    path = tmp_path / ".hx" / "outbox" / "dev-codex" / "legacy-pending.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "sender": "dev-codex", "target": "dev-claude",
+        "text": "[team from dev-codex] old blocked report", "delivered": False,
+    }), encoding="utf-8")
+    return path
+
+
+def test_legacy_outbox_retries_exact_artifact_record_once(monkeypatch, sent, tmp_path, capsys):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _legacy_record(tmp_path)
+    assert say.retry_pending() == 0
+    assert len(sent) == 1
+    assert sent[0][-1] == "[team from dev-codex] old blocked report"
+    assert json.loads(path.read_text(encoding="utf-8"))["delivered"] is True
+    assert say.retry_pending() == 0
+    assert len(sent) == 1
+    assert "No pending messages for dev-codex." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_legacy_retry_keeps_existing_claim_guards(monkeypatch, sent, tmp_path, stale):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _legacy_record(tmp_path)
+    assert say._claim(path) == "claimed"
+    if stale:
+        stamp = time.time() - say.CLAIM_STALE_SECONDS - 1
+        os.utime(say._claim_path(path), (stamp, stamp))
+    assert say.retry_pending() == 1
+    assert sent == []
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert say._record_state(record) == ("uncertain" if stale else "pending")
+
+
+def test_legacy_retry_claim_stays_held_until_outcome_written(monkeypatch, sent, tmp_path):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _legacy_record(tmp_path)
+    original = say._write_state
+    observed = []
+
+    def write_state(record_path, state, **fields):
+        if state == "delivered":
+            observed.append(say._claim(record_path))
+        original(record_path, state, **fields)
+
+    monkeypatch.setattr(say, "_write_state", write_state)
+    assert say.retry_pending() == 0
+    assert observed == ["busy"]
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("sender_key", "other__codex"),
+    ("sender", "other-codex"),
+    ("text", "[team from dev-claude] spoofed report"),
+])
+def test_legacy_retry_keeps_sender_authentication(monkeypatch, sent, tmp_path, field, value):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _legacy_record(tmp_path)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert say.retry_pending() == 1
+    assert sent == []
+
+
+def test_current_and_legacy_outboxes_share_the_retry_order(monkeypatch, sent, tmp_path):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _legacy_record(tmp_path)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["created_at"] = "2020-01-01T00:00:00Z"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    say._write_outbox("dev__codex", "dev-codex", "dev-claude", "new report", "new report")
+    assert say.retry_pending() == 0
+    assert [call[-1] for call in sent] == [
+        "[team from dev-codex] old blocked report", "[team from dev-codex] new report",
+    ]
+    assert say.retry_pending() == 0
+    assert len(sent) == 2

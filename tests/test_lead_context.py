@@ -16,7 +16,7 @@ def lead(tmp_path, monkeypatch):
     led = ledger.Ledger(repo_root=tmp_path, ledger_path=tmp_path / "ledger.json",
                         leases_path=tmp_path / "leases.json", lock_path=tmp_path / "lock")
     c = context.Controller(led, {
-        "team_prefix": "test-", "context_limits": {"claude-lead": 400000},
+        "team_prefix": "test-", "lead_role": "claude", "context_limits": {"claude-lead": 400000},
         "context": {"claude_lead_threshold": .6, "max_per_task": 2, "min_interval_min": 20},
     })
     c.agent = host.member({"name": "test-claude", "agent": "claude", "agent_status": "working",

@@ -446,6 +446,11 @@ def codex_usage(
 
     info = last_token_count.get("info", {})
     rate_limits = last_token_count.get("rate_limits", {})
+    if not isinstance(rate_limits, dict):
+        rate_limits = {}
+    for name in ("primary", "secondary"):
+        if not isinstance(rate_limits.get(name), dict):
+            rate_limits[name] = None
     context = {
         "input_tokens": info.get("last_token_usage", {}).get("input_tokens"),
         "cached_input_tokens": info.get("last_token_usage", {}).get("cached_input_tokens"),
@@ -454,12 +459,16 @@ def codex_usage(
     }
 
     soft_limit = policy.get("thresholds", {}).get("pool_soft_limit", 0.85)
-    primary_pct = rate_limits.get("primary", {}).get("used_percent", 0)
-    secondary_pct = rate_limits.get("secondary", {}).get("used_percent", 0)
-    available = primary_pct < soft_limit * 100 and secondary_pct < soft_limit * 100
+    primary_pct = (rate_limits["primary"] or {}).get("used_percent")
+    secondary_pct = (rate_limits["secondary"] or {}).get("used_percent")
+    known = isinstance(primary_pct, (int, float)) and isinstance(secondary_pct, (int, float))
+    available = (
+        primary_pct < soft_limit * 100 and secondary_pct < soft_limit * 100
+        if known else "unknown"
+    )
 
     return {
-        "tag": "measured",
+        "tag": "measured" if known else "unknown",
         "sample_age_seconds": sample_age_seconds,
         "rollout": str(rollout),
         "rate_limits": rate_limits,
@@ -551,8 +560,12 @@ def live_members() -> list[host.Member]:
 
 
 def lead_name(policy: dict[str, Any], prefix: str) -> str:
-    """The team's lead agent: the one role the policy names (lead_role, default claude)."""
-    return prefix + str(policy.get("lead_role", "claude"))
+    """The team's lead agent: the one role the policy names (lead_role, default lead).
+
+    The lead is a seat, not a model family: whichever terminal carries role=lead
+    leads, so workers always report with `hx say lead`.
+    """
+    return prefix + str(policy.get("lead_role", "lead"))
 
 
 def team_agents(prefix: str) -> dict[str, host.Member]:

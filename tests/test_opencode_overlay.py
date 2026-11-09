@@ -43,7 +43,10 @@ def test_reading_outside_the_repo_is_free_except_secret_folders():
             assert keys.index(HOME + d) < keys.index(inner), f"{inner} must follow {d}"
 
 
-NEVER_EDIT = [".agents\\*", ".claude\\skills\\*", *HERDR_FOLDERS]
+NEVER_EDIT = [
+    ".agents\\*", ".claude\\skills\\*", ".codex\\skills\\*",
+    "AppData\\Roaming\\devin\\skills\\*", *HERDR_FOLDERS,
+]
 
 
 def _overlay() -> dict:

@@ -10,10 +10,10 @@ from hx import devin, host, say, usage
 from hx.__main__ import main
 
 AGENTS = {"result": {"agents": [
-    {"name": "dev-claude", "pane_id": "w8:p1"},
-    {"name": "dev-codex", "pane_id": "w8:p2"},
-    {"name": "dev-opencode", "pane_id": "w8:p3"},
-    {"name": "dev-devin", "pane_id": "w8:p5"},
+    {"name": "dev-claude", "pane_id": "w8:p1", "agent": "claude"},
+    {"name": "dev-codex", "pane_id": "w8:p2", "agent": "codex"},
+    {"name": "dev-opencode", "pane_id": "w8:p3", "agent": "opencode"},
+    {"name": "dev-devin", "pane_id": "w8:p5", "agent": "devin"},
 ]}}
 
 

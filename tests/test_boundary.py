@@ -15,7 +15,7 @@ def boundary_controller(tmp_path, monkeypatch):
                         leases_path=tmp_path / 'leases.json', lock_path=tmp_path / 'ledger.lock')
     led.add_task('one', 'First item', 'dev-codex', ['owned.py'], base_commit='base')
     led.set_status('one', 'done')
-    controller = context.Controller(led, {'team_prefix': 'dev-'})
+    controller = context.Controller(led, {'team_prefix': 'dev-', 'lead_role': 'claude'})
     agent = host.member({'name': 'dev-codex', 'agent': 'codex', 'agent_status': 'idle',
                          'agent_session': {'value': 'sid'}, 'cwd': str(tmp_path)})
     sample = {'session_id': 'sid', 'utilisation': .2, 'sampled_at': context._now().isoformat()}

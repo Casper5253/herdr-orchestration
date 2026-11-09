@@ -1,5 +1,6 @@
 {
   "team_prefix": "hx-",
+  "lead_role": "lead",
   "active_plan": "go",
   "opencode_pool": {
     "go": {

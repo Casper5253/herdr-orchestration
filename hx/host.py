@@ -27,6 +27,8 @@ HC_APP_KINDS = {
     "opencode": "opencode",
     "devin": "devin",
 }
+# A team or role label that can flow into a path and a logical name.
+HC_LABEL = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 
 
 class Member(TypedDict):
@@ -256,6 +258,12 @@ def _hc_state_dir() -> Path:
     return Path(env) if env else Path.home() / ".herdr-team" / "state"
 
 
+def _label(value: Any) -> str:
+    """A safe team/role label, or "" when it is missing or not a plain path-safe word."""
+    text = str(value or "")
+    return text if HC_LABEL.fullmatch(text) else ""
+
+
 def _hc_binding_session(address: str, pid: Any) -> str | None:
     """The provider session bound to this terminal, or None when the binding is absent or stale.
 
@@ -280,14 +288,18 @@ def _hc_binding_session(address: str, pid: Any) -> str | None:
 
 
 def hc_member(raw: dict[str, Any]) -> Member:
-    """One `hc get` Terminal -> Member. Team and role are the labels, never the name."""
+    """One `hc get` Terminal -> Member.
+
+    Team and role labels are the canonical logical identity. A raw terminal name
+    never overrides them; when labels are absent or invalid the terminal is not
+    a team member. A label that is not a safe path component is rejected here,
+    at the host boundary.
+    """
     labels = raw.get("labels")
     labels = labels if isinstance(labels, dict) else {}
-    team = str(labels.get("team") or "")
-    role = str(labels.get("role") or "")
-    name = str(raw.get("name") or "")
-    if not name and team and role:
-        name = f"{team}-{role}"
+    team = _label(labels.get("team"))
+    role = _label(labels.get("role"))
+    name = f"{team}-{role}" if team and role else str(raw.get("name") or "")
     status_raw = raw.get("status")
     status_raw = status_raw if isinstance(status_raw, dict) else {}
     app = str(status_raw.get("app") or "")
@@ -316,8 +328,14 @@ def _hc_error_result(kind: str, message: Any = None) -> SendResult:
     return _unknown_send(str(message or "hc send failed"), started=False)
 
 
-def _hc_send_result(data: Any) -> SendResult:
-    """An hc SendResult as the host-neutral one, with no invented evidence."""
+def _hc_send_result(data: Any, until: tuple[str, ...] = ()) -> SendResult:
+    """An hc SendResult as the host-neutral one, with the waited outcome kept.
+
+    A turn in the response proves the text went in; `started` is only the
+    agent-work signal. A waited turn counts as ended only when its final status
+    is one the caller asked for (idle/done by default). Blocked, error, exit and
+    timeout are never completion.
+    """
     if not isinstance(data, dict):
         return _unknown_send("malformed response")
     error = data.get("error")
@@ -332,12 +350,30 @@ def _hc_send_result(data: Any) -> SendResult:
     turn = data.get("turn")
     turn = turn if isinstance(turn, int) and not isinstance(turn, bool) else None
     waited = data.get("wait")
-    ended = False
+    if not isinstance(waited, dict):
+        return SendResult(started=started, status=status, turn=turn, ended=False, reason=None)
+    waited_status = waited.get("status")
+    if waited_status in STATUSES:
+        status = waited_status
+    waited_turn = waited.get("turn")
+    if isinstance(waited_turn, int) and not isinstance(waited_turn, bool):
+        turn = waited_turn
+    conditions = until or ("idle", "done")
+    waited_reason = str(waited.get("reason") or "")
+    # An exit can keep the last idle/done status. A blocked or error status is
+    # never completion, even when the caller put it in `until`.
+    ended = (
+        waited.get("ended") is True
+        and waited_reason != "exit"
+        and status not in ("blocked", "error")
+        and status in conditions
+    )
     reason = None
-    if isinstance(waited, dict):
-        ended = waited.get("ended") is True
-        if not ended and waited.get("reason"):
-            reason = str(waited["reason"])
+    if not ended:
+        if status in ("blocked", "error"):
+            reason = status
+        else:
+            reason = waited_reason or "timeout"
     return SendResult(started=started, status=status, turn=turn, ended=ended, reason=reason)
 
 
@@ -373,10 +409,13 @@ class HcHost:
         if not self.terminal_id:
             return None
         try:
-            found = hc_member(self._detail(self.terminal_id))
+            detail = self._detail(self.terminal_id)
+            if detail.get("state") == "finished":
+                return None
+            found = hc_member(detail)
         except (OSError, ValueError, subprocess.SubprocessError):
             return None
-        if not found["team"] or not found["role"]:
+        if found["address"] != self.terminal_id or not found["team"] or not found["role"]:
             return None
         return found
 
@@ -397,10 +436,12 @@ class HcHost:
         return members
 
     def team(self, prefix: str) -> dict[str, Member]:
-        team = prefix[:-1] if prefix.endswith("-") else prefix
+        team = _label(prefix[:-1] if prefix.endswith("-") else prefix)
         members: dict[str, Member] = {}
+        if not team:
+            return members
         for agent in self.all_members():
-            if not agent["team"] or agent["team"] != team:
+            if agent["team"] != team:
                 continue
             name = agent["name"]
             if name in members:
@@ -411,11 +452,27 @@ class HcHost:
             members[name] = agent
         return members
 
+    def _member_named(self, name: str) -> Member:
+        """The one live member whose logical identity is `name`, resolved from labels.
+
+        A global `hc get <name>` is never used: an unnamed lead has no hc name,
+        and another team's terminal can carry the same raw name.
+        """
+        matches = [member for member in self.all_members() if member["name"] == name]
+        if not matches:
+            raise ValueError(f"no live terminal has the logical identity {name}")
+        if len(matches) > 1:
+            raise ValueError(f"logical identity {name} is ambiguous")
+        return matches[0]
+
     def info(self, name: str) -> Member:
-        return hc_member(self._detail(name))
+        return self._member_named(name)
 
     def send(self, name: str, text: str) -> int:
-        return self._run("send", name, text, timeout=60).returncode
+        terminal = self._member_named(name)["address"]
+        if not terminal:
+            raise ValueError(f"terminal {name} has no address")
+        return self._run("send", terminal, text, timeout=60).returncode
 
     def send_checked(
         self,
@@ -426,7 +483,10 @@ class HcHost:
         until: tuple[str, ...] = (),
         timeout_ms: int | None = None,
     ) -> SendResult:
-        args = ["send", name, text, "--json"]
+        terminal = self._member_named(name)["address"]
+        if not terminal:
+            raise ValueError(f"terminal {name} has no address")
+        args = ["send", terminal, text, "--json"]
         process_timeout = 60.0
         if wait:
             args.append("--wait")
@@ -449,10 +509,13 @@ class HcHost:
                 error = data["error"]
                 return _hc_error_result(str(error.get("kind") or ""), error.get("message"))
             return _unknown_send(f"hc exited {completed.returncode}")
-        return _hc_send_result(data)
+        return _hc_send_result(data, until)
 
     def read(self, name: str, lines: int = 200) -> str:
-        completed = self._run("read", name, "--lines", str(lines))
+        terminal = self._member_named(name)["address"]
+        if not terminal:
+            raise ValueError(f"terminal {name} has no address")
+        completed = self._run("read", terminal, "--lines", str(lines))
         if completed.returncode != 0:
             raise RuntimeError(f"hc could not read terminal {name}")
         return completed.stdout

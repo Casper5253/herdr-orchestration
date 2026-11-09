@@ -1,5 +1,7 @@
 [
   {"source": "team/Start-HerdrTeam.ps1", "target": ".herdr-team/Start-HerdrTeam.ps1"},
+  {"source": "team/Start-HerdrAppTeam.ps1", "target": ".herdr-team/Start-HerdrAppTeam.ps1"},
+  {"source": "team/Set-HerdrLead.ps1", "target": ".herdr-team/Set-HerdrLead.ps1"},
   {"source": "team/claude-settings.json", "target": ".herdr-team/claude-settings.json"},
   {"source": "team/opencode-trusted-dev.jsonc", "target": ".herdr-team/opencode-trusted-dev.jsonc"},
   {"source": "team/opencode-hc-status/index.js", "target": ".config/opencode/plugins/opencode-hc-status.js"},

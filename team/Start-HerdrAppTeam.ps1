@@ -1,20 +1,22 @@
 # Builds the Herdr app team grid for one project from the lead's own hc terminal:
 # the lead (this terminal) top-left, codex to its right, devin below it, opencode below codex.
 # Usage:
-#   & team\Start-HerdrAppTeam.ps1 -Project C:\path\to\repo [-Team dev] [-DevinCwd <dir>] [-DryRun]
+#   & team\Start-HerdrAppTeam.ps1 -Project C:\path\to\repo [-Team dev] [-DevinCwd <dir>] [-Lead <terminal>] [-DryRun]
 # Safe to run twice: validated live roles are reused and missing panes are restored.
-# Existing panes are not moved. -DevinCwd defaults to -Project. -DryRun prints every hc and herdr-app command
+# Existing panes are not moved. -DevinCwd defaults to -Project. -Lead (the grid anchor that gets role=<policy
+# lead_role>) defaults to this terminal. -DryRun prints every hc and herdr-app command
 # it would run and runs none of them (roster queries still run).
 param(
     [Parameter(Mandatory)][string]$Project,
     [ValidateSet('dev')][string]$Team = 'dev',
     [string]$DevinCwd,
+    [string]$Lead,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not $env:HC_TERMINAL_ID) { throw 'Run this from the lead terminal inside the Herdr app (HC_TERMINAL_ID is unset).' }
-$lead = $env:HC_TERMINAL_ID
+$lead = if ($Lead) { $Lead } else { $env:HC_TERMINAL_ID }
 $Project = (Resolve-Path $Project).Path
 if (-not (Test-Path (Join-Path $Project '.git'))) { throw "$Project is not a Git repository root." }
 if (-not $DevinCwd) { $DevinCwd = $Project }
@@ -35,6 +37,7 @@ if (-not $policyPath) {
 }
 if (-not (Test-Path $policyPath)) { throw 'policy.json not found; set HX_POLICY_PATH or run the launcher from the hx repo checkout.' }
 $policy = Get-Content -Raw $policyPath | ConvertFrom-Json
+$leadRole = if ($policy.lead_role) { [string]$policy.lead_role } else { 'lead' }
 
 $model = $policy.persistent_opencode_model
 if ($model -isnot [string] -or $model -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
@@ -153,6 +156,17 @@ foreach ($role in $roles.Keys) {
     }
 }
 
+# Two terminals with one role break every hx lookup on the team, so a second lead is refused.
+foreach ($t in $terminals) {
+    if ($t.state -ne 'live' -or $t.address -eq $lead -or $t.address -in $live.Values) { continue }
+    $out = hc get $t.address --json | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "hc get $($t.address) failed." }
+    $detail = try { $out | ConvertFrom-Json } catch { throw "Invalid terminal details for $($t.address)." }
+    if ($detail.labels.team -eq $Team -and $detail.labels.role -eq $leadRole) {
+        throw "$($t.address) already holds role=$leadRole on team $Team. Hand the seat over with Set-HerdrLead.ps1 first."
+    }
+}
+
 if (-not $live.ContainsKey('devin')) {
     if ($policy.devin.enabled -ne $true) { throw 'policy.devin.enabled must be true.' }
     if ($devinModel -cnotin $policy.devin.allowed_models) { throw 'Devin model is not in policy.devin.allowed_models.' }
@@ -168,7 +182,7 @@ if (-not $live.ContainsKey('devin')) {
     if ($variants.Count -ne 1 -or $variants[0].cost_tier -cne 'Free') { throw 'Devin model is unavailable or not Free; refusing launch.' }
 }
 
-Invoke-Planned @('hc', 'label', $lead, "team=$Team", 'role=claude') | Out-Null
+Invoke-Planned @('hc', 'label', $lead, "team=$Team", "role=$leadRole") | Out-Null
 foreach ($role in $roles.Keys) {
     if ($live.ContainsKey($role)) {
         Write-Output "already live $($live[$role])"

@@ -216,6 +216,25 @@ def test_codex_usage_missing_dir(tmp_path: Path, policy: dict, now: datetime.dat
     assert result["available"] == "unknown"
 
 
+@pytest.mark.parametrize("window", ["primary", "secondary"])
+@pytest.mark.parametrize("value", [None, [], "invalid", 42, {}])
+def test_codex_usage_unknown_window(tmp_path, policy, now, window, value):
+    rollout = tmp_path / "rollout.jsonl"
+    _make_codex_rollout(rollout)
+    event = json.loads(rollout.read_text(encoding="utf-8").splitlines()[-1])
+    event["payload"]["rate_limits"][window] = value
+    rollout.write_text(json.dumps(event), encoding="utf-8")
+
+    result = codex_usage(policy, sessions_dir=tmp_path, now=now)
+
+    assert result["tag"] == "unknown"
+    assert result["available"] == "unknown"
+    assert result["rate_limits"][window] in (None, {})
+    other = "secondary" if window == "primary" else "primary"
+    assert result["rate_limits"][other] == event["payload"]["rate_limits"][other]
+    assert result["context"]["input_tokens"] == 1000
+
+
 def test_claude_usage_measured(tmp_path: Path, policy: dict, now: datetime.datetime) -> None:
     status = tmp_path / "claude-status.json"
     status.write_text(json.dumps({
