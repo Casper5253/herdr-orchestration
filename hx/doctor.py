@@ -104,8 +104,8 @@ def _opencode_model(roots: dict[str, Path], policy: dict[str, Any]) -> tuple[str
     source = str(db)
     try:
         agent = context.agent_info(usage.team_prefix(policy) + "opencode")
-        sid = (agent.get("agent_session") or {}).get("value")
-        if agent.get("agent") != "opencode" or not isinstance(sid, str) or not sid:
+        sid = agent.get("session_id")
+        if agent.get("kind") != "opencode" or not isinstance(sid, str) or not sid:
             return None, source
         source += f" session={sid}"
         with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:

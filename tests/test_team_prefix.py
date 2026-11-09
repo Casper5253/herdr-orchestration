@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from hx import context, usage
+from hx import context, host, usage
 
 AGENTS = {"result": {"agents": [
     {"name": "dev-claude", "pane_id": "w8:p1"},
@@ -15,10 +15,15 @@ AGENTS = {"result": {"agents": [
 ]}}
 
 
+def _members():
+    return [host.member(a) for a in AGENTS["result"]["agents"]]
+
+
 @pytest.mark.parametrize(("pane", "expected"), [("w8:p1", "dev-"), ("w8:p2", "dev-"), ("w9:p1", "hx-"), ("w10:p3", "alpha-"), ("w11:p2", "my-team-"), ("w3:p1", "hx-")])
 def test_prefix_comes_from_this_panes_agent(monkeypatch: pytest.MonkeyPatch, pane: str, expected: str) -> None:
+    monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", pane)
-    monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
+    monkeypatch.setattr(host.HerdrHost, "all_members", lambda self: _members())
     assert usage.team_prefix({"team_prefix": "hx-"}) == expected
 
 
@@ -29,18 +34,20 @@ def test_env_override_and_policy_fallback(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_herdr_failure_falls_back_to_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p1")
 
-    def broken() -> dict:
+    def broken(self) -> list:
         raise OSError("herdr not running")
 
-    monkeypatch.setattr(usage, "_herdr_agent_list", broken)
+    monkeypatch.setattr(host.HerdrHost, "all_members", broken)
     assert usage.team_prefix({"team_prefix": "hx-"}) == "hx-"
 
 
 def test_context_accepts_the_dev_team(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p1")
-    monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
+    monkeypatch.setattr(host.HerdrHost, "all_members", lambda self: _members())
     monkeypatch.setattr(context, "agent_info", lambda name: {"name": name})
     controller = context.Controller(policy={"team_prefix": "hx-"})
     assert controller._agent("dev-codex") == {"name": "dev-codex"}
@@ -50,8 +57,9 @@ def test_context_accepts_the_dev_team(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("name", ["dev-luna", "dev-haiku", "dev-gemini"])
 def test_context_accepts_any_role_on_the_team(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p1")
-    monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
+    monkeypatch.setattr(host.HerdrHost, "all_members", lambda self: _members())
     monkeypatch.setattr(context, "agent_info", lambda n: {"name": n})
     controller = context.Controller(policy={"team_prefix": "hx-"})
     assert controller._agent(name) == {"name": name}

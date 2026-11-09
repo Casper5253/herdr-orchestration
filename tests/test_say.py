@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from hx import say, usage
+from hx import host, say, usage
 from hx.__main__ import main
 
 AGENTS = {"result": {"agents": [
@@ -20,18 +20,19 @@ AGENTS = {"result": {"agents": [
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
-    monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
-    monkeypatch.setattr(say.context, "agent_info", lambda name: {
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setattr(host.HerdrHost, "all_members", lambda self: [host.member(a) for a in AGENTS["result"]["agents"]])
+    monkeypatch.setattr(say.context, "agent_info", lambda name: host.member({
         "name": name,
         "agent": "claude" if name.endswith("-claude") else "opencode",
         "agent_session": {"value": "sid"},
-    })
+    }))
     monkeypatch.setattr(say.context, "telemetry", lambda *args: {"session_id": "sid", "utilisation": None, "sampled_at": None})
 
     class Done:
         returncode = 0
 
-    monkeypatch.setattr(say.subprocess, "run", lambda argv, **_: calls.append(argv) or Done())
+    monkeypatch.setattr(host.subprocess, "run", lambda argv, **_: calls.append(argv) or Done())
     return calls
 
 
@@ -94,11 +95,11 @@ def test_say_holds_worker_above_pressure(monkeypatch: pytest.MonkeyPatch, sent: 
         events.append("sample")
         return {"session_id": "sid", "utilisation": utilisation, "sampled_at": say.context._now().isoformat()}
     monkeypatch.setattr(say.context, "telemetry", telemetry)
-    send = say.subprocess.run
+    send = host.subprocess.run
     def record_send(*args: object, **kwargs: object) -> object:
         events.append("send")
         return send(*args, **kwargs)
-    monkeypatch.setattr(say.subprocess, "run", record_send)
+    monkeypatch.setattr(host.subprocess, "run", record_send)
 
     assert main(["say", "opencode", "continue", "the", "task"]) == 1
     warning = capsys.readouterr().err

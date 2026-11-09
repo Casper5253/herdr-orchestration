@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hx import devin, say, usage
+from hx import devin, host, say, usage
 from hx.__main__ import main
 
 AGENTS = {"result": {"agents": [
@@ -20,14 +20,15 @@ AGENTS = {"result": {"agents": [
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
     calls: list[list[str]] = []
+    monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(usage, "_herdr_agent_list", lambda: AGENTS)
-    monkeypatch.setattr(say.context, "agent_info", lambda name: {
+    monkeypatch.setattr(host.HerdrHost, "all_members", lambda self: [host.member(a) for a in AGENTS["result"]["agents"]])
+    monkeypatch.setattr(say.context, "agent_info", lambda name: host.member({
         "name": name,
         "agent": "devin" if name.endswith("-devin") else "opencode",
         "agent_session": {"value": "sid"},
-    })
+    }))
     monkeypatch.setattr(say.context, "telemetry", lambda *args: {"session_id": "sid", "utilisation": None, "sampled_at": None})
     monkeypatch.setattr(usage, "load_policy", lambda: {
         "team_prefix": "dev-", "lead_role": "claude", "context": {"pressure_threshold": .75},
@@ -36,7 +37,7 @@ def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[list[str]]:
     class Done:
         returncode = 0
 
-    monkeypatch.setattr(say.subprocess, "run", lambda argv, **_: calls.append(argv) or Done())
+    monkeypatch.setattr(host.subprocess, "run", lambda argv, **_: calls.append(argv) or Done())
     return calls
 
 

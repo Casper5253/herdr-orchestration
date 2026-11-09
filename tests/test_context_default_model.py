@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from hx import context, usage
+from hx import context, host, usage
 
 
 def test_default_opencode_worker_has_a_measured_context_utilisation(tmp_path, monkeypatch):
@@ -17,7 +17,7 @@ def test_default_opencode_worker_has_a_measured_context_utilisation(tmp_path, mo
             'tokens': {'input': 25000, 'cache': {'read': 75000}},
         })))
     monkeypatch.setenv('HX_OPENCODE_DB', str(db))
-    sample = context.telemetry({'agent': 'opencode', 'agent_session': {'value': 'current'}}, policy)
+    sample = context.telemetry(host.member({'agent': 'opencode', 'agent_session': {'value': 'current'}}), policy)
     assert sample['utilisation'] == pytest.approx(0.5)
     assert sample['session_id'] == 'current'
 

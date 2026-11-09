@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from hx import __main__ as cli
+from hx import host
 from hx.usage import (
     agents_usage,
     claude_usage,
@@ -272,7 +273,7 @@ def test_agents_usage(monkeypatch: pytest.MonkeyPatch, policy: dict, now: dateti
             }
         }
 
-    monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
+    monkeypatch.setattr("hx.usage.live_members", lambda: [host.member(a) for a in fake_list()["result"]["agents"]])
     result = agents_usage(policy, prefix="hx-", now=now)
     assert result["tag"] == "measured"
     assert len(result["agents"]) == 2
@@ -285,16 +286,16 @@ def test_agents_usage_blocked(monkeypatch: pytest.MonkeyPatch, policy: dict, now
     def fake_list() -> dict:
         return {"result": {"agents": [{"name": "hx-claude", "agent_status": "blocked"}]}}
 
-    monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
+    monkeypatch.setattr("hx.usage.live_members", lambda: [host.member(a) for a in fake_list()["result"]["agents"]])
     result = agents_usage(policy, prefix="hx-", now=now)
     assert result["available"] is False
 
 
 def test_agents_usage_subprocess_failure(monkeypatch: pytest.MonkeyPatch, policy: dict, now: datetime.datetime) -> None:
-    def fake_list() -> dict:
+    def fake_list() -> list:
         raise subprocess.CalledProcessError(1, "herdr")
 
-    monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
+    monkeypatch.setattr("hx.usage.live_members", fake_list)
     result = agents_usage(policy, prefix="hx-", now=now)
     assert result["tag"] == "unknown"
     assert result["available"] == "unknown"
@@ -314,10 +315,10 @@ def test_usage_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, now: da
     monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(tmp_path))
     monkeypatch.setenv("HX_CLAUDE_STATUS", str(status))
 
-    def fake_list() -> dict:
-        return {"result": {"agents": [{"name": "hx-claude", "agent_status": "idle"}]}}
+    def fake_list() -> list:
+        return [host.member({"name": "hx-claude", "agent_status": "idle"})]
 
-    monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
+    monkeypatch.setattr("hx.usage.live_members", fake_list)
 
     snapshot = usage_snapshot(now=now)
     assert snapshot["opencode"]["tag"] == "estimated"
@@ -342,10 +343,10 @@ def test_cli_usage_prints_json(
     monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(tmp_path))
     monkeypatch.setenv("HX_CLAUDE_STATUS", str(status))
 
-    def fake_list() -> dict:
-        return {"result": {"agents": [{"name": "hx-claude", "agent_status": "idle"}]}}
+    def fake_list() -> list:
+        return [host.member({"name": "hx-claude", "agent_status": "idle"})]
 
-    monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
+    monkeypatch.setattr("hx.usage.live_members", fake_list)
 
     code = cli.main(["usage"])
     assert code == 0

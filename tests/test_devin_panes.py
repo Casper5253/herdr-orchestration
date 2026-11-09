@@ -12,18 +12,19 @@ from pathlib import Path
 
 import pytest
 
-from hx import devin
+from hx import devin, host
 from hx import usage as hx_usage
 from hx.route import route
 
 MODEL = "swe-2-high"
 ENDS_AT = "2026-11-30T10:00:00Z"
 NOW = datetime.datetime(2026, 11, 1, tzinfo=datetime.timezone.utc)
+REAL_LIVE_MEMBERS = hx_usage.live_members
 
 
 @pytest.fixture(autouse=True)
 def synthetic_herdr_agents(monkeypatch):
-    monkeypatch.setattr(hx_usage, "_herdr_agent_list", lambda: {"result": {"agents": []}})
+    monkeypatch.setattr(hx_usage, "live_members", lambda: [])
 
 
 def _policy(tmp_path: Path, **overrides) -> dict:
@@ -47,10 +48,7 @@ def _policy(tmp_path: Path, **overrides) -> dict:
 
 
 def _pane(name: str | None, status: str = "idle", agent: str = "devin") -> dict:
-    pane = {"agent": agent, "agent_status": status, "cwd": "C:\\work"}
-    if name is not None:
-        pane["name"] = name
-    return pane
+    return host.member({"agent": agent, "agent_status": status, "cwd": "C:\\work", "name": name or ""})
 
 
 # ---------- devin.usage live_sessions ----------
@@ -113,7 +111,7 @@ def test_acquire_slot_refuses_when_live_sessions_fill_cap(
     """``hx ocrun --worker devin`` refuses busy through the same slot path:
     the recorded live sessions hold capacity inside acquire_slot."""
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(hx_usage, "herdr_agents", lambda: [_pane("dev-devin", "working"), _pane(None)])
+    monkeypatch.setattr(hx_usage, "live_members", lambda: [_pane("dev-devin", "working"), _pane(None)])
     devin.mark_live_sessions(
         [{"name": "dev-devin", "status": "working", "cwd": None},
          {"name": None, "status": "idle", "cwd": None}],
@@ -135,7 +133,7 @@ def test_recorded_live_sessions_expire(
     later = NOW + datetime.timedelta(seconds=devin.LIVE_SESSIONS_TTL_S + 1)
     def unavailable():
         raise OSError("Herdr unavailable")
-    monkeypatch.setattr(hx_usage, "herdr_agents", unavailable)
+    monkeypatch.setattr(hx_usage, "live_members", unavailable)
     assert devin.acquire_slot(1, 60.0, {"id": "a"}, now=later) is None
     status = devin.usage(_policy(tmp_path), now=later)
     assert status["live_sessions"] is None
@@ -159,11 +157,11 @@ def test_usage_snapshot_shares_one_agent_list_and_marks_sessions(
     ]
     calls = []
 
-    def fake_list() -> dict:
+    def fake_list() -> list:
         calls.append(1)
-        return {"result": {"agents": agents}}
+        return agents
 
-    monkeypatch.setattr("hx.usage._herdr_agent_list", fake_list)
+    monkeypatch.setattr("hx.usage.live_members", fake_list)
     policy = _policy(tmp_path)
     policy["team_prefix"] = "dev-"
     snapshot = hx_usage.usage_snapshot(policy=policy, now=NOW)
@@ -256,7 +254,7 @@ IDLE_DEVIN = [{"name": "dev-devin", "status": "idle", "cwd": "C:\\work"}]
 
 def test_r1_admission_refreshes_expired_pane_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(hx_usage, "herdr_agents", lambda: [_pane("dev-devin", "working")])
+    monkeypatch.setattr(hx_usage, "live_members", lambda: [_pane("dev-devin", "working")])
     devin.mark_live_sessions(devin.live_sessions([_pane("dev-devin")]), now=NOW)
     later = NOW + datetime.timedelta(seconds=devin.LIVE_SESSIONS_TTL_S + 1)
     assert devin.acquire_slot(1, 60, {"id": "r1"}, now=later) is None
@@ -292,9 +290,31 @@ def test_r1_input_repair_keeps_persistent_pane(route_policy):
 @pytest.mark.parametrize("document", [{}, {"result": {}}, {"result": {"agents": "unknown"}}])
 def test_admission_refuses_malformed_agent_list(tmp_path, monkeypatch, document):
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(hx_usage, "_herdr_agent_list", lambda: document)
+    monkeypatch.setattr(hx_usage, "live_members", REAL_LIVE_MEMBERS)
+    payload = json.dumps(document).encode("utf-8")
+    monkeypatch.setattr(host.subprocess, "check_output", lambda *args, **kwargs: payload)
+
     assert devin.acquire_slot(1, 60, {"id": "unknown"}, now=NOW) is None
     assert devin.usage(_policy(tmp_path), now=NOW)["status"] == "busy"
+
+
+def test_unresolved_provider_kind_refuses_devin_admission(tmp_path, monkeypatch):
+    """An unknown provider kind could be Devin, so the live count is unknown."""
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
+    unresolved = host.member({"name": "dev-devin", "pane_id": "p", "agent_status": "idle"})
+    assert unresolved["kind"] == "unknown"
+    monkeypatch.setattr(hx_usage, "live_members", lambda: [unresolved])
+
+    assert devin._read_live_sessions() is None
+    status = devin.usage(_policy(tmp_path), now=NOW, agents=[unresolved])
+    assert status["status"] == "busy"
+    assert status["live_sessions"] is None
+
+    def forbidden():
+        raise RuntimeError("passed admission guard")
+
+    monkeypatch.setattr(devin, "slots_dir", forbidden)
+    assert devin.acquire_slot(1, 60, {"id": "probe"}, now=NOW) is None
 
 
 def test_failed_snapshot_reads_herdr_once_and_refuses_admission(tmp_path, monkeypatch):
@@ -305,7 +325,7 @@ def test_failed_snapshot_reads_herdr_once_and_refuses_admission(tmp_path, monkey
         calls.append(1)
         raise OSError("Herdr unavailable")
 
-    monkeypatch.setattr(hx_usage, "herdr_agents", unavailable)
+    monkeypatch.setattr(hx_usage, "live_members", unavailable)
     for provider in ("opencode_usage", "codex_usage", "claude_usage"):
         monkeypatch.setattr(hx_usage, provider, lambda *a, **kw: {})
     snapshot = hx_usage.usage_snapshot(_policy(tmp_path), now=NOW)

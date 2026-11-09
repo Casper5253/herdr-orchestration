@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from hx import __main__ as cli
-from hx import context, ledger, usage
+from hx import context, host, ledger, usage
 
 
 @pytest.fixture
@@ -17,23 +17,24 @@ def pane(tmp_path, monkeypatch):
         conn.execute('CREATE TABLE message (session_id TEXT, time_created INTEGER, data TEXT)')
     monkeypatch.setenv('HX_OPENCODE_DB', str(db))
     monkeypatch.setenv('HX_CONTEXT_RESETS_PATH', str(tmp_path / 'context-resets.json'))
+    monkeypatch.setenv('HERDR_ENV', '1')
     monkeypatch.setenv('HERDR_PANE_ID', 'sender-pane')
-    monkeypatch.setattr(usage, '_herdr_agent_list', lambda: {'result': {'agents': [
+    monkeypatch.setattr(host.HerdrHost, 'all_members', lambda self: [host.member(a) for a in [
         {'name': 'dev-codex', 'pane_id': 'sender-pane'},
         {'name': 'dev-opencode', 'pane_id': 'worker-pane'},
-    ]}})
+    ]])
     policy = {'team_prefix': 'dev-', 'context_limits': {'model': 200000}}
     monkeypatch.setattr(usage, 'load_policy', lambda: policy)
-    agent = {'name': 'dev-opencode', 'agent': 'opencode', 'agent_status': 'idle',
-             'agent_session': {'value': 'old'}, 'cwd': str(tmp_path)}
+    agent = host.member({'name': 'dev-opencode', 'agent': 'opencode', 'agent_status': 'idle',
+                         'agent_session': {'value': 'old'}, 'cwd': str(tmp_path)})
     monkeypatch.setattr(context, 'agent_info', lambda name: dict(agent))
     led = ledger.Ledger(repo_root=tmp_path, ledger_path=tmp_path/'ledger.json',
                         lock_path=tmp_path/'lock', leases_path=tmp_path/'leases.json')
     controller = context.Controller(led, policy)
     monkeypatch.setattr(cli.context, 'Controller', lambda: controller)
     sent = []
-    monkeypatch.setattr(cli.say.subprocess, 'run', lambda args, **kw: sent.append(args) or type(
-        'Result', (), {'returncode': 0, 'stdout': '{"result": {}}'})())
+    monkeypatch.setattr(host.subprocess, 'run', lambda args, **kw: sent.append(args) or type(
+        'Result', (), {'returncode': 0, 'stdout': '{"result":{"type":"agent_prompted","agent":{"agent_status":"idle"}}}'})())
     created = int(context._now().timestamp()*1000) - 1000
 
     def append(sid, tokens, *, complete=True):
@@ -56,7 +57,7 @@ def test_real_session_reset_clears_hold_for_both_cli_paths(pane, capsys):
     assert sent == []
     assert '299%' in capsys.readouterr().err
     append('new', 1000)
-    agent['agent_session'] = {'value': 'new'}
+    agent['session_id'] = 'new'
     assert cli.main(['context', 'decide', 'dev-opencode']) == 0
     decision = json.loads(capsys.readouterr().out)
     assert decision['session_id'] == decision['telemetry']['session_id'] == 'new'
@@ -82,7 +83,7 @@ def test_empty_new_session_is_unknown_instead_of_reusing_old_pressure(pane, caps
     agent, append, sent = pane
     append('old', 598000)
     append('new', 0, complete=False)
-    agent['agent_session'] = {'value': 'new'}
+    agent['session_id'] = 'new'
     assert cli.main(['context', 'decide', 'dev-opencode']) == 0
     decision = json.loads(capsys.readouterr().out)
     assert decision['telemetry']['session_id'] == 'new'
@@ -104,7 +105,7 @@ def test_session_lookup_is_pinned_during_a_telemetry_read(tmp_path, monkeypatch)
         'session_id': 'first', 'timestamp': context._now().isoformat(),
         'context_window': {'used_percentage': 20},
     }))
-    sid, sample = context.session_telemetry({'agent': 'claude', 'pane_id': 'pane'}, {})
+    sid, sample = context.session_telemetry(host.member({'agent': 'claude', 'pane_id': 'pane'}), {})
     assert sid == sample['session_id'] == 'first'
     assert sample['utilisation'] == .2
     assert looked_up == ['pane']
@@ -154,7 +155,7 @@ def test_hx_reset_sends_new_then_records_it(pane, capsys):
 
 def test_hx_reset_refuses_a_busy_agent(pane, capsys):
     agent, append, sent = pane
-    agent['agent_status'] = 'working'
+    agent['status'] = 'working'
     assert cli.main(['reset', 'dev-opencode']) == 1
     assert sent == []
     assert 'not idle' in capsys.readouterr().err

@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from hx import checkpoint, ledger, usage
+from hx import checkpoint, host, ledger, usage
 
 
 class _RetainContext(ValueError):
@@ -100,32 +100,33 @@ def _reset_command(policy: dict[str, Any], kind: Any) -> str | None:
     return str(command) if command else None
 
 
-def _herdr(*args: str, timeout: float = 30) -> dict[str, Any]:
-    result = subprocess.run(
-        ["herdr", "agent", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-        check=True, timeout=timeout, shell=False,
-    )
-    data = json.loads(result.stdout)
-    if data.get("error") or (data.get("result") or {}).get("type") in {"timeout", "agent_prompt_stalled", "agent_blocked", "error"}:
-        raise RuntimeError("Herdr did not complete the request: " + result.stdout)
-    return data
+def _detect() -> host.Host:
+    detected = host.detect()
+    if detected is None:
+        raise RuntimeError("hx needs a team host: run it inside a Herdr pane or the Herdr app")
+    return detected
 
 
-def agent_info(name: str) -> dict[str, Any]:
-    return _herdr("get", name)["result"]["agent"]
+def _send_checked(name: str, text: str, *, wait: bool = False,
+                  until: tuple[str, ...] = (), timeout_ms: int | None = None) -> host.SendResult:
+    return _detect().send_checked(name, text, wait=wait, until=until, timeout_ms=timeout_ms)
+
+
+def agent_info(name: str) -> host.Member:
+    return _detect().info(name)
 
 
 # Herdr reports a finished turn as "done" and an untouched one as "idle"; both are ready for input.
 READY = usage.READY
 
 
-def _session(agent: dict[str, Any]) -> str:
-    sid = (agent.get("agent_session") or {}).get("value") or ""
-    if not sid and agent.get("agent") == "claude" and agent.get("pane_id"):
-        sid = _claude_session_for_pane(str(agent["pane_id"]))
-    if not sid and agent.get("agent") == "devin":
-        # Devin exposes no provider session through Herdr; the pane is the only stable identity.
-        pane = str(agent.get("pane_id") or agent.get("name") or "")
+def _session(agent: host.Member) -> str:
+    sid = agent.get("session_id") or ""
+    if not sid and agent.get("kind") == "claude" and agent.get("address"):
+        sid = _claude_session_for_pane(str(agent["address"]))
+    if not sid and agent.get("kind") == "devin":
+        # Devin exposes no provider session through the host; the pane is the only stable identity.
+        pane = str(agent.get("address") or agent.get("name") or "")
         if pane:
             sid = f"devin-pane:{pane}"
     return sid
@@ -148,12 +149,8 @@ def _claude_session_for_pane(pane_id: str) -> str:
 
 
 def _herdr_read(name: str, lines: int = 200) -> str:
-    """`herdr agent read` prints the pane as plain text, not JSON."""
-    result = subprocess.run(
-        ["herdr", "agent", "read", name, "--source", "recent-unwrapped", "--lines", str(lines)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, timeout=30, shell=False,
-    )
-    return result.stdout
+    """The pane as plain text."""
+    return _detect().read(name, lines)
 
 
 def _squash(text: str) -> str:
@@ -235,14 +232,14 @@ def _sample(session_id: str, tokens: Any, limit: Any, sampled_at: str) -> dict[s
     return {"session_id": session_id, "utilisation": fraction, "sampled_at": sampled_at}
 
 
-def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
-    """Read only the provider session named by Herdr; never pick newest globally."""
+def telemetry(agent: host.Member, policy: dict[str, Any]) -> dict[str, Any]:
+    """Read only the provider session named by the host; never pick newest globally."""
     sid = _session(agent)
     unknown = {"session_id": sid, "utilisation": None, "sampled_at": None}
     if not sid:
         return unknown
     try:
-        if agent.get("agent") == "codex":
+        if agent.get("kind") == "codex":
             for path in usage.default_codex_sessions_dir().rglob(f"*{sid}*.jsonl"):
                 meta = None
                 latest = None
@@ -260,14 +257,14 @@ def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
                                          info.get("model_context_window"), event.get("timestamp"))
                 if meta and meta.get("id") == sid and ledger._canonical_path(meta.get("cwd", "")) == ledger._canonical_path(agent.get("cwd", "")):
                     return latest or unknown
-        elif agent.get("agent") == "claude":
+        elif agent.get("kind") == "claude":
             state_dir = Path(os.environ.get("HX_STATE_DIR", Path.home() / ".herdr-team" / "state"))
             path = state_dir / f"claude-status-{sid}.json"
             data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("session_id") == sid:
                 timestamp = data.get("timestamp") or dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat()
                 return _sample(sid, (data.get("context_window") or {}).get("used_percentage"), 100, timestamp)
-        elif agent.get("agent") == "devin":
+        elif agent.get("kind") == "devin":
             try:
                 footer = _herdr_read(str(agent.get("name") or ""), lines=6)
             except (OSError, subprocess.SubprocessError):
@@ -276,7 +273,7 @@ def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
             if parsed is not None:
                 return _sample(sid, parsed[0], parsed[1], _now().isoformat())
             return unknown
-        elif agent.get("agent") == "opencode":
+        elif agent.get("kind") == "opencode":
             with sqlite3.connect(usage.default_opencode_db_path().resolve().as_uri() + "?mode=ro", uri=True) as conn:
                 rows = conn.execute("SELECT time_created, data FROM message WHERE session_id = ? ORDER BY time_created DESC", (sid,))
                 for created, raw in rows:
@@ -296,12 +293,12 @@ def telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
     return unknown
 
 
-def session_telemetry(agent: dict[str, Any], policy: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def session_telemetry(agent: host.Member, policy: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Pin the provider session once before reading its counters."""
     sid = _session(agent)
     if not sid:
         return sid, {"session_id": sid, "utilisation": None, "sampled_at": None}
-    bound = {**agent, "agent_session": {"value": sid}}
+    bound = {**agent, "session_id": sid}
     return sid, telemetry(bound, policy)
 
 
@@ -346,7 +343,7 @@ def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
 def _devin_clear_steps(name: str, task_id: str) -> list[str]:
     return [
         f"hx checkpoint write {task_id} --owner {name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
-        f"Send /clear to the pane from Python: herdr agent prompt {name} '/clear' (never Git Bash; MSYS rewrites /clear as a Windows path)",
+        f"Send /clear to the pane from Python: {host.prompt_command(name, '/clear')} (never Git Bash; MSYS rewrites /clear as a Windows path)",
         f"Re-brief the agent from .hx/checkpoints/{task_id}.md",
     ]
 
@@ -384,15 +381,17 @@ class Controller:
         agent = self._agent(name)
         if self._is_lead(name):
             raise ValueError("hx reset targets a worker; the Claude lead self-compacts")
-        if agent.get("agent_status") not in READY:
+        if agent.get("status") not in READY:
             raise ValueError("agent is not idle; wait for its turn to finish before resetting")
-        command = _reset_command(self.policy, agent.get("agent"))
+        command = _reset_command(self.policy, agent.get("kind"))
         if not command:
             raise ValueError(
-                f"no reset command is configured for {agent.get('agent')}; "
+                f"no reset command is configured for {agent.get('kind')}; "
                 f"send the reset yourself and record it with hx boundary {name} --reset-sent")
         sid = session_id or _session(agent)
-        _herdr("prompt", name, command, timeout=60)
+        sent = _send_checked(name, command, timeout_ms=60000)
+        if sent["started"] is not True or sent["reason"]:
+            raise RuntimeError(sent["reason"] or "host did not send the reset")
         return {"action": "reset-sent", "command": command, **write_reset(self.resets_path, name, sid)}
 
     def boundary(self, name: str, task_id: str | None = None, *,
@@ -427,7 +426,7 @@ class Controller:
             raise ValueError("lead work item unknown; pass --work-item <item> or --task <id>, or write the lead checkpoint objective")
         return "objective:" + hashlib.sha256(objective.encode("utf-8")).hexdigest()[:16]
 
-    def _agent(self, name: str) -> dict[str, Any]:
+    def _agent(self, name: str) -> host.Member:
         prefix = usage.team_prefix(self.policy)
         if not (name.startswith(prefix) and usage.TEAM_AGENT.fullmatch(name)):
             raise ValueError("agent is outside the configured team")
@@ -475,7 +474,7 @@ class Controller:
                 paths.add(ledger._canonical_path(workdir / original))
         return paths
 
-    def _check_worktrees(self, agent: dict[str, Any], task: dict[str, Any]) -> None:
+    def _check_worktrees(self, agent: host.Member, task: dict[str, Any]) -> None:
         workdir = Path(task.get("worktree") or self.ledger.repo_root)
         owned = {ledger._canonical_path(path) for path in task.get("files", [])}
         if self._dirty_paths(workdir) - owned:
@@ -511,7 +510,7 @@ class Controller:
                 raise ValueError("agent has dirty files owned by an open task in pane repository")
         raise ValueError("pane repository contains uncheckpointed edits")
 
-    def _decide_lead(self, result: dict[str, Any], agent: dict[str, Any], session_id: str | None,
+    def _decide_lead(self, result: dict[str, Any], agent: host.Member, session_id: str | None,
                      task_id: str | None, work_item: str | None) -> dict[str, Any]:
         name = result["agent"]
         sid = _session(agent) or session_id or ""
@@ -537,7 +536,7 @@ class Controller:
         quoted_name = "'" + name.replace("'", "''") + "'"
         quoted_sid = "'" + sid.replace("'", "''") + "'"
         quoted_item = "'" + item.replace("'", "''") + "'"
-        command = f"Start-Sleep 60; herdr agent prompt {quoted_name} '/compact'"
+        command = f"Start-Sleep 60; {host.prompt_command(quoted_name, '/compact')}"
         background = "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '" + command.replace("'", "''") + "'"
         result.update(action="self-compact", reason="Claude lead above threshold; compact at the next turn boundary", steps=[
             f"hx checkpoint write lead --owner {quoted_name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
@@ -549,7 +548,7 @@ class Controller:
 
     def self_compacted(self, name: str, session_id: str, work_item: str | None = None) -> dict[str, Any]:
         agent = self._agent(name)
-        if not self._is_lead(name) or agent.get("agent") != "claude":
+        if not self._is_lead(name) or agent.get("kind") != "claude":
             raise ValueError("self-compacted requires a Claude lead")
         if not session_id or (_session(agent) and _session(agent) != session_id):
             raise ValueError("--session must identify the current Claude session")
@@ -578,12 +577,12 @@ class Controller:
         try:
             agent = self._agent(name)
             if self._is_lead(name):
-                if agent.get("agent") != "claude":
+                if agent.get("kind") != "claude":
                     raise ValueError("lead self-compaction supports a Claude lead only")
                 return self._decide_lead(result, agent, session_id, task_id, work_item)
             sid, sample = session_telemetry(agent, self.policy)
-            result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("agent"))
-            if agent.get("agent_status") not in READY:
+            result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("kind"))
+            if agent.get("status") not in READY:
                 raise _DeferredContext("agent is not idle")
             if not _fresh(sample, sid, _now()):
                 raise _UnknownContext("session telemetry unknown or stale")
@@ -591,7 +590,7 @@ class Controller:
                 result["reset_pending"] = True
                 raise _RetainContext("recent reset; awaiting the new session's first sample")
             context_policy = self.policy.get("context", {})
-            devin_clear = agent.get("agent") == "devin" and not self._devin_compact_command()
+            devin_clear = agent.get("kind") == "devin" and not self._devin_compact_command()
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
             owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
             if not owned_tasks and not task_id:
@@ -722,7 +721,7 @@ class Controller:
                 if not checkpoint._extract_section(text, section):
                     raise ValueError(f"agent-authored checkpoint section empty: {section}")
             current = self._agent(name)
-            if _session(current) != sid or current.get("agent_status") not in READY:
+            if _session(current) != sid or current.get("status") not in READY:
                 raise ValueError("session changed or agent became busy before send")
             self._check_worktrees(current, task)
             current_task = self.ledger.get_task(task_id)
@@ -741,16 +740,19 @@ class Controller:
 
             self.ledger.mutate_leases(mark_requested)
             current = self._agent(name)
-            if _session(current) != sid or current.get("agent_status") not in READY:
+            if _session(current) != sid or current.get("status") not in READY:
                 raise ValueError("session changed or agent became busy immediately before send")
             submitted = True
-            compact_command = self._devin_compact_command() if current.get("agent") == "devin" else None
-            _herdr("prompt", name, compact_command or "/compact", "--wait", "--until", "idle", "--until", "done", "--timeout", "300000", timeout=310)
+            compact_command = self._devin_compact_command() if current.get("kind") == "devin" else None
+            sent = _send_checked(name, compact_command or "/compact", wait=True,
+                                 until=("idle", "done"), timeout_ms=300000)
+            if not sent["ended"]:
+                raise RuntimeError(sent["reason"] or "host did not confirm the compaction turn ended")
             deadline = time.monotonic() + self.policy.get("context", {}).get("verification_timeout_seconds", 10)
             while True:
                 current = self._agent(name)
                 after = telemetry(current, self.policy)
-                if (_session(current) == sid and current.get("agent_status") in READY
+                if (_session(current) == sid and current.get("status") in READY
                         and _fresh(after, sid, _now(), after=started)
                         and after["utilisation"] < before["utilisation"]):
                     break
@@ -759,10 +761,12 @@ class Controller:
                 time.sleep(.25)
             next_action = checkpoint._extract_section(text, "Next action")
             message = f"[team from {usage.team_prefix(self.policy)}claude] Context compacted. Read {path}; reply with {token} followed by the checkpoint Next action only."
-            _herdr("prompt", name, message, "--wait", "--until", "idle", "--until", "done", "--timeout", "300000", timeout=310)
+            sent = _send_checked(name, message, wait=True, until=("idle", "done"), timeout_ms=300000)
+            if not sent["ended"]:
+                raise RuntimeError(sent["reason"] or "host did not confirm the acknowledgement turn ended")
             current = self._agent(name)
             reply = _herdr_read(name)
-            if _session(current) != sid or current.get("agent_status") not in READY or not _has_acknowledgement(reply, f"{token} {next_action}"):
+            if _session(current) != sid or current.get("status") not in READY or not _has_acknowledgement(reply, f"{token} {next_action}"):
                 raise ValueError("checkpoint next action acknowledgement not verified")
             self._finish(sid, token, None, False)
             return {**decision, "action": "compacted", "telemetry": after}
@@ -781,7 +785,7 @@ class Controller:
             if not lease or lease.get("agent") != name or lease.get("state") != "compact-unknown":
                 return {"action": "keep", "reason": "no matching unknown compaction"}
             requested = _timestamp(lease.get("requested_at"))
-            if not requested or agent.get("agent_status") not in READY or not _fresh(sample, sid, _now(), after=requested):
+            if not requested or agent.get("status") not in READY or not _fresh(sample, sid, _now(), after=requested):
                 return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
             del leases["sessions"][sid]
             return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}

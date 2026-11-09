@@ -15,7 +15,7 @@ from hx import doctor
 def isolated_live_agent(monkeypatch):
     monkeypatch.setattr(doctor.usage, "team_prefix", lambda policy: "dev-")
     monkeypatch.setattr(doctor.context, "agent_info", lambda name: {
-        "agent": "opencode", "agent_session": {"value": "live-session"}})
+        "kind": "opencode", "session_id": "live-session"})
 
 
 def _message(db, session, model, created=1, provider="opencode-go"):
@@ -209,7 +209,7 @@ def test_live_model_latest_message_bound_to_session(tmp_path, model, provider, s
 def test_live_unknown_never_falls_back_to_good_overlay(tmp_path, monkeypatch, failure):
     roots = _roots(tmp_path)
     if failure == "no-session":
-        monkeypatch.setattr(doctor.context, "agent_info", lambda name: {"agent": "opencode"})
+        monkeypatch.setattr(doctor.context, "agent_info", lambda name: {"kind": "opencode"})
     elif failure == "missing-db":
         roots["opencode_db"] = tmp_path / "absent.db"
     elif failure == "bad-db":

@@ -12,13 +12,13 @@ import math
 import os
 import re
 import sqlite3
-import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hx import devin, opencode_go, paths
+from hx import devin, host, opencode_go, paths
+from hx.host import TEAM_AGENT
 
 READY = frozenset({"idle", "done"})
 _AGENTS_UNSET = object()
@@ -538,26 +538,16 @@ def claude_usage(
     }
 
 
-def _herdr_agent_list() -> dict[str, Any]:
-    raw = subprocess.check_output(
-        ["herdr", "agent", "list"],
-        stderr=subprocess.DEVNULL,
-        timeout=30,
-    )
-    return json.loads(raw.decode("utf-8"))
-
-
-def herdr_agents() -> list[dict[str, Any]]:
-    """The ``herdr agent list`` agent list: the one call path to herdr."""
-    agents = _herdr_agent_list().get("result", {}).get("agents")
-    if not isinstance(agents, list) or any(not isinstance(agent, dict) for agent in agents):
-        raise ValueError("Herdr returned no valid agent list")
-    return agents
+def live_members() -> list[host.Member]:
+    """Every live agent on the detected host: the one list call path."""
+    members = host.all_members()
+    if members is None:
+        raise RuntimeError("hx is not running on a team host")
+    return members
 
 
 # A team agent is <team>-<role>, for example dev-claude or my-team-luna. Roles and models are not listed
-# anywhere: membership is the team prefix, and the provider comes from Herdr's detected agent kind.
-TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)[a-z0-9]+")
+# anywhere: membership is the team prefix, and the provider comes from the host's detected agent kind.
 
 
 def lead_name(policy: dict[str, Any], prefix: str) -> str:
@@ -565,16 +555,19 @@ def lead_name(policy: dict[str, Any], prefix: str) -> str:
     return prefix + str(policy.get("lead_role", "claude"))
 
 
-def team_agents(prefix: str) -> dict[str, dict[str, Any]]:
-    """Live Herdr agents on this team, by name."""
-    return {str(a.get("name")): a for a in herdr_agents() if str(a.get("name") or "").startswith(prefix) and TEAM_AGENT.fullmatch(str(a.get("name")))}
+def team_agents(prefix: str) -> dict[str, host.Member]:
+    """Live host agents on this team, by name."""
+    detected = host.detect()
+    if detected is None:
+        return {}
+    return detected.team(prefix)
 
 
 def team_prefix(policy: dict[str, Any]) -> str:
     """The prefix of the team hx runs in (any <team>- name), per the herdr-team skill.
 
-    HX_HERDR_PREFIX wins; otherwise the herdr agent whose pane is this pane
-    names the team; policy.team_prefix is the fallback outside Herdr.
+    HX_HERDR_PREFIX wins; otherwise the host agent whose pane is this pane names
+    the team; policy.team_prefix is the fallback outside a team host.
     """
     env = os.environ.get("HX_HERDR_PREFIX")
     if env:
@@ -586,19 +579,15 @@ def team_prefix(policy: dict[str, Any]) -> str:
 
 
 def own_agent_name() -> str | None:
-    """This pane's herdr team agent name (e.g. dev-codex), or None outside a team pane."""
-    pane = os.environ.get("HERDR_PANE_ID")
-    if not pane:
+    """This pane's team agent name (e.g. dev-codex), or None outside a team pane."""
+    detected = host.detect()
+    if detected is None:
         return None
     try:
-        agents = herdr_agents()
+        found = detected.own()
     except Exception:
         return None
-    for agent in agents:
-        name = str(agent.get("name") or "")
-        if agent.get("pane_id") == pane and TEAM_AGENT.fullmatch(name):
-            return name
-    return None
+    return found["name"] if found else None
 
 
 def agents_usage(
@@ -614,7 +603,7 @@ def agents_usage(
 
     if agents is _AGENTS_UNSET:
         try:
-            agents = herdr_agents()
+            agents = live_members()
         except Exception as exc:
             return {
                 "tag": "unknown",
@@ -622,17 +611,17 @@ def agents_usage(
                 "prefix": prefix,
                 "agents": [],
                 "available": "unknown",
-                "error": f"herdr agent list failed: {exc}",
+                "error": f"host agent list failed: {exc}",
             }
 
     if agents is None:
         return {"tag": "unknown", "sample_age_seconds": None, "prefix": prefix,
-                "agents": [], "available": "unknown", "error": "Herdr agent list unavailable"}
+                "agents": [], "available": "unknown", "error": "Host agent list unavailable"}
 
-    team = [a for a in agents if str(a.get("name") or "").startswith(prefix)]
+    team = [a for a in agents if a["name"].startswith(prefix)]
     sample_age_seconds = 0
 
-    available = all(a.get("agent_status") not in ("blocked", "error") for a in team)
+    available = all(a["status"] not in ("blocked", "error", "unknown") for a in team)
 
     return {
         "tag": "measured",
@@ -640,11 +629,11 @@ def agents_usage(
         "prefix": prefix,
         "agents": [
             {
-                "name": a.get("name"),
-                "status": a.get("agent_status"),
-                "cwd": a.get("cwd"),
-                "focused": a.get("focused"),
-                "agent_session": (a.get("agent_session") or {}).get("value"),
+                "name": a["name"],
+                "status": a["status"],
+                "cwd": a["cwd"],
+                "focused": a["focused"],
+                "agent_session": a["session_id"],
             }
             for a in team
         ],
@@ -662,13 +651,13 @@ def usage_snapshot(
         now = _utcnow()
 
     try:
-        agents = herdr_agents()
+        agents = live_members()
     except Exception:
         agents = None
 
     devin_block = devin.usage(policy, now=now, agents=agents)
     if agents is not None:
-        # Keep a diagnostic snapshot; admission reads Herdr again.
+        # Keep a diagnostic snapshot; admission reads the host again.
         devin.mark_live_sessions(devin.live_sessions(agents) or [], now)
 
     return {

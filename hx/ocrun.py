@@ -1428,7 +1428,7 @@ def run_devin(
 
 
 def resolve_mode(headless: bool) -> str:
-    """CLI-level mode choice: visible by default when HERDR_ENV=1."""
+    """CLI-level mode choice: visible by default in a Herdr pane."""
     if headless:
         return "headless"
     return "visible" if os.environ.get("HERDR_ENV") == "1" else "headless"

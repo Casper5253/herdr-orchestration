@@ -103,7 +103,7 @@ def test_lead_checkpoint_without_ledger_task(cli_repo, capsys):
 
 
 def test_task_done_samples_owner_after_validated_completion(cli_repo, monkeypatch, capsys):
-    from hx import context, usage
+    from hx import context, host as host_mod, usage
     monkeypatch.setattr(usage, 'team_prefix', lambda *args: 'dev-')
     sampled = []
 
@@ -112,7 +112,7 @@ def test_task_done_samples_owner_after_validated_completion(cli_repo, monkeypatc
         assert saved['status'] == 'done'
         assert (cli_repo / '.hx' / 'checkpoints' / 't.md').is_file()
         sampled.append(name)
-        return {'agent': 'codex', 'agent_status': 'working', 'agent_session': {'value': 'sid'}}
+        return host_mod.member({'agent': 'codex', 'agent_status': 'working', 'agent_session': {'value': 'sid'}})
 
     monkeypatch.setattr(context, 'agent_info', agent_info)
     monkeypatch.setattr(context, 'telemetry', lambda *args: {
@@ -252,7 +252,7 @@ def test_route_subcommand_wired(
     monkeypatch.setenv("HX_OPENCODE_DB", str(tmp_path / "missing.db"))
     monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(tmp_path))
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr("hx.usage._herdr_agent_list", lambda: {"result": {"agents": []}})
+    monkeypatch.setattr("hx.usage.live_members", lambda: [])
 
     rc = cli.main(["route", "--kind", "trivial"])
     assert rc == 0

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from hx import __main__ as cli
-from hx import checkpoint, context, ledger
+from hx import checkpoint, context, host, ledger
 
 
 @pytest.fixture
@@ -16,8 +16,8 @@ def boundary_controller(tmp_path, monkeypatch):
     led.add_task('one', 'First item', 'dev-codex', ['owned.py'], base_commit='base')
     led.set_status('one', 'done')
     controller = context.Controller(led, {'team_prefix': 'dev-'})
-    agent = {'name': 'dev-codex', 'agent': 'codex', 'agent_status': 'idle',
-             'agent_session': {'value': 'sid'}, 'cwd': str(tmp_path)}
+    agent = host.member({'name': 'dev-codex', 'agent': 'codex', 'agent_status': 'idle',
+                         'agent_session': {'value': 'sid'}, 'cwd': str(tmp_path)})
     sample = {'session_id': 'sid', 'utilisation': .2, 'sampled_at': context._now().isoformat()}
     monkeypatch.setattr(context, 'agent_info', lambda name: dict(agent))
     monkeypatch.setattr(context, 'telemetry', lambda *args: dict(sample))
@@ -33,7 +33,7 @@ def boundary_controller(tmp_path, monkeypatch):
 def test_boundary_records_every_disposition(boundary_controller, monkeypatch, case, disposition):
     controller, agent, sample = boundary_controller
     if case == 'busy':
-        agent['agent_status'] = 'working'
+        agent['status'] = 'working'
     elif case == 'unknown':
         sample['utilisation'] = None
     elif case == 'dirty':
@@ -89,7 +89,7 @@ def test_journal_failure_is_not_a_silent_success(boundary_controller):
 def test_unregistered_pressure_has_actionable_recovery(boundary_controller, provider, action):
     controller, agent, sample = boundary_controller
     controller.ledger.set_status('one', 'done')
-    agent.update(name='dev-pane', agent=provider)
+    agent.update(name='dev-pane', kind=provider)
     sample['utilisation'] = .89
     result = controller.boundary('dev-pane')
     assert result['action'] == action
@@ -110,7 +110,7 @@ def test_cli_pane_boundary_records_without_executing_recovery(boundary_controlle
 
 def test_lead_guard_is_per_work_item(boundary_controller, monkeypatch):
     controller, agent, sample = boundary_controller
-    agent.update(name='dev-claude', agent='claude')
+    agent.update(name='dev-claude', kind='claude')
     sample['utilisation'] = .8
     monkeypatch.setattr(context, '_lead_telemetry', lambda *args: dict(sample))
     controller.policy['context'] = {'min_interval_min': 0, 'max_per_task': 2}

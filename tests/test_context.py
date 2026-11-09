@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from hx import __main__ as cli
-from hx import checkpoint, context, ledger
+from hx import checkpoint, context, host, ledger
 
 
 @pytest.fixture
@@ -25,28 +25,26 @@ def controller(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint, "validate_checkpoint", lambda *a, **kw: {"ok": True, "checkpoint": str(cp)})
     monkeypatch.setattr(checkpoint, "_run_git", lambda *a: (0, "", ""))
     c = context.Controller(led, {"context": {"verification_timeout_seconds": 0}})
-    c.agent = {"name": "hx-codex", "agent": "codex", "agent_status": "idle",
-               "agent_session": {"value": "sid"}, "cwd": str(tmp_path)}
+    c.agent = host.member({"name": "hx-codex", "agent": "codex", "agent_status": "idle",
+                           "agent_session": {"value": "sid"}, "cwd": str(tmp_path)})
     c.calls = []
     c.sample = {"session_id": "sid", "utilisation": .7,
                 "sampled_at": context._now().isoformat()}
     monkeypatch.setattr(context, "agent_info", lambda name: copy.deepcopy(c.agent))
     monkeypatch.setattr(context, "telemetry", lambda *a: dict(c.sample))
 
-    def herdr(*args, **kwargs):
-        c.calls.append(args)
-        if args[0] == "prompt" and args[2] == "/compact":
+    def send_checked(name, text, **kwargs):
+        c.calls.append((name, text, kwargs))
+        if text == "/compact":
             lease = json.loads(led.leases_path.read_text())["sessions"]["sid"]
             assert lease["state"] == "compacting"
             c.sample.update(utilisation=.2, sampled_at=context._now().isoformat())
-        if args[0] == "read":
-            token = json.loads(led.leases_path.read_text())["sessions"]["sid"]["token"]
-            return {"result": {"text": f"{token} Run acceptance."}}
-        return {"result": {"type": "agent_prompted"}}
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
 
-    monkeypatch.setattr(context, "_herdr", herdr)
-    # herdr agent read returns plain pane text, not JSON.
-    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
+    monkeypatch.setattr(context, "_send_checked", send_checked)
+    # The pane read returns plain text, not JSON.
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: (
+        json.loads(led.leases_path.read_text())["sessions"]["sid"]["token"] + " Run acceptance."))
     return c
 
 
@@ -54,15 +52,15 @@ def test_success_reserves_verifies_restores_and_releases(controller):
     result = controller.compact("hx-codex")
     assert result["action"] == "compacted"
     assert result["telemetry"]["utilisation"] == .2
-    assert controller.calls[0][2] == "/compact"
-    assert "checkpoint.md" in controller.calls[1][2]
+    assert controller.calls[0][1] == "/compact"
+    assert "checkpoint.md" in controller.calls[1][1]
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
     assert controller.decide("hx-codex")["action"] == "keep"
 
 
 @pytest.mark.parametrize("change,reason", [
-    ({"agent_status": "working"}, "not idle"),
-    ({"agent_status": "blocked"}, "not idle"),
+    ({"status": "working"}, "not idle"),
+    ({"status": "blocked"}, "not idle"),
     ({"cwd": "elsewhere"}, "repository"),
 ])
 def test_decision_rejects_unsafe_agent(controller, change, reason):
@@ -274,50 +272,53 @@ def test_cross_repo_git_failure_is_not_treated_as_clean(cross_repo, monkeypatch,
 
 
 def test_busy_immediately_before_send_rejected(controller, monkeypatch):
-    replies = iter([dict(controller.agent), dict(controller.agent, agent_status="working")])
+    replies = iter([dict(controller.agent), dict(controller.agent, status="working")])
     monkeypatch.setattr(context, "agent_info", lambda name: next(replies))
     assert "became busy" in controller.compact("hx-codex")["reason"]
     assert not controller.calls
 
 
 def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
-    def timeout(*a, **kw):
-        raise subprocess.TimeoutExpired("herdr", 310)
-    monkeypatch.setattr(context, "_herdr", timeout)
-    # herdr agent read returns plain pane text, not JSON.
-    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=timeout: _h("read", name)["result"]["text"])
+    def timeout(name, text, **kwargs):
+        return {"started": True, "status": "unknown", "turn": None, "ended": False, "reason": "timeout"}
+    monkeypatch.setattr(context, "_send_checked", timeout)
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: "")
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
     assert "leased" in controller.decide("hx-codex")["reason"]
     assert controller.recover("hx-codex")["action"] == "keep"
     controller.sample["sampled_at"] = context._now().isoformat()
-    controller.agent["agent_status"] = "working"
+    controller.agent["status"] = "working"
     assert controller.recover("hx-codex")["action"] == "keep"
-    controller.agent["agent_status"] = "idle"
+    controller.agent["status"] = "idle"
     assert controller.recover("hx-codex")["action"] == "recovered"
     assert "loop guard" in controller.decide("hx-codex")["reason"]
 
 
 @pytest.mark.parametrize("failure", ["session", "telemetry-session", "stale", "unchanged", "ack"])
 def test_unverified_completion_is_unknown(controller, monkeypatch, failure):
-    original = context._herdr
-    def herdr(*args, **kwargs):
+    original = context._send_checked
+    def send_checked(name, text, **kwargs):
         before = dict(controller.sample)
-        result = original(*args, **kwargs)
-        if args[0] == "prompt" and args[2] == "/compact":
+        result = original(name, text, **kwargs)
+        if text == "/compact":
             if failure == "session":
-                controller.agent["agent_session"] = {"value": "new"}
+                controller.agent["session_id"] = "new"
             elif failure == "telemetry-session":
                 controller.sample["session_id"] = "other"
             elif failure == "stale":
                 controller.sample["sampled_at"] = before["sampled_at"]
             elif failure == "unchanged":
                 controller.sample["utilisation"] = .7
-        if args[0] == "read" and failure == "ack":
-            return {"result": {"text": "I forgot."}}
         return result
-    monkeypatch.setattr(context, "_herdr", herdr)
-    # herdr agent read returns plain pane text, not JSON.
-    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
+    monkeypatch.setattr(context, "_send_checked", send_checked)
+
+    def read(name, lines=60):
+        if failure == "ack":
+            return "I forgot."
+        token = json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]["token"]
+        return f"{token} Run acceptance."
+
+    monkeypatch.setattr(context, "_herdr_read", read)
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]["state"] == "compact-unknown"
 
@@ -364,14 +365,7 @@ def test_guard_rejects_recent_or_repeated_compaction(controller, guard):
 
 
 def test_stale_acknowledgement_without_current_nonce_rejected(controller, monkeypatch):
-    original = context._herdr
-    def herdr(*args, **kwargs):
-        if args[0] == "read":
-            return {"result": {"text": "Run acceptance."}}
-        return original(*args, **kwargs)
-    monkeypatch.setattr(context, "_herdr", herdr)
-    # herdr agent read returns plain pane text, not JSON.
-    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
+    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60: "Run acceptance.")
     assert controller.compact("hx-codex")["action"] == "compact-unknown"
 
 
@@ -400,9 +394,13 @@ def test_herdr_uses_argument_array_without_shell(monkeypatch):
     def run(args, **kwargs):
         assert args == ["herdr", "agent", "prompt", "hx-codex", "/compact"]
         assert kwargs["shell"] is False
-        return subprocess.CompletedProcess(args, 0, '{"result":{}}', "")
-    monkeypatch.setattr(subprocess, "run", run)
-    assert context._herdr("prompt", "hx-codex", "/compact") == {"result": {}}
+        return subprocess.CompletedProcess(
+            args, 0,
+            '{"result":{"type":"agent_prompted","agent":{"agent_status":"working"}}}', "")
+    monkeypatch.setattr(host.subprocess, "run", run)
+    result = host.HerdrHost().send_checked("hx-codex", "/compact")
+    assert result["started"] is True
+    assert result["ended"] is False
 
 
 def test_codex_telemetry_uses_exact_session_and_cwd(tmp_path, monkeypatch):
@@ -414,7 +412,7 @@ def test_codex_telemetry_uses_exact_session_and_cwd(tmp_path, monkeypatch):
         (tmp_path / f"rollout-{sid}.jsonl").write_text("\n".join(map(json.dumps, events)), encoding="utf-8")
     rollout("wanted", 600, tmp_path)
     rollout("other", 10, tmp_path)
-    agent = {"agent": "codex", "agent_session": {"value": "wanted"}, "cwd": str(tmp_path)}
+    agent = host.member({"agent": "codex", "agent_session": {"value": "wanted"}, "cwd": str(tmp_path)})
     assert context.telemetry(agent, {})["utilisation"] == .6
     agent["cwd"] = str(tmp_path / "elsewhere")
     assert context.telemetry(agent, {})["utilisation"] is None
@@ -423,7 +421,7 @@ def test_codex_telemetry_uses_exact_session_and_cwd(tmp_path, monkeypatch):
 def test_claude_telemetry_requires_session_specific_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
     path = tmp_path / "claude-status-sid.json"
-    agent = {"agent": "claude", "agent_session": {"value": "sid"}}
+    agent = host.member({"agent": "claude", "agent_session": {"value": "sid"}})
     path.write_text(json.dumps({"session_id": "sid", "context_window": {"used_percentage": 60}}))
     assert context.telemetry(agent, {})["utilisation"] == .6
     path.write_text(json.dumps({"session_id": "other", "context_window": {"used_percentage": 60}}))
@@ -437,7 +435,7 @@ def test_opencode_telemetry_filters_session_and_requires_model_limit(tmp_path, m
         conn.execute("CREATE TABLE message (session_id TEXT, time_created INTEGER, data TEXT)")
         for sid, value in [("sid", 100), ("other", 800)]:
             conn.execute("INSERT INTO message VALUES (?, ?, ?)", (sid, 1000, json.dumps({"role": "assistant", "modelID": "model", "tokens": {"input": value, "cache": {"read": 200}}})))
-    agent = {"agent": "opencode", "agent_session": {"value": "sid"}}
+    agent = host.member({"agent": "opencode", "agent_session": {"value": "sid"}})
     assert context.telemetry(agent, {"context_limits": {"model": 1000}})["utilisation"] == .3
     assert context.telemetry(agent, {})["utilisation"] is None
 
@@ -446,7 +444,7 @@ def test_opencode_telemetry_filters_session_and_requires_model_limit(tmp_path, m
 def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeypatch, outcome):
     led = controller.ledger
     original_load = led._load_leases
-    original_herdr = context._herdr
+    original_send = context._send_checked
     reads = []
 
     def load_leases():
@@ -454,17 +452,22 @@ def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeyp
         reads.append(True)
         return original_load()
 
-    def herdr(*args, **kwargs):
-        assert not led.leases_lock_path.exists(), "Herdr must run outside the shared lock"
-        assert not led.lock_path.exists(), "Herdr must run outside the repo lock"
+    def send_checked(name, text, **kwargs):
+        assert not led.leases_lock_path.exists(), "the host must run outside the shared lock"
+        assert not led.lock_path.exists(), "the host must run outside the repo lock"
         if outcome == "timeout":
-            raise subprocess.TimeoutExpired("herdr", 310)
-        return original_herdr(*args, **kwargs)
+            return {"started": True, "status": "unknown", "turn": None, "ended": False, "reason": "timeout"}
+        return original_send(name, text, **kwargs)
 
     monkeypatch.setattr(led, "_load_leases", load_leases)
-    monkeypatch.setattr(context, "_herdr", herdr)
-    # herdr agent read returns plain pane text, not JSON.
-    monkeypatch.setattr(context, "_herdr_read", lambda name, lines=60, _h=herdr: _h("read", name)["result"]["text"])
+    monkeypatch.setattr(context, "_send_checked", send_checked)
+
+    def read(name, lines=60):
+        assert not led.leases_lock_path.exists(), "the host must run outside the shared lock"
+        assert not led.lock_path.exists(), "the host must run outside the repo lock"
+        return json.loads(led.leases_path.read_text())["sessions"]["sid"]["token"] + " Run acceptance."
+
+    monkeypatch.setattr(context, "_herdr_read", read)
     result = controller.compact("hx-codex")
     if outcome == "success":
         assert result["action"] == "compacted"
@@ -559,8 +562,8 @@ def test_herdr_read_window_includes_long_wrapped_acknowledgement(monkeypatch):
         requested.append(lines)
         return subprocess.CompletedProcess(args, 0, "\n".join(pane_lines[-lines:]), "")
 
-    monkeypatch.setattr(context.subprocess, "run", run)
-    reply = context._herdr_read("hx-codex")
+    monkeypatch.setattr(host.subprocess, "run", run)
+    reply = host.HerdrHost().read("hx-codex")
 
     assert requested[0] > 60
     assert context._has_acknowledgement(reply, expected)

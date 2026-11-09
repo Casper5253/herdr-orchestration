@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from hx import checkpoint, context, ledger
+from hx import checkpoint, context, host, ledger
 
 
 @pytest.fixture
@@ -20,18 +20,18 @@ def controller(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint, "validate_checkpoint", lambda *a, **kw: {"ok": True, "checkpoint": str(cp)})
     monkeypatch.setattr(checkpoint, "_run_git", lambda *a: (0, "", ""))
     c = context.Controller(led, {"team_prefix": "dev-", "context": {"verification_timeout_seconds": 0}})
-    c.agent = {"name": "dev-devin", "agent": "devin", "agent_status": "idle",
-               "pane_id": "wN:p6", "cwd": str(tmp_path)}
+    c.agent = host.member({"name": "dev-devin", "agent": "devin", "agent_status": "idle",
+                           "pane_id": "wN:p6", "cwd": str(tmp_path)})
     c.footer = "SWE-2 High · accept edits    Context: 157k / 262k tokens (59%)\n"
     c.calls = []
     monkeypatch.setattr(context, "agent_info", lambda name: copy.deepcopy(c.agent))
     monkeypatch.setattr(context, "_herdr_read", lambda name, lines=200: c.footer)
 
-    def herdr(*args, **kwargs):
-        c.calls.append(args)
-        return {"result": {"type": "agent_prompted"}}
+    def send_checked(name, text, **kwargs):
+        c.calls.append((name, text, kwargs))
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
 
-    monkeypatch.setattr(context, "_herdr", herdr)
+    monkeypatch.setattr(context, "_send_checked", send_checked)
     return c
 
 
@@ -69,8 +69,8 @@ def test_parse_devin_footer_uses_last_matching_line():
 
 
 def test_devin_session_uses_pane_identity():
-    assert context._session({"agent": "devin", "name": "dev-devin", "pane_id": "wN:p6"}) == "devin-pane:wN:p6"
-    assert context._session({"agent": "devin", "name": "dev-devin"}) == "devin-pane:dev-devin"
+    assert context._session(host.member({"agent": "devin", "name": "dev-devin", "pane_id": "wN:p6"})) == "devin-pane:wN:p6"
+    assert context._session(host.member({"agent": "devin", "name": "dev-devin"})) == "devin-pane:dev-devin"
     assert context._session({"agent": "devin"}) == ""
 
 
@@ -158,7 +158,7 @@ def test_decide_keep_when_footer_unknown(controller):
 
 
 def test_decide_keep_when_busy(controller):
-    controller.agent["agent_status"] = "working"
+    controller.agent["status"] = "working"
     decision = controller.decide("dev-devin")
     assert decision["action"] == "keep"
     assert "not idle" in decision["reason"]
@@ -189,21 +189,21 @@ def test_compact_command_policy_runs_standard_compaction(controller, monkeypatch
         token = json.loads(controller.ledger.leases_path.read_text())["sessions"]["devin-pane:wN:p6"]["token"]
         return f"{token} Run acceptance."
 
-    def herdr(*args, **kwargs):
-        controller.calls.append(args)
-        if args[0] == "prompt" and args[2] == "/compact":
+    def send_checked(name, text, **kwargs):
+        controller.calls.append((name, text, kwargs))
+        if text == "/compact":
             lease = json.loads(controller.ledger.leases_path.read_text())["sessions"]["devin-pane:wN:p6"]
             assert lease["state"] == "compacting"
             controller.footer = "Context: 40k / 262k tokens (15%)\n"
-        return {"result": {"type": "agent_prompted"}}
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
 
-    monkeypatch.setattr(context, "_herdr", herdr)
+    monkeypatch.setattr(context, "_send_checked", send_checked)
     monkeypatch.setattr(context, "_herdr_read", read)
 
     result = controller.compact("dev-devin")
     assert result["action"] == "compacted"
     assert result["telemetry"]["utilisation"] == pytest.approx(40 / 262)
-    assert controller.calls[0][2] == "/compact"
+    assert controller.calls[0][1] == "/compact"
     assert not any("/clear" in str(call) for call in controller.calls)
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"] == {}
 
@@ -211,23 +211,23 @@ def test_compact_command_policy_runs_standard_compaction(controller, monkeypatch
 def test_compact_command_applies_to_devin_only(controller, monkeypatch):
     """A configured devin.compact_command must never change what codex compaction sends."""
     controller.policy["devin"] = {"compact_command": "/squash"}
-    controller.agent["agent"] = "codex"
-    controller.agent["agent_session"] = {"value": "sid"}
-    del controller.agent["pane_id"]
+    controller.agent["kind"] = "codex"
+    controller.agent["session_id"] = "sid"
+    del controller.agent["address"]
     controller.sample = {"session_id": "sid", "utilisation": .7,
                          "sampled_at": context._now().isoformat()}
     monkeypatch.setattr(context, "telemetry", lambda *a: dict(controller.sample))
     monkeypatch.setattr(context, "_herdr_read", lambda name, lines=200:
                         json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]["token"] + " Run acceptance.")
 
-    def herdr(*args, **kwargs):
-        controller.calls.append(args)
-        if args[0] == "prompt" and args[2] == "/compact":
+    def send_checked(name, text, **kwargs):
+        controller.calls.append((name, text, kwargs))
+        if text == "/compact":
             controller.sample.update(utilisation=.2, sampled_at=context._now().isoformat())
-        return {"result": {"type": "agent_prompted"}}
+        return {"started": True, "status": "unknown", "turn": None, "ended": True, "reason": None}
 
-    monkeypatch.setattr(context, "_herdr", herdr)
+    monkeypatch.setattr(context, "_send_checked", send_checked)
 
     result = controller.compact("dev-devin")
     assert result["action"] == "compacted"
-    assert controller.calls[0][2] == "/compact"
+    assert controller.calls[0][1] == "/compact"

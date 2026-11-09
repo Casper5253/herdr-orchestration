@@ -20,7 +20,7 @@ NOW = datetime.datetime(2026, 11, 1, tzinfo=datetime.timezone.utc)
 
 @pytest.fixture(autouse=True)
 def synthetic_herdr_agents(monkeypatch):
-    monkeypatch.setattr("hx.usage.herdr_agents", lambda: [])
+    monkeypatch.setattr("hx.usage.live_members", lambda: [])
 
 
 def _policy(tmp_path: Path, **overrides) -> dict:

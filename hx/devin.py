@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from hx import paths
+from hx import host, paths
 
 PROVIDER = "devin"
 FREE_TIER = "Free"
@@ -396,18 +396,22 @@ def slots_dir() -> Path:
     return state_dir() / "devin-slots"
 
 
-def live_sessions(agents: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-    """Devin-kind Herdr panes from an ``herdr agent list`` agent list.
+def live_sessions(agents: list[host.Member] | None) -> list[dict[str, Any]] | None:
+    """Devin-kind host panes from the live agent list.
 
     Any name counts: a Devin pane outside the team prefix still shares the
-    account's concurrency. ``None`` means the agent list itself is unknown.
+    account's concurrency. An unknown roster, or any entry whose provider kind
+    is unresolved, makes the account-wide Devin count unknown: return ``None``
+    so admission refuses until the entry resolves. A name never decides a kind.
     """
     if agents is None:
         return None
+    if any(a.get("kind") == "unknown" for a in agents):
+        return None
     return [
-        {"name": a.get("name"), "status": a.get("agent_status"), "cwd": a.get("cwd")}
+        {"name": a["name"] or None, "status": a["status"], "cwd": a["cwd"]}
         for a in agents
-        if isinstance(a, dict) and a.get("agent") == PROVIDER
+        if a.get("kind") == PROVIDER
     ]
 
 
@@ -429,10 +433,10 @@ def _recorded_live_sessions(now: datetime.datetime) -> list[dict[str, Any]] | No
 
 
 def _read_live_sessions() -> list[dict[str, Any]] | None:
-    from hx.usage import herdr_agents
+    from hx.usage import live_members
 
     try:
-        return live_sessions(herdr_agents())
+        return live_sessions(live_members())
     except Exception:
         return None
 
@@ -611,18 +615,18 @@ def usage(
 ) -> dict[str, Any]:
     """Devin pool status without a network call (the run preflight does that).
 
-    ``agents`` is the ``herdr agent list`` agent list from the same snapshot
-    ``usage.agents`` reports. Explicit ``None`` means unknown and refuses
-    admission; an omitted agent list is read through the shared Herdr helper.
+    ``agents`` is the live agent list from the same snapshot ``usage.agents``
+    reports. Explicit ``None`` means unknown and refuses admission; an omitted
+    agent list is read through the shared host helper.
 
     Never raises: a malformed ``policy.devin`` must not take ``hx usage`` and
     ``hx route`` down for every other pool, so it reports status ``error``.
     """
     try:
         if agents is _AGENTS_UNSET:
-            from hx.usage import herdr_agents
+            from hx.usage import live_members
             try:
-                agents = herdr_agents()
+                agents = live_members()
             except Exception:
                 agents = None
         return _usage(policy, now or _utcnow(), agents)

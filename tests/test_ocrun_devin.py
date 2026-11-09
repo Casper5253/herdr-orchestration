@@ -17,7 +17,7 @@ MODEL = "swe-2-high"
 
 @pytest.fixture(autouse=True)
 def synthetic_herdr_agents(monkeypatch):
-    monkeypatch.setattr("hx.usage.herdr_agents", lambda: [])
+    monkeypatch.setattr("hx.usage.live_members", lambda: [])
 
 
 def _export_doc(model: str) -> dict:

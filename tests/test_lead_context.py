@@ -7,7 +7,7 @@ import json
 import pytest
 
 from hx import __main__ as cli
-from hx import context, ledger, usage
+from hx import context, host, ledger, usage
 
 
 @pytest.fixture
@@ -19,8 +19,8 @@ def lead(tmp_path, monkeypatch):
         "team_prefix": "test-", "context_limits": {"claude-lead": 400000},
         "context": {"claude_lead_threshold": .6, "max_per_task": 2, "min_interval_min": 20},
     })
-    c.agent = {"name": "test-claude", "agent": "claude", "agent_status": "working",
-               "agent_session": {"value": "lead-sid"}}
+    c.agent = host.member({"name": "test-claude", "agent": "claude", "agent_status": "working",
+                           "agent_session": {"value": "lead-sid"}})
     c.status = {"session_id": "lead-sid", "timestamp": context._now().isoformat(),
                 "context_window": {"context_window_size": 1000000, "used_percentage": 25,
                                    "current_usage": {"input_tokens": 10000,
@@ -100,7 +100,7 @@ def test_invalid_token_counters_never_trigger_compaction(lead, current):
 
 
 def test_missing_session_never_chooses_newest_status_file(lead):
-    del lead.agent["agent_session"]
+    del lead.agent["session_id"]
     result = lead.decide("test-claude")
     assert result["action"] == "keep"
     assert "--session" in result["reason"]
@@ -112,7 +112,7 @@ def test_cli_session_fallback_and_herdr_precedence(lead, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["action"] == "self-compact"
     assert result["session_id"] == "lead-sid"
-    del lead.agent["agent_session"]
+    del lead.agent["session_id"]
     assert cli.main(["context", "decide", "test-claude", "--session", "lead-sid"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["action"] == "self-compact"
@@ -131,7 +131,7 @@ def test_cli_confirmation_records_guard_and_interval(lead, capsys):
 
 
 def test_confirmation_works_without_herdr_session(lead):
-    del lead.agent["agent_session"]
+    del lead.agent["session_id"]
     assert lead.self_compacted("test-claude", "lead-sid")["action"] == "self-compacted"
     assert lead.decide("test-claude", session_id="lead-sid")["action"] == "keep"
 
@@ -186,7 +186,7 @@ def test_lead_task_boundary_preserves_the_completed_task_id(lead):
     assert result['task_id'] == result['work_item'] == 'release-task'
 
 
-@pytest.mark.parametrize("change,sid", [({}, "wrong"), ({"agent": "codex"}, "lead-sid"), ({}, "")])
+@pytest.mark.parametrize("change,sid", [({}, "wrong"), ({"kind": "codex"}, "lead-sid"), ({}, "")])
 def test_confirmation_rejects_wrong_session_or_provider(lead, change, sid):
     lead.agent.update(change)
     with pytest.raises(ValueError):
@@ -219,12 +219,12 @@ def test_claude_session_is_found_by_pane_when_herdr_has_none(tmp_path, monkeypat
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
     for sid, pane, stamp in [("old", "wA:p3", "2026-10-18T08:00:00+00:00"), ("new", "wA:p3", "2026-10-18T09:00:00+00:00"), ("other", "wA:p4", "2026-10-18T10:00:00+00:00")]:
         (tmp_path / f"claude-status-{sid}.json").write_text(json.dumps({"session_id": sid, "herdr_pane_id": pane, "timestamp": stamp}), encoding="utf-8")
-    assert context._session({"agent": "claude", "pane_id": "wA:p3"}) == "new"
-    assert context._session({"agent": "claude", "pane_id": "wA:p9"}) == ""
-    assert context._session({"agent": "codex", "pane_id": "wA:p3"}) == ""
-    assert context._session({"agent": "claude", "pane_id": "wA:p3", "agent_session": {"value": "herdr-sid"}}) == "herdr-sid"
+    assert context._session(host.member({"agent": "claude", "pane_id": "wA:p3"})) == "new"
+    assert context._session(host.member({"agent": "claude", "pane_id": "wA:p9"})) == ""
+    assert context._session(host.member({"agent": "codex", "pane_id": "wA:p3"})) == ""
+    assert context._session(host.member({"agent": "claude", "pane_id": "wA:p3", "agent_session": {"value": "herdr-sid"}})) == "herdr-sid"
 
 
 def test_a_worker_in_herdr_done_state_counts_as_ready(lead):
-    lead.agent = {**lead.agent, "name": "test-haiku", "agent_status": "done"}
+    lead.agent = {**lead.agent, "name": "test-haiku", "status": "done"}
     assert lead.decide("test-haiku")["reason"] != "agent is not idle"
