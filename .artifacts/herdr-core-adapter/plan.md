@@ -1,5 +1,14 @@
 # Plan: hx on herdr-core
 
+## Revision after Codex's adversarial review (9 Nov, `review-spec-codex.md`)
+The lead accepted all 8 findings. Changes to the table below:
+- **U1** grows to the full Host contract. It adds a full live roster (`all_members()`, any team, any name, for Devin's account-wide cap; an unknown roster refuses Devin admission), host-neutral checked send and wait outcomes (started, status, turn, ended, reason, timeout as a check-in and never as done), `focused` kept as nullable, and `unknown` status that never counts as available. Contract tests use only declared Host methods, and there is no `getattr` or `.command` escape hatch.
+- **U2** ships with the safety pieces. Workers report through `hx say claude`, which enforces the same team, refuses to send to a blocked target, adds Devin's deny line, and keeps a durable outbox with message IDs so a report that fails to send stays pending for the lead to reconcile. When U2 lands, the temporary `hc send *` allow in the OpenCode overlay is removed, raw `hc send`, `kill`, `run` and `keys` are denied for workers, and every brief's Report section switches to `hx say claude`.
+- **New U2b, session binding** (before U3): each hc terminal is linked to its provider session through host identity, terminal address and launch generation. Claude's hook publishes `HC_TERMINAL_ID` with its session, the OpenCode plugin (U6, moved up) publishes its session as well as its status, and Codex is bound through its session start. Ambiguous or stale matches are rejected. Never pick the newest session by cwd.
+- **U3** claims doctor only with a known, correct live model, and claims context only through a verified binding.
+- **U7 is deferred.** hc has no in-place restart, and a new session breaks every session-keyed compaction guard. Until a replacement transaction keeps leases, counts, cooldowns and acknowledgements across the old and new session, a reset on hc means "start a fresh terminal for the next brief", and compaction relies on each agent's own auto-compaction. Probe the per-terminal `notes=false` setting (which drops the `<hc>` tags) for slash commands before designing U7.
+- The legacy herdr path is deleted only once old-host use is observed to be absent, not on a timer.
+
 Each unit ends in a check. Each unit goes through cross-family review before the next starts. Builders: DeepSeek (dev-opencode) and Devin. Reviewer: Codex. The lead verifies live in the app.
 
 | # | Unit | Owner | Check |
