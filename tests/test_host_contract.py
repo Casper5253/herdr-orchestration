@@ -33,6 +33,7 @@ def _member(
         name=name, team=team, role=role, kind=kind, status=status,
         cwd=cwd, address=address, session_id=session_id,
         session_reason=session_reason, focused=focused, turn=turn,
+        created_ms=None,
     )
 
 

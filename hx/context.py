@@ -172,28 +172,87 @@ _DEVIN_USAGE = re.compile(
 _DEVIN_UNIT = {"k": 1e3, "m": 1e6}
 
 
+def _devin_footer_member(line: str) -> bool:
+    """A line of the Devin footer status block; anything else ends the block.
+
+    The block is the status chrome Devin draws at the bottom: usage lines
+    (Context marker with the model prefix, or the narrow bare form), the
+    model/mode line, the Pro quota line, update nags, separators and blanks.
+    Task output above it — including a Context example — is never footer.
+    """
+    if not line:
+        return True
+    if "Context:" in line:
+        prefix = line.rsplit("Context:", 1)[0].strip()
+        return not prefix or bool(re.match(r"^SWE-2\b", prefix))
+    return bool(
+        _DEVIN_USAGE.fullmatch(line)
+        or re.match(r"^SWE-2\b.*[·|]", line)
+        or re.match(r"^Pro\s*[·|]", line)
+        or re.match(r"^Update\s+v?[\d.]", line)
+        or re.fullmatch(r"[─—\-=\s]+", line)
+    )
+
+
+def _devin_footer_lines(pane_text: str) -> list[str]:
+    """The contiguous footer status block at the bottom, bottom-most line first."""
+    block: list[str] = []
+    for raw in reversed((pane_text or "").rstrip().splitlines()):
+        line = raw.strip()
+        if not _devin_footer_member(line):
+            break
+        block.append(line)
+    return block
+
+
+def _devin_footer_label(pane_text: str) -> str | None:
+    """The footer block's model label ("SWE-2 High"), or None when absent.
+
+    Wide footers put the label on the Context line itself; the narrow two-line
+    footer carries it on the model/mode line beside a bare usage line.
+    """
+    for line in _devin_footer_lines(pane_text):
+        if "Context:" in line:
+            prefix = line.rsplit("Context:", 1)[0].strip()
+        elif re.match(r"^SWE-2\b", line):
+            prefix = line
+        else:
+            continue
+        if not prefix:
+            continue
+        label = re.split(r"[·|]", prefix, maxsplit=1)[0].strip()
+        if label:
+            return label
+    return None
+
+
 def _parse_devin_footer(pane_text: str) -> tuple[float, float] | None:
-    """(used, total) tokens from the last Devin footer usage line; None when absent or inconsistent."""
-    lines = (pane_text or "").rstrip().splitlines()
-    if not lines:
-        return None
-    footer = lines[-1].strip()
-    if "Context:" in footer:
-        prefix, footer = footer.rsplit("Context:", 1)
-        if prefix.strip() and not re.match(r"^SWE-2\b", prefix.strip()):
+    """(used, total) tokens from the last footer usage line; None when absent or inconsistent.
+
+    Only the contiguous footer status block at the bottom counts: a Context
+    line in task output above the block is prose, not telemetry. A footer
+    line that fails its own percentage check is a present-but-broken footer:
+    unknown, never an older line.
+    """
+    for line in _devin_footer_lines(pane_text):
+        if "Context:" in line:
+            _prefix, rest = line.rsplit("Context:", 1)
+            match = _DEVIN_USAGE.fullmatch(rest.strip())
+            if match is None:
+                return None
+        else:
+            match = _DEVIN_USAGE.fullmatch(line)
+            if match is None:
+                continue
+        used = float(match[1]) * _DEVIN_UNIT.get((match[2] or "").lower(), 1.0)
+        total = float(match[3]) * _DEVIN_UNIT.get((match[4] or "").lower(), 1.0)
+        if total <= 0 or used < 0:
             return None
-        footer = footer.strip()
-    match = _DEVIN_USAGE.fullmatch(footer)
-    if match is None:
-        return None
-    used = float(match[1]) * _DEVIN_UNIT.get((match[2] or "").lower(), 1.0)
-    total = float(match[3]) * _DEVIN_UNIT.get((match[4] or "").lower(), 1.0)
-    if total <= 0 or used < 0:
-        return None
-    # The footer shows its own percentage; a mismatch means the line is not what it looked like.
-    if abs(used / total * 100 - float(match[5])) > 1.5:
-        return None
-    return used, total
+        # The footer shows its own percentage; a mismatch means the line is not what it looked like.
+        if abs(used / total * 100 - float(match[5])) > 1.5:
+            return None
+        return used, total
+    return None
 
 
 def _has_acknowledgement(value: Any, expected: str) -> bool:
@@ -271,7 +330,7 @@ def telemetry(agent: host.Member, policy: dict[str, Any]) -> dict[str, Any]:
                 return _sample(sid, (data.get("context_window") or {}).get("used_percentage"), 100, timestamp)
         elif agent.get("kind") == "devin":
             try:
-                footer = _herdr_read(str(agent.get("name") or ""), lines=6)
+                footer = _herdr_read(str(agent.get("name") or ""), lines=8)
             except (OSError, subprocess.SubprocessError):
                 return unknown
             parsed = _parse_devin_footer(footer)

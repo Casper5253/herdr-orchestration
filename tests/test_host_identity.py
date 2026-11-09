@@ -119,6 +119,32 @@ def test_no_terminal_id_is_none_not_an_error() -> None:
     assert host.HcHost(terminal_id=None).own() is None
 
 
+# ---------- Devin identity: a detached tool chain stays refused ----------
+#
+# Devin's tool processes hang off a spawned `devin acp` child through MSYS
+# shells that can exec and die, leaving dead pids the ancestry walk cannot
+# pass. Nothing less than ancestry proves identity: HC_TERMINAL_ID and the
+# per-terminal HC_SCOPE are process-readable bearer values any same-user
+# process can copy, so env comparison would let one process speak as another
+# terminal — the exact adoption class own() exists to refuse.
+
+
+def _detached_chain() -> dict[int, int]:
+    """A parent map where this process's chain dies before the terminal pid."""
+    return {os.getpid(): 4242, 4242: 26064}
+
+
+def test_own_refuses_a_process_carrying_copied_terminal_env(
+    fake: FakeHc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copied HC_TERMINAL_ID + HC_SCOPE is self-asserted: without ancestry, refuse."""
+    monkeypatch.setenv("HC_TERMINAL_ID", "t9")
+    monkeypatch.setenv("HC_SCOPE", "0-copied-scope")
+    monkeypatch.setattr(host, "_process_parents", _detached_chain)
+    with pytest.raises(host.IdentityError, match="not this process or an ancestor"):
+        host.HcHost().own()
+
+
 # ---------- F16: hc-binding v2 reader ----------
 
 

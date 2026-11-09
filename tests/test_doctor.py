@@ -289,17 +289,179 @@ def test_member_model_opencode_uses_the_bound_session(tmp_path):
     assert model["observed"] == "deepseek-v4.1-flash" and "session=s1" in model["source"]
 
 
-def test_member_model_unknown_reasons(tmp_path):
+def test_member_model_unknown_reasons(tmp_path, monkeypatch):
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "no-state"))
     now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
     member = _member("dev-codex", sid=None, reason="no binding file")
     model = doctor._member_model(member, {}, _policy(), now)
     assert model["status"] == "unknown" and "no session binding" in model["reason"]
     devin = _member("dev-devin", kind="devin", sid="devin-pane:t9")
-    assert "publishes no" in doctor._member_model(devin, {}, _policy(), now)["reason"]
+    model = doctor._member_model(devin, {}, _policy(), now)
+    assert model["status"] == "unknown" and "transcript" in model["reason"]
     unknown = _member("dev-mystery", kind="unknown", sid="s1")
     assert "no model source" in doctor._member_model(unknown, {}, _policy(), now)["reason"]
     codex = _member("dev-codex", kind="codex", sid="absent-sid")
     assert "no model field" in doctor._member_model(codex, {}, _policy(), now)["reason"]
+
+
+def _devin_pane(tmp_path: Path, transcript: dict | None = None,
+                transcript_age_ms: int | None = None) -> dict:
+    pane = tmp_path / "dev-devin"
+    pane.mkdir()
+    (pane / "config.json").write_text("{}\n", encoding="utf-8")
+    if transcript is not None:
+        (pane / "transcript.json").write_text(json.dumps(transcript), encoding="utf-8")
+        if transcript_age_ms is not None:
+            import os
+            stamp = transcript_age_ms / 1000
+            os.utime(pane / "transcript.json", (stamp, stamp))
+    return {"devin_pane": pane / "config.json", "home": tmp_path}
+
+
+def _devin_member(created_ms: int | None = None, sid: str = "devin-pane:t9") -> dict:
+    member = _member("dev-devin", kind="devin", sid=sid)
+    member["created_ms"] = created_ms
+    return member
+
+
+def test_member_model_devin_reads_the_export_transcript(tmp_path):
+    """The pane's --export transcript records agent.model_name ("SWE-2 High")."""
+    roots = _devin_pane(tmp_path, transcript={
+        "session_id": "fierce-sprout",
+        "agent": {"model_name": "SWE-2 High"},
+        "steps": [],
+    })
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    model = doctor._member_model(_devin_member(created_ms=1), roots, _policy(), now)
+    assert model["status"] == "ok"
+    assert model["observed"] == "swe-2-high"
+    assert "transcript" in model["source"]
+
+
+def test_member_model_devin_stale_generation_falls_back_to_the_footer(tmp_path, monkeypatch):
+    """An export older than this terminal's created_ms is a previous generation:
+    its model must never stand in for the live pane's (Codex's stale-SWE-2-High case)."""
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    created_ms = int(now.timestamp() * 1000)
+    roots = _devin_pane(tmp_path, transcript={
+        "session_id": "obsolete-session",
+        "agent": {"model_name": "SWE-2 High"},
+        "steps": [],
+    }, transcript_age_ms=created_ms - 60000)
+    monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
+        "SWE-2 Max · bypass                  Context: 118k / 262k tokens (45%)\n")
+    model = doctor._member_model(_devin_member(created_ms=created_ms), roots, _policy(), now)
+    assert model["observed"] == "swe-2-max"
+    assert "footer" in model["source"]
+
+
+def test_member_model_devin_transcript_session_mismatch_falls_back(tmp_path, monkeypatch):
+    """A transcript naming a different bound session is not this pane's model."""
+    roots = _devin_pane(tmp_path, transcript={
+        "session_id": "ses-old",
+        "agent": {"model_name": "SWE-2 Max"},
+        "steps": [],
+    })
+    monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
+        "SWE-2 High · bypass                  Context: 118k / 262k tokens (45%)\n")
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    model = doctor._member_model(
+        _devin_member(created_ms=1, sid="ses-live"), roots, _policy(), now)
+    assert model["observed"] == "swe-2-high"
+    assert "footer" in model["source"]
+
+
+@pytest.mark.parametrize("transcript", [
+    {"agent": ["malformed"]},
+    {"agent": "malformed"},
+    {"session_id": 7, "agent": {"model_name": "SWE-2 High"}},
+    ["not", "a", "dict"],
+    "just a string",
+])
+def test_member_model_devin_malformed_transcript_is_unknown_never_a_crash(
+    tmp_path, monkeypatch, transcript
+):
+    roots = _devin_pane(tmp_path, transcript=transcript)
+    monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
+        "Pro | 100% remaining (resets in 23h 20m)\n")
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    model = doctor._member_model(_devin_member(created_ms=1), roots, _policy(), now)
+    assert model["status"] == "unknown"
+    assert model["observed"] is None
+
+
+def test_member_model_devin_falls_back_to_the_footer_label(tmp_path, monkeypatch):
+    """No transcript: the footer's `SWE-2 Max · …` label normalizes to the id."""
+    roots = _devin_pane(tmp_path)
+    monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
+        "SWE-2 Max · bypass                  Context: 118k / 262k tokens (45%)\n")
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    model = doctor._member_model(_devin_member(), roots, _policy(), now)
+    assert model["status"] == "ok"
+    assert model["observed"] == "swe-2-max"
+    assert "footer" in model["source"]
+
+
+def test_member_model_devin_footer_label_on_the_narrow_two_line_footer(tmp_path, monkeypatch):
+    """The narrow footer carries the label on the model line above a bare usage line."""
+    roots = _devin_pane(tmp_path)
+    monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
+        "SWE-2 High · bypass\n44k / 262k (16%)\n")
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    model = doctor._member_model(_devin_member(), roots, _policy(), now)
+    assert model["status"] == "ok"
+    assert model["observed"] == "swe-2-high"
+    assert "footer" in model["source"]
+
+
+def test_member_model_devin_unknown_when_neither_source_reads(tmp_path, monkeypatch):
+    roots = _devin_pane(tmp_path)
+    monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
+        "Pro · 100% remaining (resets in 23h 20m)\n")
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    model = doctor._member_model(_devin_member(), roots, _policy(), now)
+    assert model["status"] == "unknown"
+    assert model["observed"] is None
+
+
+def test_check_members_lead_seat_is_information_never_drift(tmp_path, monkeypatch):
+    """The lead's model is evidence for the reader, never a drift verdict."""
+    state = tmp_path / "state"
+    state.mkdir()
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    (state / "claude-status-s1.json").write_text(json.dumps({
+        "session_id": "s1", "model": {"id": "claude-opus-4.6"},
+        "timestamp": now.isoformat()}), encoding="utf-8")
+    monkeypatch.setenv("HX_STATE_DIR", str(state))
+    members = {
+        "dev-lead": _member("dev-lead", kind="claude", sid="s1"),
+        "dev-opencode": _member("dev-opencode", kind="opencode", sid="s1"),
+    }
+    roots = {"opencode_db": tmp_path / "oc.db", "home": tmp_path}
+    _message(roots["opencode_db"], "s1", "deepseek-v4.1-flash", 2)
+    report = doctor._check_members(_policy(), roots, now, detected=FakeHost(members))
+    lead = report["members"]["dev-lead"]["model"]
+    assert lead["observed"] == "opus"
+    assert lead["status"] != "drift"
+    assert report["members"]["dev-opencode"]["model"]["status"] == "ok"
+
+
+def test_doctor_never_reports_drift_from_the_lead_seat(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    (state / "claude-status-s1.json").write_text(json.dumps({
+        "session_id": "s1", "model": {"id": "claude-opus-4.6"},
+        "timestamp": now.isoformat()}), encoding="utf-8")
+    monkeypatch.setenv("HX_STATE_DIR", str(state))
+    members = {"dev-lead": _member("dev-lead", kind="claude", sid="s1")}
+    monkeypatch.setattr(doctor.host, "detect", lambda: FakeHost(members))
+    monkeypatch.setattr(doctor, "_check_workers", lambda policy, roots: {})
+    monkeypatch.setattr(doctor, "_scan_prose", lambda policy, roots: [])
+    monkeypatch.setattr(doctor, "_installed_files", lambda roots: [])
+    report = doctor.doctor(_policy())
+    assert report["drift"] is False
+    assert report["members"]["members"]["dev-lead"]["model"]["status"] != "drift"
 
 
 def test_ready_reproduces_the_lead_terminal_output(tmp_path, monkeypatch):

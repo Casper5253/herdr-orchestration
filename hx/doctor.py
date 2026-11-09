@@ -187,6 +187,10 @@ def _member_model(member: dict[str, Any], roots: dict[str, Path],
                   policy: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
     """The model behind a member's bound provider session, with provenance."""
     sid = member.get("session_id")
+    if not sid and member.get("kind") == "devin":
+        # As in context._session: the pane is Devin's only stable identity.
+        pane = str(member.get("address") or member.get("name") or "")
+        sid = f"devin-pane:{pane}" if pane else None
     if not sid:
         return _model_unknown(
             f"no session binding: {member.get('session_reason') or 'provider reports none'}")
@@ -198,8 +202,87 @@ def _member_model(member: dict[str, Any], roots: dict[str, Path],
     if kind == "opencode":
         return _opencode_member_model(roots, str(sid), now)
     if kind == "devin":
-        return _model_unknown("devin pane publishes no bound-session model")
+        return _devin_member_model(member, roots, now)
     return _model_unknown("provider kind unresolved; no model source")
+
+
+def _devin_model_id(label: Any) -> str | None:
+    """A Devin model label ("SWE-2 High") normalized to the policy id ("swe-2-high")."""
+    if not isinstance(label, str) or not label.strip():
+        return None
+    return re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-") or None
+
+
+def _devin_transcript_path(member: dict[str, Any], roots: dict[str, Path]) -> Path:
+    """The pane's --export transcript: <state>/<member>/transcript.json."""
+    name = str(member.get("name") or "")
+    pane = roots.get("devin_pane")
+    if pane is not None and Path(pane).parent.name == name:
+        return Path(pane).parent / "transcript.json"
+    return devin_mod.state_dir() / name / "transcript.json"
+
+
+def _transcript_model(doc: Any, member: dict[str, Any], transcript: Path) -> str | None:
+    """The export's model only when it belongs to the current terminal generation.
+
+    The file must have been written after the terminal's ``created_ms`` — an
+    older export is a previous generation's pane on the same state dir — and
+    when the transcript carries a session_id it must match the member's bound
+    session whenever the member has a real (non-pane) one to compare. Anything
+    unexpected in the shape yields no model, never a crash.
+    """
+    if not isinstance(doc, dict):
+        return None
+    created_ms = member.get("created_ms")
+    if not isinstance(created_ms, (int, float)) or isinstance(created_ms, bool):
+        return None
+    try:
+        mtime_ms = transcript.stat().st_mtime * 1000
+    except OSError:
+        return None
+    if mtime_ms <= float(created_ms):
+        return None
+    sid = str(member.get("session_id") or "")
+    tsid = doc.get("session_id")
+    if tsid is not None and not isinstance(tsid, str):
+        return None
+    if tsid and sid and not sid.startswith("devin-pane:") and tsid != sid:
+        return None
+    agent = doc.get("agent")
+    label = agent.get("model_name") if isinstance(agent, dict) else None
+    return _devin_model_id(label)
+
+
+def _devin_member_model(member: dict[str, Any], roots: dict[str, Path],
+                        now: dt.datetime) -> dict[str, Any]:
+    """Devin's live model: the export transcript's agent.model_name, else the
+    footer's model label — each normalized to the policy ids, source named."""
+    name = str(member.get("name") or "")
+    transcript = _devin_transcript_path(member, roots)
+    doc = stamp = None
+    try:
+        doc = json.loads(transcript.read_text(encoding="utf-8"))
+        stamp = dt.datetime.fromtimestamp(
+            transcript.stat().st_mtime, dt.timezone.utc).isoformat()
+    except (OSError, ValueError):
+        pass
+    model = _transcript_model(doc, member, transcript)
+    if model:
+        return {"status": "ok", "observed": model,
+                "source": f"export transcript {transcript}",
+                "age_seconds": _age_seconds(stamp, now), "reason": None}
+    try:
+        screen = str(context._herdr_read(name, lines=8))
+    except Exception:
+        screen = ""
+    model = _devin_model_id(context._devin_footer_label(screen))
+    if model:
+        return {"status": "ok", "observed": model,
+                "source": "pane footer model label",
+                "age_seconds": 0, "reason": None}
+    return _model_unknown(
+        "devin pane model unreadable: no export transcript model or footer label",
+        str(transcript))
 
 
 def _claude_family(model: Any) -> str | None:
@@ -308,6 +391,7 @@ def _check_members(policy: dict[str, Any], roots: dict[str, Path],
     except Exception as exc:
         return {"status": "unknown", "reason": f"team roster unavailable: {exc}", "members": {}}
     selected = _selected_models(policy)
+    lead_role = str(policy.get("lead_role", "lead"))
     out: dict[str, Any] = {}
     for name, member in roster.items():
         model = _member_model(member, roots, policy, now)
@@ -316,6 +400,9 @@ def _check_members(policy: dict[str, Any], roots: dict[str, Path],
             model["status"] = "unknown"
         else:
             model["status"] = "ok" if model["observed"] == want else "drift"
+        if member.get("role") == lead_role and model["observed"] is not None:
+            # The lead seat is information only: its model is never a verdict.
+            model["status"] = "info"
         model["selected"] = want
         out[name] = {
             "model": model,

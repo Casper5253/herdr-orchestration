@@ -35,5 +35,8 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     # the live herdr server instead of the policy under test.
     monkeypatch.delenv("HERDR_PANE_ID", raising=False)
     monkeypatch.delenv("HX_HERDR_PREFIX", raising=False)
+    # The live terminal scope is identity evidence for own(); tests set their own.
+    monkeypatch.delenv("HC_SCOPE", raising=False)
+    monkeypatch.delenv("HC_TERMINAL_SOCKET", raising=False)
     monkeypatch.setenv("HX_OPENCODE_AUTH", str(tmp_path / "missing-opencode-auth.json"))
     monkeypatch.setenv("HX_CONTEXT_RESETS_PATH", str(tmp_path / "context-resets.json"))

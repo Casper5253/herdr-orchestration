@@ -68,6 +68,66 @@ def test_parse_devin_footer_uses_last_matching_line():
     assert context._parse_devin_footer(pane) == (44000.0, 262000.0)
 
 
+def test_parse_devin_footer_scans_past_a_non_footer_last_line():
+    """The hc screen keeps the update nag below the Devin footer."""
+    pane = (
+        "some scrolled output\n"
+        "SWE-2 High · bypass                  Context: 118k / 262k tokens (45%)\n"
+        "Update v3000.12.32 available!\n"
+    )
+    assert context._parse_devin_footer(pane) == (118000.0, 262000.0)
+
+
+def test_parse_devin_footer_stops_at_a_present_but_broken_footer():
+    """A footer-shaped line that fails its own consistency check is present-but-
+    unreadable, so it stays unknown instead of falling back to a stale line."""
+    pane = (
+        "Context: 90k / 262k tokens (34%)\n"
+        "Context: 157k / 262k tokens (20%)\n"
+    )
+    assert context._parse_devin_footer(pane) is None
+
+
+def test_parse_devin_footer_never_crosses_the_footer_block_into_output():
+    """Codex's screen: a Context example in task output above the footer block
+    must never become telemetry."""
+    pane = (
+        "Context: 210k / 262k tokens (80%)\n"
+        "Ask Devin to build features\n"
+        "SWE-2 High | accept edits\n"
+        "Pro | 100% remaining (resets in 23h 20m)\n"
+    )
+    assert context._parse_devin_footer(pane) is None
+
+
+@pytest.mark.parametrize("pane,expected", [
+    ("SWE-2 High · bypass                  Context: 118k / 262k tokens (45%)\n"
+     "Update v3000.12.32 available!\n", "SWE-2 High"),
+    ("SWE-2 High · bypass\n44k / 262k (16%)\n", "SWE-2 High"),
+    ("SWE-2 Max | accept edits\nPro | 100% remaining (resets in 23h 20m)\n", "SWE-2 Max"),
+    ("Context: 52k / 262k tokens (20%)\n", None),
+    ("Pro | 100% remaining (resets in 23h 20m)\n", None),
+    ("Context: 210k / 262k tokens (80%)\nAsk Devin to build features\n"
+     "SWE-2 High | accept edits\n", "SWE-2 High"),
+])
+def test_devin_footer_label_reads_the_model_line(pane, expected):
+    """The label comes from the footer block's model line whether or not it
+    shares a line with Context — the narrow two-line footer included."""
+    assert context._devin_footer_label(pane) == expected
+
+
+def test_devin_telemetry_reads_the_footer_above_an_update_nag(controller):
+    controller.footer = (
+        "work output\n"
+        "SWE-2 High · bypass                  Context: 118k / 262k tokens (45%)\n"
+        "Update v3000.12.32 available!\n"
+    )
+    sample = context.telemetry(controller.agent, {})
+    assert sample["session_id"] == "devin-pane:wN:p6"
+    assert sample["utilisation"] == pytest.approx(118 / 262)
+    assert context._timestamp(sample["sampled_at"]) is not None
+
+
 def test_devin_session_uses_pane_identity():
     assert context._session(host.member({"agent": "devin", "name": "dev-devin", "pane_id": "wN:p6"})) == "devin-pane:wN:p6"
     assert context._session(host.member({"agent": "devin", "name": "dev-devin"})) == "devin-pane:dev-devin"

@@ -88,6 +88,7 @@ class Member(TypedDict):
     session_reason: str | None
     focused: bool | None
     turn: int | None
+    created_ms: int | float | None
 
 
 class SendResult(TypedDict):
@@ -157,6 +158,9 @@ def member(raw: dict[str, Any]) -> Member:
         focused=focused if isinstance(focused, bool) else None,
         turn=raw.get("turn") if isinstance(raw.get("turn"), int)
             and not isinstance(raw.get("turn"), bool) else None,
+        created_ms=raw.get("created_ms") if isinstance(
+            raw.get("created_ms"), (int, float))
+            and not isinstance(raw.get("created_ms"), bool) else None,
     )
 
 
@@ -539,6 +543,9 @@ def hc_member(raw: dict[str, Any], *, parents: dict[int, int] | None = None) -> 
         focused=None,
         turn=raw.get("turn") if isinstance(raw.get("turn"), int)
             and not isinstance(raw.get("turn"), bool) else None,
+        created_ms=raw.get("created_ms") if isinstance(
+            raw.get("created_ms"), (int, float))
+            and not isinstance(raw.get("created_ms"), bool) else None,
     )
 
 
