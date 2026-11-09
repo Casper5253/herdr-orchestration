@@ -198,6 +198,14 @@ foreach ($role in $roles.Keys) {
     $place = if ($role -eq 'codex') { 'right' } else { 'down' }
     Wait-AppPane $anchor
     Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $anchor) | Out-Null
-    Invoke-Planned @('herdr-app', 'do', 'terminal.keep', '--terminal', $terminal, '--place', $place) | Out-Null
+    # A terminal hc just started can take a moment before herdr-app sees it running.
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ($true) {
+        try { Invoke-Planned @('herdr-app', 'do', 'terminal.keep', '--terminal', $terminal, '--place', $place) | Out-Null; break }
+        catch {
+            if ("$_" -notmatch 'no running terminal' -or [DateTime]::UtcNow -gt $deadline) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
     Wait-AppPane $terminal
 }

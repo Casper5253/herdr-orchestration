@@ -82,3 +82,12 @@ def test_raw_hc_send_asks_again():
     bash = _overlay()["permission"]["bash"]
     assert bash.get("hc *") == "ask"
     assert bash.get("hc send *") is None, "raw `hc send` must fall through to the ask"
+
+
+def test_raw_herdr_control_is_denied_and_reads_stay_free():
+    bash = _overlay()["permission"]["bash"]
+    keys = list(bash)
+    assert bash["herdr *"] == "deny", "herdr agent prompt/start must never reach the creator as a prompt"
+    for read in ("herdr agent list*", "herdr agent get *", "herdr agent read *", "herdr --skill*"):
+        assert bash[read] == "allow"
+        assert keys.index(read) > keys.index("herdr *"), f"{read} must come after the deny (last match wins)"

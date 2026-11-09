@@ -7,7 +7,7 @@
   "permission": {
     "bash": {
       "*": "allow",
-      "herdr *": "ask",
+      "herdr *": "deny",
       // Team messages use `hx say` (allowed by "*"), which only reaches the own team; raw prompts ask.
       "herdr agent list*": "allow",
       "herdr agent get *": "allow",
