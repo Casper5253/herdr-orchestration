@@ -17,6 +17,7 @@ HERDR_FOLDERS = [
 READ_WITHOUT_ASKING = [
     ".agents\\*", ".claude\\skills\\*", "AppData\\Local\\Temp\\*",
     ".config\\opencode\\node_modules\\*", ".config\\opencode\\plugins\\*", *HERDR_FOLDERS,
+    ".herdr-team\\state\\hc-bindings\\*",
 ]
 
 

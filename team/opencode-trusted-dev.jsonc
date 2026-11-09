@@ -47,6 +47,8 @@
       // OpenCode's own plugin API and installed plugins (no secrets); opencode.jsonc holds a token and still asks.
       "C:\\Users\\caspe\\.config\\opencode\\node_modules\\*": "allow",
       "C:\\Users\\caspe\\.config\\opencode\\plugins\\*": "allow",
+      // hc session bindings written by the OpenCode status plugin: terminal, session id, cwd, pid (no secrets).
+      "C:\\Users\\caspe\\.herdr-team\\state\\hc-bindings\\*": "allow",
       // Scratch space for long command output and temp files.
       "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow"
     },
