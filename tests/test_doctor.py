@@ -87,9 +87,9 @@ def _roots(tmp_path: Path) -> dict:
 
 def test_ok(tmp_path: Path) -> None:
     report = doctor.doctor(_policy(), _roots(tmp_path))
-    assert report["workers"]["codex"]["model"]["status"] == "ok"
+    assert report["workers"]["codex"]["model"]["status"] == "config"
     assert report["workers"]["opencode"]["model"]["status"] == "ok"
-    assert report["workers"]["devin"]["model"]["status"] == "ok"
+    assert report["workers"]["devin"]["model"]["status"] == "config"
     assert report["workers"]["opencode"]["context_telemetry"] == "known"
     assert report["workers"]["devin"]["context_telemetry"] == "unknown"
     assert report["workers"]["claude"]["model"]["status"] == "unknown"
@@ -241,3 +241,158 @@ def test_every_manifest_copy_drift_and_missing_file(tmp_path):
         checks = doctor._installed_files(roots)
         assert next(c for c in checks if c["target"] == str(target))["status"] == "drift"
         target.write_bytes(good)
+
+
+def _member(name, kind="codex", status="idle", sid="s1", address="t1", reason="bound session"):
+    team, role = name.rsplit("-", 1)
+    return doctor.host.Member(
+        name=name, team=team, role=role, kind=kind, status=status,
+        cwd="C:\repo", address=address, session_id=sid,
+        session_reason=reason, focused=None, turn=None)
+
+
+class FakeHost:
+    def __init__(self, members=None, own_error=None):
+        self.members = members or {}
+        self.own_error = own_error
+
+    def own(self):
+        if self.own_error:
+            raise self.own_error
+        return next(iter(self.members.values()), None)
+
+    def team(self, prefix):
+        prefix = prefix.rstrip("-")
+        return {n: m for n, m in self.members.items() if m["team"] == prefix}
+
+
+def test_member_model_claude_reads_the_bound_status_file(tmp_path, monkeypatch):
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "claude-status-s1.json").write_text(json.dumps({
+        "session_id": "s1", "model": {"id": "claude-opus-4.6"},
+        "timestamp": now.isoformat()}), encoding="utf-8")
+    monkeypatch.setenv("HX_STATE_DIR", str(state))
+    member = _member("dev-lead", kind="claude", sid="s1")
+    model = doctor._member_model(member, {}, _policy(), now)
+    assert model["status"] == "ok" and model["observed"] == "opus"
+    assert model["age_seconds"] == 0 and model["source"].endswith("claude-status-s1.json")
+
+
+def test_member_model_opencode_uses_the_bound_session(tmp_path):
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    roots = {"opencode_db": tmp_path / "oc.db", "home": tmp_path}
+    _message(roots["opencode_db"], "s1", "deepseek-v4.1-flash", 2)
+    _message(roots["opencode_db"], "other", "qwen3.7-plus", 999)
+    model = doctor._member_model(_member("dev-opencode", kind="opencode", sid="s1"), roots, _policy(), now)
+    assert model["observed"] == "deepseek-v4.1-flash" and "session=s1" in model["source"]
+
+
+def test_member_model_unknown_reasons(tmp_path):
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    member = _member("dev-codex", sid=None, reason="no binding file")
+    model = doctor._member_model(member, {}, _policy(), now)
+    assert model["status"] == "unknown" and "no session binding" in model["reason"]
+    devin = _member("dev-devin", kind="devin", sid="devin-pane:t9")
+    assert "publishes no" in doctor._member_model(devin, {}, _policy(), now)["reason"]
+    unknown = _member("dev-mystery", kind="unknown", sid="s1")
+    assert "no model source" in doctor._member_model(unknown, {}, _policy(), now)["reason"]
+    codex = _member("dev-codex", kind="codex", sid="absent-sid")
+    assert "no model field" in doctor._member_model(codex, {}, _policy(), now)["reason"]
+
+
+def test_ready_reproduces_the_lead_terminal_output(tmp_path, monkeypatch):
+    """The exact t23 verdict: only the three true problems stay named."""
+    monkeypatch.setattr(doctor.host, "tool_path", lambda exe: f"/bin/{exe}")
+    roster = {
+        "dev-lead": _member("dev-lead", kind="claude", status="idle", sid="s1"),
+        "dev-codex": _member("dev-codex", status="idle", sid=None,
+                             reason="no readable binding file"),
+        "dev-devin": _member("dev-devin", kind="devin", status="idle", sid=None,
+                             address="t2m", reason="no readable binding file"),
+        "dev-opencode": _member("dev-opencode", status="unknown", sid=None,
+                                reason="no readable binding file"),
+    }
+    verdict = doctor.ready(_policy(), {}, detected=FakeHost(roster))
+    assert verdict["ready"] is False
+    # Defect 1: a Claude lead does not make a Claude worker required.
+    assert not any("role missing" in m and "claude" in m for m in verdict["missing"])
+    # Defect 2: the lead's model is information, never worker drift.
+    assert not any("dev-lead" in m for m in verdict["missing"])
+    # Defect 3: hx's own devin-pane binding counts as a binding.
+    assert not any("worker dev-devin: no session binding" in m for m in verdict["missing"])
+    # The true problems still named verbatim.
+    assert any("dev-codex" in m and "no session binding" in m for m in verdict["missing"])
+    assert any("dev-opencode" in m and "status unknown" in m for m in verdict["missing"])
+    assert any("dev-opencode" in m and "no session binding" in m for m in verdict["missing"])
+
+
+def test_check_members_reports_per_member_and_unknown_never_drifts(tmp_path):
+    members = {
+        "dev-opencode": _member("dev-opencode", kind="opencode", sid="s1"),
+        "dev-codex": _member("dev-codex", kind="codex", sid=None, reason=None),
+    }
+    roots = {"opencode_db": tmp_path / "oc.db", "home": tmp_path}
+    _message(roots["opencode_db"], "s1", "wrong-model", 2)
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    report = doctor._check_members(_policy(), roots, now, detected=FakeHost(members))
+    assert report["members"]["dev-opencode"]["model"]["status"] == "drift"
+    unknown = report["members"]["dev-codex"]["model"]
+    assert unknown["status"] == "unknown" and "no session binding" in unknown["reason"]
+
+
+def test_ready_verdict_names_the_missing_pieces(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.host, "tool_path", lambda exe: f"/bin/{exe}")
+    monkeypatch.setattr(doctor, "_member_model",
+                        lambda m, r, p, n: {"status": "ok", "observed":
+                            doctor._selected_models(p).get(m["kind"]),
+                            "source": "s", "age_seconds": 0, "reason": None})
+    full = FakeHost({f"dev-{r}": _member(f"dev-{r}", kind="claude" if r == "lead" else r,
+                     status="idle", sid="s1")
+                     for r in ("lead", "claude", "codex", "opencode", "devin")})
+    assert doctor.ready(_policy(), {}, detected=full)["ready"] is True
+    assert doctor.ready(_policy(), {}, detected=FakeHost({}))["ready"] is False
+    sparse = FakeHost({"dev-codex": _member("dev-codex", status="idle", sid="s1")})
+    verdict = doctor.ready(_policy(), {}, detected=sparse)
+    assert verdict["ready"] is False
+    assert any("role missing" in m and "lead" in m for m in verdict["missing"])
+
+    class NoOwn(FakeHost):
+        def own(self):
+            return None
+    verdict = doctor.ready(_policy(), {}, detected=NoOwn(
+        {"dev-codex": _member("dev-codex", status="idle", sid="s1")}))
+    assert any("identity" in m for m in verdict["missing"])
+
+    bad = FakeHost({
+        "dev-codex": _member("dev-codex", status="unknown", sid="s1"),
+        "dev-opencode": _member("dev-opencode", status="idle", sid=None, reason=None),
+    }, own_error=doctor.host.IdentityError("terminal t1 is finished"))
+    verdict = doctor.ready(_policy(), {}, detected=bad)
+    assert verdict["ready"] is False
+    assert any("lead identity unavailable" in m for m in verdict["missing"])
+    assert any("dev-codex" in m and "status unknown" in m for m in verdict["missing"])
+    assert any("dev-opencode" in m and "no session binding" in m for m in verdict["missing"])
+
+    monkeypatch.setattr(doctor.host, "tool_path", lambda exe: (_ for _ in ()).throw(doctor.host.HostToolMissing("hc not found")))
+    verdict = doctor.ready(_policy(), {}, detected=full)
+    assert any("hc executable" in m for m in verdict["missing"])
+
+
+def test_main_ready_exit_codes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(doctor.host, "tool_path", lambda exe: f"/bin/{exe}")
+    monkeypatch.setattr(doctor, "_member_model",
+                        lambda m, r, p, n: {"status": "ok", "observed":
+                            doctor._selected_models(p).get(m["kind"]),
+                            "source": "s", "age_seconds": 0, "reason": None})
+    monkeypatch.setattr(doctor.host, "detect", lambda: FakeHost(
+        {f"dev-{r}": _member(f"dev-{r}", kind="claude" if r == "lead" else r,
+         status="idle", sid="s1")
+         for r in ("lead", "claude", "codex", "opencode", "devin")}))
+    assert doctor.main(["--ready"]) == 0
+    assert "ready" in capsys.readouterr().out
+    monkeypatch.setattr(doctor.host, "detect", lambda: FakeHost(
+        {}, own_error=doctor.host.IdentityError("gone")))
+    assert doctor.main(["--ready"]) == 1
+    assert "lead identity unavailable" in capsys.readouterr().out

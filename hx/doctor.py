@@ -18,6 +18,7 @@ exits 1 when any drift is found so it can gate later steps.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -26,7 +27,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hx import capability, context, paths, usage
+from hx import capability, context, host, paths, usage
 from hx import devin as devin_mod
 
 REQUIRED_SKILLS = ("herdr-team", "hx-router", "poteto-mode")
@@ -164,6 +165,237 @@ def _observed_model(worker: str, roots: dict[str, Path], policy: dict[str, Any])
     return None, None
 
 
+def _age_seconds(timestamp: str | None, now: dt.datetime) -> int | None:
+    if not timestamp:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return max(0, int((now - parsed).total_seconds()))
+
+
+def _model_unknown(reason: str, source: str | None = None) -> dict[str, Any]:
+    """A model that could not be observed: unknown, never drift, never verified."""
+    return {"status": "unknown", "observed": None, "source": source,
+            "age_seconds": None, "reason": reason}
+
+
+def _member_model(member: dict[str, Any], roots: dict[str, Path],
+                  policy: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
+    """The model behind a member's bound provider session, with provenance."""
+    sid = member.get("session_id")
+    if not sid:
+        return _model_unknown(
+            f"no session binding: {member.get('session_reason') or 'provider reports none'}")
+    kind = member.get("kind")
+    if kind == "claude":
+        return _claude_member_model(roots, str(sid), now)
+    if kind == "codex":
+        return _codex_member_model(str(sid), now)
+    if kind == "opencode":
+        return _opencode_member_model(roots, str(sid), now)
+    if kind == "devin":
+        return _model_unknown("devin pane publishes no bound-session model")
+    return _model_unknown("provider kind unresolved; no model source")
+
+
+def _claude_family(model: Any) -> str | None:
+    """Normalize a Claude model id to its family: claude-sonnet-4-6 -> sonnet."""
+    if isinstance(model, dict):
+        model = model.get("id") or model.get("name")
+    if not isinstance(model, str) or not model:
+        return None
+    for name in ("sonnet", "opus", "haiku"):
+        if re.search(rf"\b{name}\b", model):
+            return name
+    return model
+
+
+def _claude_member_model(roots: dict[str, Path], sid: str, now: dt.datetime) -> dict[str, Any]:
+    env = os.environ.get("HX_STATE_DIR")
+    state_dir = Path(env) if env else (roots.get("home") or Path.home()) / ".herdr-team" / "state"
+    path = state_dir / f"claude-status-{usage._safe_session_id(sid)}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return _model_unknown(f"claude status file missing for the bound session", str(path))
+    except ValueError:
+        return _model_unknown("claude status file unreadable", str(path))
+    if data.get("session_id") != sid:
+        return _model_unknown("claude status file names a different session", str(path))
+    model = _claude_family(data.get("model"))
+    if not model:
+        return _model_unknown("claude status carries no model field", str(path))
+    timestamp = data.get("timestamp") or dt.datetime.fromtimestamp(
+        path.stat().st_mtime, dt.timezone.utc).isoformat()
+    return {"status": "ok", "observed": model, "source": str(path),
+            "age_seconds": _age_seconds(timestamp, now), "reason": None}
+
+
+def _codex_member_model(sid: str, now: dt.datetime) -> dict[str, Any]:
+    sessions = usage.default_codex_sessions_dir()
+    newest: tuple[str, str] | None = None
+    try:
+        paths_ = list(sessions.rglob(f"*{sid}*.jsonl"))
+    except OSError:
+        paths_ = []
+    for path in paths_:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            payload = event.get("payload") or {}
+            model = payload.get("model")
+            if isinstance(model, dict):
+                model = model.get("name") or model.get("id")
+            if isinstance(model, str) and model:
+                stamp = str(event.get("timestamp") or payload.get("timestamp") or "")
+                if newest is None or stamp > newest[0]:
+                    newest = (stamp, model)
+    if newest is None:
+        return _model_unknown(f"codex rollout for the bound session carries no model field")
+    return {"status": "ok", "observed": newest[1], "source": f"{sessions} session={sid}",
+            "age_seconds": _age_seconds(newest[0], now), "reason": None}
+
+
+def _opencode_member_model(roots: dict[str, Path], sid: str, now: dt.datetime) -> dict[str, Any]:
+    db = roots.get("opencode_db")
+    if db is None or not db.is_file():
+        return _model_unknown(f"opencode database not found: {db}",
+                              str(db) if db else None)
+    try:
+        with closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+            rows = conn.execute(
+                "SELECT time_created, data FROM message WHERE session_id = ? "
+                "ORDER BY time_created DESC", (sid,))
+            for created, raw in rows:
+                data = json.loads(raw)
+                model = data.get("modelID") or (data.get("model") or {}).get("modelID")
+                provider = data.get("providerID") or (data.get("model") or {}).get("providerID")
+                if not (isinstance(model, str) and model and isinstance(provider, str) and provider):
+                    continue
+                observed = model if provider == "opencode-go" else f"{provider}/{model}"
+                stamp = dt.datetime.fromtimestamp(
+                    created / 1000, dt.timezone.utc).isoformat()
+                return {"status": "ok", "observed": observed,
+                        "source": f"{db} session={sid}",
+                        "age_seconds": _age_seconds(stamp, now), "reason": None}
+    except Exception as exc:
+        return _model_unknown(f"opencode database read failed: {exc}", str(db))
+    return _model_unknown(f"bound opencode session {sid} has no model row", str(db))
+
+
+def _check_members(policy: dict[str, Any], roots: dict[str, Path],
+                   now: dt.datetime, detected: Any = None) -> dict[str, Any]:
+    """Live model evidence for every team member, from bound sessions only."""
+    detected = detected if detected is not None else host.detect()
+    if detected is None:
+        return {"status": "unknown", "reason": "no team host detected", "members": {}}
+    try:
+        prefix = usage.team_prefix(policy)
+    except Exception as exc:
+        return {"status": "unknown", "reason": str(exc), "members": {}}
+    try:
+        roster = detected.team(prefix)
+    except Exception as exc:
+        return {"status": "unknown", "reason": f"team roster unavailable: {exc}", "members": {}}
+    selected = _selected_models(policy)
+    out: dict[str, Any] = {}
+    for name, member in roster.items():
+        model = _member_model(member, roots, policy, now)
+        want = selected.get(str(member.get("kind")))
+        if model["observed"] is None or want is None:
+            model["status"] = "unknown"
+        else:
+            model["status"] = "ok" if model["observed"] == want else "drift"
+        model["selected"] = want
+        out[name] = {
+            "model": model,
+            "status": member.get("status"),
+            "kind": member.get("kind"),
+            "address": member.get("address"),
+        }
+    return {"status": "ok", "reason": None, "members": out}
+
+
+def ready(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None = None,
+          detected: Any = None) -> dict[str, Any]:
+    """One kickoff verdict: ready, or not ready with the exact missing pieces."""
+    if policy is None:
+        try:
+            policy = usage.load_policy()
+        except Exception:
+            policy = {}
+    roots = roots or _roots()
+    detected = detected if detected is not None else host.detect()
+    missing: list[str] = []
+    if detected is None:
+        return {"ready": False, "missing": ["team host: no hc or herdr host detected"]}
+    if not isinstance(detected, host.HerdrHost):
+        try:
+            host.tool_path("hc")
+        except Exception as exc:
+            missing.append(f"hc executable: {exc}")
+    try:
+        own = detected.own()
+    except Exception as exc:
+        missing.append(f"lead identity unavailable: {exc}")
+        own = None
+    if own is None:
+        missing.append("lead identity unavailable: this pane is not a validated team member")
+    try:
+        roster = detected.team(usage.team_prefix(policy))
+    except Exception as exc:
+        missing.append(f"team roster: {exc}")
+        roster = {}
+    if not roster and detected is not None:
+        missing.append("team roster: empty; no live members on this team")
+    selected = _selected_models(policy)
+    lead_role = str(policy.get("lead_role", "lead"))
+    # Required workers are the team's worker kinds, never the lead's family:
+    # a Claude lead does not mean a Claude worker must exist.
+    lead_kind = next((m.get("kind") for m in roster.values()
+                      if m.get("role") == lead_role), None)
+    required = {lead_role} | {kind for kind, model in selected.items()
+                              if model and kind != lead_kind}
+    present_roles = {str(m.get("role") or "") for m in roster.values()}
+    for role in sorted(required - present_roles):
+        missing.append(f"worker role missing from roster: {role}")
+    now = dt.datetime.now(dt.timezone.utc)
+    for name, member in sorted(roster.items()):
+        if not member.get("status") or member.get("status") == "unknown":
+            missing.append(f"worker {name}: status unknown")
+        sid = member.get("session_id")
+        if not sid and member.get("kind") == "devin" and member.get("address"):
+            # hx binds Devin panes itself: devin-pane:<address>.
+            sid = f"devin-pane:{member['address']}"
+        if not sid:
+            missing.append(
+                f"worker {name}: no session binding "
+                f"({member.get('session_reason') or 'provider reports none'})")
+            continue
+        if member.get("role") == lead_role:
+            continue  # the lead's model is information, not worker evidence
+        model = _member_model(member, roots, policy, now)
+        want = selected.get(str(member.get("kind")))
+        if model["observed"] is None:
+            missing.append(f"worker {name}: live model unknown ({model['reason']})")
+        elif want is None:
+            missing.append(f"worker {name}: no model selected in policy for {member.get('kind')}")
+        elif model["observed"] != want:
+            missing.append(
+                f"worker {name}: live model {model['observed']} does not match policy {want}")
+    return {"ready": not missing, "missing": missing}
+
+
 def _skills_check(target: Path | None) -> dict[str, Any]:
     if target is None or not target.is_dir():
         return {"status": "unknown", "target": str(target) if target else None, "missing": []}
@@ -220,10 +452,16 @@ def _check_workers(policy: dict[str, Any], roots: dict[str, Path]) -> dict[str, 
     for worker in ("claude", "codex", "opencode", "devin"):
         observed, source = _observed_model(worker, roots, policy)
         want = selected.get(worker)
-        if want is None or observed is None:
+        # These sources are installed configuration, never a live bound model:
+        # "config" is equality of configs, not proof of the running model.
+        if observed is None:
             status = "unknown"
+        elif want is None:
+            status = "config"
+        elif observed == want:
+            status = "config" if worker in ("codex", "devin") else "ok"
         else:
-            status = "ok" if observed == want else "drift"
+            status = "drift"
         out[worker] = {
             "model": {"status": status, "selected": want, "observed": observed, "source": source},
             "context_telemetry": "known" if (want and want in limits) else "unknown",
@@ -280,14 +518,19 @@ def doctor(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None =
             policy = {}
     roots = roots or _roots()
     workers = _check_workers(policy, roots)
+    members = _check_members(policy, roots, dt.datetime.now(dt.timezone.utc))
     prose = _scan_prose(policy, roots)
     installed = _installed_files(roots)
     drift = any(
         part.get("status") == "drift"
         for worker in workers.values()
         for part in (worker["model"], worker["skills"], worker["deny_profile"])
+    ) or any(
+        member["model"].get("status") == "drift"
+        for member in members.get("members", {}).values()
     ) or any(f.get("status") == "drift" for f in prose + installed)
-    return {"workers": workers, "prose": prose, "installed_files": installed, "drift": drift}
+    return {"workers": workers, "members": members, "prose": prose,
+            "installed_files": installed, "drift": drift}
 
 
 def _summary(report: dict[str, Any]) -> str:
@@ -307,6 +550,14 @@ def _summary(report: dict[str, Any]) -> str:
         deny = checks["deny_profile"]
         if deny["status"] != "ok":
             lines.append(f"{'':9s} deny_profile:{deny['status']} {deny.get('mismatches') or deny.get('reason')}")
+    members = report.get("members", {})
+    for name, member in members.get("members", {}).items():
+        model = member["model"]
+        observed = model["observed"]
+        detail = f"observed={observed} age={model['age_seconds']}s" if observed else model["reason"]
+        lines.append(f"{name} model:{model['status']:7s} {detail} source={model['source']}")
+    if members.get("status") == "unknown":
+        lines.append(f"team members: unknown ({members['reason']})")
     for check in report.get("installed_files", []):
         lines.append(f"installed {check['status']} {check['target']} source={check['source']}")
     for finding in report["prose"]:
@@ -321,7 +572,20 @@ def _summary(report: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hx doctor", description="Read-only drift report.")
     parser.add_argument("--json", action="store_true", help="print JSON instead of the summary")
+    parser.add_argument("--ready", action="store_true",
+                        help="one kickoff-readiness verdict; exits 1 with the exact missing pieces")
     args = parser.parse_args(argv)
+    if args.ready:
+        verdict = ready()
+        if args.json:
+            print(json.dumps(verdict, indent=2))
+        elif verdict["ready"]:
+            print("ready")
+        else:
+            print("not ready:")
+            for piece in verdict["missing"]:
+                print(f"  - {piece}")
+        return 0 if verdict["ready"] else 1
     report = doctor()
     print(json.dumps(report, indent=2) if args.json else _summary(report))
     return 1 if report["drift"] else 0

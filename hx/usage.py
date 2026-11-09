@@ -444,7 +444,12 @@ def codex_usage(
     if last_sample_ts:
         sample_age_seconds = int((now - last_sample_ts).total_seconds())
 
-    info = last_token_count.get("info", {})
+    info = last_token_count.get("info")
+    if not isinstance(info, dict):
+        info = {}
+    last_usage = info.get("last_token_usage")
+    if not isinstance(last_usage, dict):
+        last_usage = {}
     rate_limits = last_token_count.get("rate_limits", {})
     if not isinstance(rate_limits, dict):
         rate_limits = {}
@@ -452,9 +457,9 @@ def codex_usage(
         if not isinstance(rate_limits.get(name), dict):
             rate_limits[name] = None
     context = {
-        "input_tokens": info.get("last_token_usage", {}).get("input_tokens"),
-        "cached_input_tokens": info.get("last_token_usage", {}).get("cached_input_tokens"),
-        "output_tokens": info.get("last_token_usage", {}).get("output_tokens"),
+        "input_tokens": last_usage.get("input_tokens"),
+        "cached_input_tokens": last_usage.get("cached_input_tokens"),
+        "output_tokens": last_usage.get("output_tokens"),
         "model_context_window": info.get("model_context_window"),
     }
 
@@ -592,12 +597,19 @@ def team_prefix(policy: dict[str, Any]) -> str:
 
 
 def own_agent_name() -> str | None:
-    """This pane's team agent name (e.g. dev-codex), or None outside a team pane."""
+    """This pane's team agent name (e.g. dev-codex), or None outside a team pane.
+
+    An IdentityError means a host is present but this pane is not a valid
+    member (finished terminal, foreign pid, stale label): that must surface,
+    never collapse into the policy-prefix fallback.
+    """
     detected = host.detect()
     if detected is None:
         return None
     try:
         found = detected.own()
+    except host.IdentityError as exc:
+        raise host.IdentityError(f"lead identity unavailable: {exc}") from exc
     except Exception:
         return None
     return found["name"] if found else None
@@ -612,7 +624,17 @@ def agents_usage(
     if now is None:
         now = _utcnow()
     if prefix is None:
-        prefix = team_prefix(policy)
+        try:
+            prefix = team_prefix(policy)
+        except host.IdentityError as exc:
+            return {
+                "tag": "unknown",
+                "sample_age_seconds": None,
+                "prefix": None,
+                "agents": [],
+                "available": "unknown",
+                "error": str(exc),
+            }
 
     if agents is _AGENTS_UNSET:
         try:
@@ -647,11 +669,23 @@ def agents_usage(
                 "cwd": a["cwd"],
                 "focused": a["focused"],
                 "agent_session": a["session_id"],
+                "address": a["address"],
+                "role": a.get("role"),
+                "kind": a.get("kind"),
+                **({"unknown_reason": _unknown_reason(a)}
+                   if a.get("kind") == "unknown" or a.get("status") == "unknown" else {}),
             }
             for a in team
         ],
         "available": available,
     }
+
+
+def _unknown_reason(agent: host.Member) -> str:
+    """Why a live member cannot be identified, without any prompt text."""
+    if agent.get("kind") == "unknown":
+        return "provider kind unresolved: no status.app and argv gives no provider"
+    return f"member status unknown: {agent.get('session_reason') or 'no status reported'}"
 
 
 def usage_snapshot(
@@ -672,15 +706,32 @@ def usage_snapshot(
     if agents is not None:
         # Keep a diagnostic snapshot; admission reads the host again.
         devin.mark_live_sessions(devin.live_sessions(agents) or [], now)
+        # F21: when admission refuses because one member cannot be identified,
+        # name that member — address, role, and why it is unknown.
+        if devin_block.get("live_sessions") is None:
+            devin_block["unresolved_members"] = [
+                {"name": a["name"], "address": a["address"],
+                 "role": a.get("role"), "reason": _unknown_reason(a)}
+                for a in agents
+                if a.get("kind") == "unknown" or a.get("status") == "unknown"
+            ]
 
     return {
         "timestamp": now.isoformat(),
         "opencode": opencode_usage(policy, now=now),
         "codex": codex_usage(policy, now=now),
-        "claude": claude_usage(policy, now=now),
+        "claude": _usage_part(claude_usage, policy, now),
         "devin": devin_block,
         "agents": agents_usage(policy, now=now, agents=agents),
     }
+
+
+def _usage_part(reading, policy: dict[str, Any], now: datetime.datetime) -> dict[str, Any]:
+    try:
+        return reading(policy, now=now)
+    except host.IdentityError as exc:
+        return {"tag": "unknown", "sample_age_seconds": None,
+                "available": "unknown", "error": str(exc)}
 
 
 def print_usage() -> None:

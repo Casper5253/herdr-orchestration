@@ -87,6 +87,7 @@ def main() -> int:
     record: dict[str, Any] = {
         "session_id": payload.get("session_id") or payload.get("sessionId") or None,
         "timestamp": _utcnow(),
+        "model": payload.get("model"),
         "context_window": payload.get("context_window"),
         "rate_limits": payload.get("rate_limits"),
         # Herdr reports no session id for Claude panes, so hx finds a Claude worker's file by pane.

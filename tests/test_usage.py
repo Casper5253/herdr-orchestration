@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from hx import __main__ as cli
-from hx import host
+from hx import host, usage
 from hx.usage import (
     agents_usage,
     claude_usage,
@@ -544,3 +544,64 @@ def test_opencode_usage_dashboard_reading_expires(tmp_path: Path, policy: dict, 
     assert "calibrated_at" not in pool["5h"]
     assert pool["7d"]["spend"] == pytest.approx(51.5)
     assert pool["7d"]["calibrated_at"]
+
+
+def test_team_prefix_surfaces_identity_failure(monkeypatch):
+    class DeadPane:
+        def own(self):
+            raise host.IdentityError("terminal t1 is finished")
+        def team(self, prefix):
+            return {}
+    monkeypatch.setattr(host, "detect", lambda: DeadPane())
+    with pytest.raises(host.IdentityError, match="lead identity unavailable"):
+        usage.team_prefix({})
+    result = agents_usage({}, now=datetime.datetime.now(datetime.timezone.utc))
+    assert result["tag"] == "unknown"
+    assert "lead identity unavailable" in result["error"]
+
+
+def test_snapshot_names_unresolved_members_for_devin_busy(monkeypatch, tmp_path):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    unknown = host.member({"name": "dev-mystery", "pane_id": "t9",
+                           "cwd": str(tmp_path)})
+    assert unknown["kind"] == "unknown"
+    monkeypatch.setattr("hx.usage.live_members", lambda: [unknown])
+    monkeypatch.setattr(usage.devin, "mark_live_sessions", lambda sessions, now_: None)
+    monkeypatch.setattr(usage.devin, "usage", lambda *a, **kw: {
+        "provider": "devin", "status": "busy", "live_sessions": None})
+    snapshot = usage_snapshot({}, now=now)
+    (member,) = snapshot["devin"]["unresolved_members"]
+    assert member["address"] == "t9" and member["role"] == "mystery"
+    assert "provider kind unresolved" in member["reason"]
+
+
+def _codex_rollout(tmp_path, payload):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(json.dumps({
+        "type": "event_msg", "timestamp": "2026-11-09T10:00:00Z",
+        "payload": payload}) + "\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_codex_usage_null_info_is_unknown_not_a_crash(tmp_path, monkeypatch):
+    sessions = _codex_rollout(tmp_path, {"type": "token_count", "info": None,
+        "rate_limits": {"primary": {"used_percent": 10}, "secondary": {"used_percent": 20}}})
+    result = codex_usage({}, sessions_dir=sessions)
+    assert result["tag"] == "measured" or result["tag"] == "unknown"
+    assert result["context"]["input_tokens"] is None
+
+
+def test_codex_usage_null_last_token_usage_is_unknown_not_a_crash(tmp_path):
+    sessions = _codex_rollout(tmp_path, {"type": "token_count",
+        "info": {"last_token_usage": None},
+        "rate_limits": {"primary": {"used_percent": 10}, "secondary": {"used_percent": 20}}})
+    result = codex_usage({}, sessions_dir=sessions)
+    assert result["context"] == {"input_tokens": None, "cached_input_tokens": None,
+                                 "output_tokens": None, "model_context_window": None}
+
+
+def test_codex_usage_null_rate_limits_stays_unknown(tmp_path):
+    sessions = _codex_rollout(tmp_path, {"type": "token_count",
+        "info": {"last_token_usage": {"input_tokens": 1}}, "rate_limits": None})
+    result = codex_usage({}, sessions_dir=sessions)
+    assert result["available"] == "unknown" and result["tag"] == "unknown"
