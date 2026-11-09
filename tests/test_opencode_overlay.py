@@ -14,7 +14,15 @@ HERDR_FOLDERS = [
     "AppData\\Local\\Programs\\herdr-core\\*",
     "AppData\\Local\\Programs\\herdr-app\\*",
 ]
-READ_WITHOUT_ASKING = [".agents\\*", ".claude\\skills\\*", "AppData\\Local\\Temp\\*", *HERDR_FOLDERS]
+READ_WITHOUT_ASKING = [
+    ".agents\\*", ".claude\\skills\\*", "AppData\\Local\\Temp\\*",
+    ".config\\opencode\\node_modules\\*", ".config\\opencode\\plugins\\*", *HERDR_FOLDERS,
+]
+
+
+def test_opencode_config_with_its_token_is_not_pre_allowed():
+    rules = _overlay()["permission"]["external_directory"]
+    assert HOME + ".config\\opencode\\*" not in rules, "opencode.jsonc holds a token; allow subfolders only"
 NEVER_EDIT = [".agents\\*", ".claude\\skills\\*", *HERDR_FOLDERS]
 
 

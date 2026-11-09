@@ -44,6 +44,9 @@
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-core\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "allow",
+      // OpenCode's own plugin API and installed plugins (no secrets); opencode.jsonc holds a token and still asks.
+      "C:\\Users\\caspe\\.config\\opencode\\node_modules\\*": "allow",
+      "C:\\Users\\caspe\\.config\\opencode\\plugins\\*": "allow",
       // Scratch space for long command output and temp files.
       "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow"
     },
