@@ -6,9 +6,11 @@ module. Nothing else in hx runs the host CLI or reads its wire format.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
@@ -31,6 +33,47 @@ HC_APP_KINDS = {
 HC_LABEL = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 
 
+class IdentityError(ValueError):
+    """HC_TERMINAL_ID could not be verified as this process's own terminal.
+
+    Raised instead of returning another terminal's labels or letting a caller
+    fall back to a guessed prefix: an unverifiable identity is a failure, not
+    an empty answer.
+    """
+
+
+class SendNotAttempted(ValueError):
+    """The send never ran: no hc call went out for this message.
+
+    Distinct from transport failures, where the text may have left: a caller
+    catching this can mark the message pending, never uncertain.
+    """
+
+
+class HostToolMissing(FileNotFoundError):
+    """A required host executable was not found in PATH or the install dirs."""
+
+
+class ReadText(str):
+    """Terminal text plus the host's completeness metadata.
+
+    `hc read --json` answers a screen that may be a truncated or in-progress
+    view: `complete` and `why` say whether the caller got the whole output.
+    Hosts that cannot report completeness leave them None.
+    """
+
+    complete: bool | None
+    why: str | None
+    how: str | None
+
+    def __new__(cls, text: str, *, complete=None, why=None, how=None) -> ReadText:
+        instance = super().__new__(cls, text)
+        instance.complete = complete
+        instance.why = why
+        instance.how = how
+        return instance
+
+
 class Member(TypedDict):
     """One live teammate, host-neutral."""
 
@@ -42,6 +85,7 @@ class Member(TypedDict):
     cwd: str
     address: str
     session_id: str | None
+    session_reason: str | None
     focused: bool | None
 
 
@@ -78,6 +122,8 @@ class Host(Protocol):
 
     def read(self, name: str, lines: int) -> str: ...
 
+    def send_slash(self, member: Member | str, command: str) -> bool: ...
+
 
 def _split_name(name: str) -> tuple[str, str]:
     head, sep, role = name.rpartition("-")
@@ -93,6 +139,7 @@ def member(raw: dict[str, Any]) -> Member:
     kind = str(raw.get("agent") or "unknown")
     status = str(raw.get("agent_status") or "unknown")
     session = (raw.get("agent_session") or {}).get("value")
+    session = session if isinstance(session, str) and session else None
     focused = raw.get("focused")
     return Member(
         name=name,
@@ -102,7 +149,8 @@ def member(raw: dict[str, Any]) -> Member:
         status=status if status in STATUSES else "unknown",
         cwd=str(raw.get("cwd") or ""),
         address=str(raw.get("pane_id") or ""),
-        session_id=session if isinstance(session, str) and session else None,
+        session_id=session,
+        session_reason="agent_session" if session else "no agent_session reported",
         focused=focused if isinstance(focused, bool) else None,
     )
 
@@ -196,6 +244,11 @@ class HerdrHost:
     def send(self, name: str, text: str) -> int:
         return subprocess.run(["herdr", "agent", "prompt", name, text], timeout=60).returncode
 
+    def send_slash(self, member: Member | str, command: str) -> bool:
+        """A native prompt carries the slash command on the standalone host."""
+        name = str(member["name"]) if isinstance(member, dict) else member
+        return self.send(name, command) == 0
+
     def send_checked(
         self,
         name: str,
@@ -233,13 +286,13 @@ class HerdrHost:
             return _unknown_send(f"herdr exited {completed.returncode}")
         return _send_result(data, wait, "malformed response")
 
-    def read(self, name: str, lines: int = 200) -> str:
+    def read(self, name: str, lines: int = 200) -> ReadText:
         result = subprocess.run(
             ["herdr", "agent", "read", name, "--source", "recent-unwrapped", "--lines", str(lines)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             check=True, timeout=30, shell=False,
         )
-        return result.stdout
+        return ReadText(result.stdout, how="recent-unwrapped")
 
     def _command(self, *args: str, timeout: float = 30) -> dict[str, Any]:
         """A checked `herdr agent` call; callers go through the Host methods."""
@@ -258,36 +311,195 @@ def _hc_state_dir() -> Path:
     return Path(env) if env else Path.home() / ".herdr-team" / "state"
 
 
+# `%LOCALAPPDATA%/Programs/<dir>` install locations the PATH lookup falls back to.
+_TOOL_INSTALL_DIRS = {
+    "hc": "herdr-core",
+    "herdr-app": "herdr-app",
+}
+
+
+def _tool_candidates(name: str) -> list[Path]:
+    folder = _TOOL_INSTALL_DIRS.get(name)
+    if not folder:
+        return []
+    programs = Path(os.environ.get("LOCALAPPDATA") or "") / "Programs"
+    return [programs / folder / f"{name}.exe", programs / folder / name]
+
+
+@functools.lru_cache(maxsize=None)
+def tool_path(name: str) -> str:
+    """A host executable's full path, resolved once: PATH, then known install dirs.
+
+    A backend environment can lose PATH entries the direct command route had;
+    a missing executable raises an error that names every searched location.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in _tool_candidates(name):
+        if candidate.is_file():
+            return str(candidate)
+    searched = [str(candidate) for candidate in _tool_candidates(name)] or ["<no known install dir>"]
+    raise HostToolMissing(f"no {name} executable found; searched PATH and {'; '.join(searched)}")
+
+
+def _windows_process_parents() -> dict[int, int]:
+    """pid -> parent pid for every live process, from a Toolhelp32 snapshot."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    if snapshot is None or snapshot == wintypes.HANDLE(-1).value:
+        return {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        parents: dict[int, int] = {}
+        if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            while True:
+                parents[entry.th32ProcessID] = entry.th32ParentProcessID
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    break
+        return parents
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
+def _procfs_process_parents() -> dict[int, int]:
+    """pid -> parent pid from /proc/<pid>/stat, for non-Windows hosts."""
+    parents: dict[int, int] = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return parents
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            tail = (entry / "stat").read_text().rpartition(")")[2].split()
+            parents[int(entry.name)] = int(tail[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return parents
+
+
+def _process_parents() -> dict[int, int]:
+    """pid -> parent pid for live processes; {} when the inventory is unavailable."""
+    try:
+        if os.name == "nt":
+            return _windows_process_parents()
+        return _procfs_process_parents()
+    except Exception:
+        return {}
+
+
+def _is_descendant(pid: int, ancestor: int, parents: dict[int, int]) -> bool:
+    """True when `ancestor` is `pid` itself or appears in its parent chain."""
+    seen: set[int] = set()
+    current = pid
+    while current and current not in seen:
+        if current == ancestor:
+            return True
+        seen.add(current)
+        current = parents.get(current, 0)
+    return False
+
+
 def _label(value: Any) -> str:
     """A safe team/role label, or "" when it is missing or not a plain path-safe word."""
     text = str(value or "")
     return text if HC_LABEL.fullmatch(text) else ""
 
 
-def _hc_binding_session(address: str, pid: Any) -> str | None:
-    """The provider session bound to this terminal, or None when the binding is absent or stale.
+def _pid(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
-    The OpenCode plugin writes <state>/hc-bindings/<terminal>.json with the
-    process pid it saw. A binding for another terminal, or for a different pid
-    (a relaunched program), is not this terminal's session.
+
+def _hc_binding(raw: dict[str, Any], parents: dict[int, int] | None) -> tuple[str | None, str]:
+    """(session_id, reason) from this terminal's binding file, per hc-binding v2.
+
+    A v2 binding must name this terminal, this terminal generation
+    (`created_ms`), this provider kind, and a provider pid that is the
+    terminal's own, its foreground process, or a live descendant — the last
+    covers a provider launched through a PowerShell wrapper. v1 plugin files
+    still count under the old rule (plugin pid equal to the terminal pid)
+    and the reason says so.
     """
-    if not address or not isinstance(pid, int) or isinstance(pid, bool):
-        return None
+    address = str(raw.get("address") or "")
+    if not address:
+        return None, "terminal has no address"
     try:
         data = json.loads(
             (_hc_state_dir() / "hc-bindings" / f"{address}.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return None
+        return None, "no readable binding file"
     if not isinstance(data, dict):
-        return None
-    if data.get("terminal") != address or data.get("pid") != pid:
-        return None
+        return None, "binding file is not an object"
+    terminal_pid = _pid(raw.get("pid"))
+    version = data.get("v", 1)
+    if type(version) is not int or version not in (1, 2):
+        return None, "unsupported binding version"
+    if version == 1:
+        if (data.get("terminal") == address and terminal_pid is not None
+                and data.get("pid") == terminal_pid):
+            session = data.get("session_id")
+            if isinstance(session, str) and session:
+                return session, "v1 binding accepted by the pid rule"
+            return None, "v1 binding has no session id"
+        return None, "binding is not v2 and fails the v1 pid rule"
+    if data.get("terminal") != address:
+        return None, "binding names a different terminal"
+    created_ms = raw.get("created_ms")
+    if not isinstance(created_ms, (int, float)) or isinstance(created_ms, bool):
+        return None, "terminal reports no generation"
+    if data.get("terminal_created_ms") != created_ms:
+        return None, "binding is for another terminal generation"
+    status = raw.get("status")
+    status = status if isinstance(status, dict) else {}
+    kind = HC_APP_KINDS.get(str(status.get("app") or ""), "unknown")
+    if data.get("provider") != kind:
+        return None, f"binding provider {data.get('provider')!r} is not {kind!r}"
+    provider_pid = _pid(data.get("provider_pid"))
+    if provider_pid is None:
+        return None, "binding has no provider pid"
+    if parents is None:
+        parents = _process_parents()
+    if provider_pid not in parents:
+        return None, "provider pid is not live"
+    foreground = raw.get("foreground")
+    foreground_pid = _pid(foreground.get("pid")) if isinstance(foreground, dict) else None
+    if provider_pid != terminal_pid and provider_pid != foreground_pid:
+        if terminal_pid is None:
+            return None, "terminal has no live pid to compare"
+        if not _is_descendant(provider_pid, terminal_pid, parents):
+            return None, "provider pid is not this terminal's process or a live descendant"
     session = data.get("session_id")
-    return session if isinstance(session, str) and session else None
+    if not isinstance(session, str) or not session:
+        return None, "binding has no session id"
+    return session, "v2 binding"
 
 
-def hc_member(raw: dict[str, Any]) -> Member:
+def hc_member(raw: dict[str, Any], *, parents: dict[int, int] | None = None) -> Member:
     """One `hc get` Terminal -> Member.
 
     Team and role labels are the canonical logical identity. A raw terminal name
@@ -304,7 +516,7 @@ def hc_member(raw: dict[str, Any]) -> Member:
     status_raw = status_raw if isinstance(status_raw, dict) else {}
     app = str(status_raw.get("app") or "")
     state = str(status_raw.get("state") or "")
-    address = str(raw.get("address") or "")
+    session, session_reason = _hc_binding(raw, parents)
     return Member(
         name=name,
         team=team,
@@ -312,8 +524,9 @@ def hc_member(raw: dict[str, Any]) -> Member:
         kind=HC_APP_KINDS.get(app, "unknown"),
         status=state if state in STATUSES else "unknown",
         cwd=str(raw.get("cwd") or ""),
-        address=address,
-        session_id=_hc_binding_session(address, raw.get("pid")),
+        address=str(raw.get("address") or ""),
+        session_id=session,
+        session_reason=session_reason,
         focused=None,
     )
 
@@ -387,7 +600,7 @@ class HcHost:
 
     def _run(self, *args: str, timeout: float = 30) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["hc", *args], capture_output=True, text=True, encoding="utf-8",
+            [tool_path("hc"), *args], capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False, timeout=timeout, shell=False,
         )
 
@@ -406,16 +619,38 @@ class HcHost:
         return data
 
     def own(self) -> Member | None:
+        """This process's own team member, validated against the live terminal.
+
+        A stale HC_TERMINAL_ID must never adopt another terminal's labels or
+        silently yield a fallback prefix. A finished terminal, details for a
+        different address, or a terminal pid that is not an ancestor of this
+        process is an IdentityError. Only a live terminal that is verifiably
+        ours but carries no team labels still answers None: it is genuinely
+        not a team member.
+        """
         if not self.terminal_id:
             return None
         try:
             detail = self._detail(self.terminal_id)
-            if detail.get("state") == "finished":
-                return None
-            found = hc_member(detail)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
-        if found["address"] != self.terminal_id or not found["team"] or not found["role"]:
+        except HostToolMissing:
+            raise
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise IdentityError(
+                f"hc could not verify terminal {self.terminal_id}: {exc}") from exc
+        if detail.get("state") == "finished":
+            raise IdentityError(
+                f"HC_TERMINAL_ID {self.terminal_id} names a finished terminal")
+        if str(detail.get("address") or "") != self.terminal_id:
+            raise IdentityError(
+                f"HC_TERMINAL_ID {self.terminal_id} returned details for "
+                f"{detail.get('address') or 'another terminal'}")
+        pid = _pid(detail.get("pid"))
+        parents = _process_parents()
+        if pid is None or not _is_descendant(os.getpid(), pid, parents):
+            raise IdentityError(
+                f"terminal {self.terminal_id} pid {pid} is not this process or an ancestor")
+        found = hc_member(detail, parents=parents)
+        if not found["team"] or not found["role"]:
             return None
         return found
 
@@ -427,12 +662,13 @@ class HcHost:
             raise ValueError("hc returned no valid terminal list")
         if any(not isinstance(row, dict) for row in terminals):
             raise ValueError("hc returned no valid terminal list")
+        parents = _process_parents()
         members = []
         for row in terminals:
             address = row.get("address")
             if not isinstance(address, str) or not address:
                 raise ValueError("hc returned a terminal without an address")
-            members.append(hc_member(self._detail(address)))
+            members.append(hc_member(self._detail(address), parents=parents))
         return members
 
     def team(self, prefix: str) -> dict[str, Member]:
@@ -468,11 +704,42 @@ class HcHost:
     def info(self, name: str) -> Member:
         return self._member_named(name)
 
-    def send(self, name: str, text: str) -> int:
-        terminal = self._member_named(name)["address"]
+    def _send_address(self, name: str) -> str:
+        """The validated terminal address for a send.
+
+        Resolution runs before any hc call, so a failure here provably means
+        the text never left: SendNotAttempted, distinct from a transport error.
+        """
+        try:
+            terminal = self._member_named(name)["address"]
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise SendNotAttempted(str(exc)) from exc
         if not terminal:
-            raise ValueError(f"terminal {name} has no address")
-        return self._run("send", terminal, text, timeout=60).returncode
+            raise SendNotAttempted(f"terminal {name} has no address")
+        return terminal
+
+    def send(self, name: str, text: str) -> int:
+        return self._run("send", self._send_address(name), text, timeout=60).returncode
+
+    def send_slash(self, member: Member | str, command: str) -> bool:
+        """Type a slash command into the member's terminal as keys, then Enter.
+
+        `hc send` wraps text in `<hc from=...>`, so a slash command sent as a
+        message never reaches the provider's native command handling. Typing
+        the keys does. True only when both key calls were accepted.
+        """
+        if not command.startswith("/"):
+            raise ValueError("send_slash types slash commands like /compact or /clear")
+        if isinstance(member, dict):
+            address = str(member.get("address") or "")
+            if not address:
+                raise SendNotAttempted("the member's terminal has no address")
+        else:
+            address = self._send_address(member)
+        pressed = self._run("keys", address, *command, timeout=30)
+        if pressed.returncode != 0:
+            return False
+        return self._run("keys", address, "enter", timeout=30).returncode == 0
 
     def send_checked(
         self,
@@ -483,9 +750,7 @@ class HcHost:
         until: tuple[str, ...] = (),
         timeout_ms: int | None = None,
     ) -> SendResult:
-        terminal = self._member_named(name)["address"]
-        if not terminal:
-            raise ValueError(f"terminal {name} has no address")
+        terminal = self._send_address(name)
         args = ["send", terminal, text, "--json"]
         process_timeout = 60.0
         if wait:
@@ -494,6 +759,8 @@ class HcHost:
             process_timeout = (timeout_ms or WAIT_DEFAULT_MS) / 1000 + 15
         try:
             completed = self._run(*args, timeout=process_timeout)
+        except HostToolMissing as exc:
+            raise SendNotAttempted(str(exc)) from exc
         except subprocess.TimeoutExpired:
             return _unknown_send("timeout")
         except (OSError, subprocess.SubprocessError):
@@ -511,19 +778,45 @@ class HcHost:
             return _unknown_send(f"hc exited {completed.returncode}")
         return _hc_send_result(data, until)
 
-    def read(self, name: str, lines: int = 200) -> str:
+    def read(self, name: str, lines: int = 200) -> ReadText:
         terminal = self._member_named(name)["address"]
         if not terminal:
             raise ValueError(f"terminal {name} has no address")
-        completed = self._run("read", terminal, "--lines", str(lines))
-        if completed.returncode != 0:
+        completed = self._run("read", terminal, "--json", "--lines", str(lines))
+        data = self._json(completed)
+        if (completed.returncode != 0 or not isinstance(data, dict)
+                or not isinstance(data.get("text"), str)):
             raise RuntimeError(f"hc could not read terminal {name}")
-        return completed.stdout
+        complete = data.get("complete")
+        why = data.get("why")
+        how = data.get("how")
+        return ReadText(
+            data["text"],
+            complete=complete if isinstance(complete, bool) else None,
+            why=why if isinstance(why, str) else None,
+            how=how if isinstance(how, str) else None,
+        )
 
 
 def prompt_command(name: str, text: str) -> str:
-    """The CLI text that sends `text` to `name`, for instructions hx prints."""
-    return f"herdr agent prompt {name} '{text}'"
+    """The CLI text that sends `text` to `name`, for instructions hx prints.
+
+    On the app core a standalone `herdr` command can never appear: a slash
+    command is typed as keys (`hc send` would wrap it so the provider could
+    not run it) and ordinary text goes through `hc send`.
+    """
+    if not os.environ.get("HC_TERMINAL_ID"):
+        return f"herdr agent prompt {name} '{text}'"
+    bare = name[1:-1] if len(name) > 2 and name.startswith("'") and name.endswith("'") else name
+    address = HcHost()._member_named(bare)["address"]
+    if not address:
+        raise ValueError(f"terminal {name} has no address")
+    executable = "& '" + tool_path("hc").replace("'", "''") + "'"
+    if text.startswith("/"):
+        keys = " ".join(text)
+        return f"{executable} keys {address} {keys}; {executable} keys {address} enter"
+    quoted_text = "'" + text.replace("'", "''") + "'"
+    return f"{executable} send {address} {quoted_text}"
 
 
 def detect() -> Host | None:

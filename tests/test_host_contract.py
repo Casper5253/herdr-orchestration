@@ -24,12 +24,14 @@ def _member(
     status: str = "idle",
     address: str = "t11",
     session_id: str | None = None,
+    session_reason: str | None = None,
     cwd: str = "repo",
     focused: bool | None = None,
 ) -> host.Member:
     return host.Member(
         name=name, team=team, role=role, kind=kind, status=status,
-        cwd=cwd, address=address, session_id=session_id, focused=focused,
+        cwd=cwd, address=address, session_id=session_id,
+        session_reason=session_reason, focused=focused,
     )
 
 
@@ -121,7 +123,7 @@ def test_all_members_parses_a_subprocess_roster(monkeypatch):
     assert calls == [(["herdr", "agent", "list"], {"stderr": subprocess.DEVNULL, "timeout": 30})]
     assert members[0] == _member(
         "dev-devin", role="devin", kind="devin", address="t12",
-        session_id="s1", cwd="C:\\work", focused=True)
+        session_id="s1", session_reason="agent_session", cwd="C:\\work", focused=True)
     assert members[1]["kind"] == "unknown"
     assert members[1]["status"] == "working"
     assert members[1]["address"] == "t20"

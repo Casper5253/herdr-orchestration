@@ -32,7 +32,11 @@ def _terminal(
     state: str | None = None,
     pid: int | None = None,
     cwd: str = "C:\\repo",
+    created_ms: int = 1794205754477,
+    foreground_pid: int | None = None,
+    finished: bool = False,
 ) -> dict:
+    """An `hc get` detail in the real wire shape (see `hc get t24 --json`)."""
     labels = {}
     if team is not None:
         labels["team"] = team
@@ -43,8 +47,15 @@ def _terminal(
         "name": name,
         "cwd": cwd,
         "pid": pid,
+        "state": "finished" if finished else "live",
+        "created_ms": created_ms,
         "labels": labels,
         "status": {"app": app, "state": state} if app and state else None,
+        "foreground": (
+            {"argv": [], "cwd": cwd, "name": "powershell.exe",
+             "pid": foreground_pid if foreground_pid is not None else pid}
+            if pid is not None else None
+        ),
     }
 
 
@@ -66,7 +77,12 @@ class FakeHc:
         }
         self.runs: list[list[str]] = []
         self.sent: list[tuple[str, str]] = []
+        self.keys: list[list[str]] = []
         self.replies: list[dict] = []
+        self.read_payload: dict | None = None
+        self.read_raw: str | None = None
+        self.read_fail = False
+        self.keys_fail = False
         self.timeout_send = False
 
     def _lookup(self, target: str) -> str | None:
@@ -80,7 +96,7 @@ class FakeHc:
     def run(self, argv, **kwargs):
         assert kwargs["shell"] is False
         self.runs.append(list(argv))
-        assert argv[0] == "hc"
+        assert Path(argv[0]).stem == "hc"
         command = argv[1]
         if command == "ls":
             rows = [{"address": address} for address in self.order]
@@ -105,7 +121,20 @@ class FakeHc:
         if command == "read":
             if self._lookup(argv[2]) is None:
                 return _completed(json.dumps({"error": {"kind": "not_found"}}), 1)
-            return _completed("pane text")
+            if self.read_fail:
+                return _completed(json.dumps({"error": {"kind": "unavailable"}}), 1)
+            if self.read_raw is not None:
+                return _completed(self.read_raw)
+            payload = self.read_payload or {
+                "how": "screen", "complete": True, "text": "pane text"}
+            if "--json" in argv:
+                return _completed(json.dumps(payload))
+            return _completed(str(payload["text"]))
+        if command == "keys":
+            if self._lookup(argv[2]) is None:
+                return _completed(json.dumps({"error": {"kind": "not_found"}}), 1)
+            self.keys.append(list(argv))
+            return _completed("{}", 1 if self.keys_fail else 0)
         raise AssertionError(f"unexpected hc command: {argv}")
 
     def add(self, detail: dict) -> None:
@@ -120,8 +149,26 @@ def fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeHc:
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(host.subprocess, "run", fake.run)
+    monkeypatch.setattr(host, "tool_path", lambda name: "hc")
+    monkeypatch.setattr(host, "_process_parents", lambda: _parents_chain(fake))
     monkeypatch.setattr(say, "_under_pressure", lambda name: False)
     return fake
+
+
+def _parents_chain(fake: FakeHc) -> dict[int, int]:
+    """A parent map where every fixture terminal pid is an ancestor of this process."""
+    parents: dict[int, int] = {}
+    previous = os.getpid()
+    seen = {previous}
+    for detail in fake.terminals.values():
+        pid = detail.get("pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid in seen:
+            continue
+        parents[previous] = pid
+        seen.add(pid)
+        previous = pid
+    parents[previous] = 0
+    return parents
 
 
 def _outbox(tmp_path: Path, sender: str = "dev__codex") -> list[Path]:
@@ -157,7 +204,7 @@ def test_labels_override_a_raw_name(fake: FakeHc) -> None:
 
 def test_own_refreshes_its_terminal_labels_after_late_labelling(fake, monkeypatch):
     fake.terminals["t7"]["labels"] = {}
-    fake.add(_terminal("t24", name="dev-claude", app="codex", state="working"))
+    fake.add(_terminal("t24", name="dev-claude", app="codex", state="working", pid=14))
     monkeypatch.setenv("HC_TERMINAL_ID", "t24")
     detected = host.HcHost()
     assert detected.own() is None
@@ -171,13 +218,15 @@ def test_own_refreshes_its_terminal_labels_after_late_labelling(fake, monkeypatc
 
 def test_own_rejects_details_for_a_different_terminal(fake, monkeypatch):
     monkeypatch.setattr(host.HcHost, "_detail", lambda self, terminal: fake.terminals["t1"])
-    assert host.HcHost(terminal_id="t7").own() is None
+    with pytest.raises(host.IdentityError):
+        host.HcHost(terminal_id="t7").own()
 
 
 def test_own_rejects_a_stale_finished_terminal_id(fake, monkeypatch):
     monkeypatch.setenv("HC_TERMINAL_ID", "t1")
     fake.terminals["t1"]["state"] = "finished"
-    assert host.HcHost().own() is None
+    with pytest.raises(host.IdentityError, match="finished"):
+        host.HcHost().own()
     assert main(["say", "codex", "report"]) == 1
     assert fake.sent == []
 
@@ -252,9 +301,9 @@ def test_authorization_uses_the_sender_team_label_not_the_joined_name(
 ) -> None:
     """A role of foo-bar in team dev must not resolve to team dev-foo."""
     fake.add(_terminal("t30", name="dev-foo-bar", team="dev", role="foo-bar",
-                       app="opencode", state="idle"))
+                       app="opencode", state="idle", pid=30))
     fake.add(_terminal("t40", name="dev-foo-claude", team="dev-foo", role="claude",
-                       app="claude-code", state="idle"))
+                       app="claude-code", state="idle", pid=40))
     monkeypatch.setenv("HC_TERMINAL_ID", "t30")
     assert main(["say", "claude", "ping"]) == 0
     assert fake.sent == [("t1", "[team from dev-foo-bar] ping")]
@@ -263,9 +312,11 @@ def test_authorization_uses_the_sender_team_label_not_the_joined_name(
 
 def test_outbox_keys_do_not_collide_for_ambiguous_joined_names() -> None:
     left = host.Member(name="dev-foo-bar", team="dev-foo", role="bar", kind="codex",
-                      status="idle", cwd="", address="a", session_id=None, focused=None)
+                      status="idle", cwd="", address="a", session_id=None,
+                      session_reason=None, focused=None)
     right = host.Member(name="dev-foo-bar", team="dev", role="foo-bar", kind="codex",
-                       status="idle", cwd="", address="b", session_id=None, focused=None)
+                       status="idle", cwd="", address="b", session_id=None,
+                       session_reason=None, focused=None)
     assert left["name"] == right["name"]
     assert say._sender_key(left) != say._sender_key(right)
     assert say._outbox_dir(say._sender_key(left)).name == "dev-foo__bar"
@@ -279,7 +330,7 @@ def test_info_and_read_use_the_label_selected_address(fake: FakeHc) -> None:
                        app="codex", state="idle"))
     assert host.HcHost().info("dev-codex")["address"] == "t7"
     assert host.HcHost().read("dev-codex", 40) == "pane text"
-    assert fake.runs[-1] == ["hc", "read", "t7", "--lines", "40"]
+    assert fake.runs[-1] == ["hc", "read", "t7", "--json", "--lines", "40"]
 
 
 # ---------- send outcome mapping ----------
