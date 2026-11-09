@@ -24,7 +24,7 @@ POLICY = {
     },
 }
 RUNNER = r"""
-param($Project, $HomePath, $PolicyPath, $Launcher, $Recording, $HcLsFile, $AppLsFile, $CounterFile, $FaultFile, $ModelsFile, [switch]$InHc, [switch]$Dry, $Team = 'dev')
+param($Project, $HomePath, $PolicyPath, $Launcher, $Recording, $HcLsFile, $AppLsFile, $CounterFile, $FaultFile, $ModelsFile, [switch]$InHc, [switch]$Dry, $Team = 'dev', $Lead = '')
 $env:USERPROFILE = $HomePath
 $env:HX_POLICY_PATH = $PolicyPath
 $global:LASTEXITCODE = 0
@@ -45,6 +45,11 @@ function hc {
         return
     }
     if ($args.Count -ge 1 -and $args[0] -eq 'run') {
+        $requestedName = $args[4]
+        $roster = Get-Content -Raw $HcLsFile | ConvertFrom-Json
+        if (@($roster.terminals | Where-Object { $_.state -eq 'live' -and $_.name -eq $requestedName }).Count) {
+            throw "live name already in use: $requestedName"
+        }
         $n = 10
         if (Test-Path $CounterFile) { $n = [int](Get-Content $CounterFile -Raw).Trim() }
         ($n + 1) | Set-Content $CounterFile
@@ -81,7 +86,7 @@ function devin {
     }
     Get-Content -Raw $ModelsFile
 }
-try { & $Launcher -Project $Project -Team $Team -DryRun:$Dry } catch { Write-Output $_.Exception.Message; exit 1 }
+try { & $Launcher -Project $Project -Team $Team -DryRun:$Dry -Lead $Lead } catch { Write-Output $_.Exception.Message; exit 1 }
 """
 
 
@@ -96,7 +101,8 @@ def _hc_ls(*members):
     return {
         "hidden_finished": 0,
         "terminals": [
-            {"address": "t1", "name": None, "state": "live", "agent": "claude-code"},
+            {"address": "t1", "name": None, "state": "live", "agent": "claude-code",
+             "status": {"app": "claude-code", "state": "done"}},
             *[
                 {"address": addr, "name": name, "state": "live", "agent": name.rsplit("-", 1)[-1]}
                 for addr, name in members
@@ -155,7 +161,7 @@ class Stage:
             str(self.fault), str(self.models),
         ]
 
-    def run(self, hc_roster, in_hc=True, dry=True, team="dev"):
+    def run(self, hc_roster, in_hc=True, dry=True, team="dev", lead=None):
         for t in (hc_roster.get("terminals") or []) if isinstance(hc_roster, dict) else []:
             if t.get("state") == "live" and t.get("name"):
                 role = t["name"].rsplit("-", 1)[-1]
@@ -169,6 +175,8 @@ class Stage:
             self._recording.unlink()
         args = list(self._args)
         args.extend(["-Team", team])
+        if lead:
+            args.extend(["-Lead", lead])
         if in_hc:
             args.append("-InHc")
         if dry:
@@ -212,9 +220,9 @@ def test_dry_run_no_team_starts_all_three(stage):
     assert "-- devin --model swe-2-high" in devin
     assert "--permission-mode dangerous" in devin
     keeps = [line for line in lines if line.startswith("herdr-app do terminal.keep")]
-    assert [line.rsplit(" ", 1)[-1] for line in keeps] == ["right", "down", "down"]
+    assert [line.rsplit(" ", 1)[-1] for line in keeps] == ["right", "down", "tab"]
     assert "hc label t1 team=dev role=lead" in lines
-    assert calls == [["ls", "--json"], ["ls"]]
+    assert calls == [["ls", "--json"], ["ls"], ["get", "t1", "--json"]]
 
 
 def test_a_second_lead_is_refused(stage):
@@ -237,8 +245,9 @@ def test_dry_run_all_live_starts_nothing(stage):
     assert "already live t9" in proc.stdout
     assert "already live t11" in proc.stdout
     assert "already live t13" in proc.stdout
-    assert calls == [["ls", "--json"], ["ls"], ["get", "t9", "--json"],
-                     ["get", "t11", "--json"], ["get", "t13", "--json"]]
+    assert calls == [["ls", "--json"], ["ls"], ["get", "t1", "--json"],
+                     ["get", "t9", "--json"], ["get", "t11", "--json"],
+                     ["get", "t13", "--json"]]
 
 
 def test_dry_run_one_missing_role(stage):
@@ -251,7 +260,7 @@ def test_dry_run_one_missing_role(stage):
     assert len(runs) == 1
     assert runs[0].startswith("hc run --bg --outlive-parent --name dev-devin")
     keeps = [line for line in lines if line.startswith("herdr-app do terminal.keep")]
-    assert keeps == ["herdr-app do terminal.keep --terminal dev-devin --place down"]
+    assert keeps == ["herdr-app do terminal.keep --terminal t-new-devin --place down"]
 
 
 def test_finished_terminal_does_not_count_as_live(stage):
@@ -287,9 +296,9 @@ def test_live_run_places_the_grid(stage):
         ["do", "terminal.keep", "--terminal", "t10", "--place", "right"],
         ["do", "pane.focus", "--terminal", "t1"],
         ["do", "terminal.keep", "--terminal", "t11", "--place", "down"],
-        ["do", "pane.focus", "--terminal", "t10"],
-        ["do", "terminal.keep", "--terminal", "t12", "--place", "down"],
+        ["do", "terminal.keep", "--terminal", "t12", "--place", "tab"],
     ]
+    assert "opencode t12 placed in tab" in proc.stdout
     # A second run on a full roster changes nothing.
     proc2, calls2 = stage.run(
         _hc_ls(("t10", "dev-codex"), ("t11", "dev-devin"), ("t12", "dev-opencode")),
@@ -384,7 +393,7 @@ def test_missing_codex_pane_is_placed_before_new_opencode(stage):
     assert [c[4] for c in calls if c[0] == "run"] == ["dev-opencode"]
     assert [c for c in calls if c[:2] == ["do", "terminal.keep"]] == [
         ["do", "terminal.keep", "--terminal", "t9", "--place", "right"],
-        ["do", "terminal.keep", "--terminal", "t10", "--place", "down"],
+        ["do", "terminal.keep", "--terminal", "t10", "--place", "tab"],
     ]
 
 
@@ -396,3 +405,166 @@ def test_live_identity_accepts_canonical_cwd(stage):
     proc, calls = stage.run(roster, dry=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not [c for c in calls if c[0] in {"run", "do"}]
+
+
+def _unnamed(addr, role, app, cwd, **extra):
+    """A live terminal in the real t24 shape: name null, labels, status.app, shell argv."""
+    detail = {
+        "address": addr, "name": None, "state": "live", "cwd": cwd,
+        "labels": {"team": "dev", "role": role},
+        "status": {"app": app, "state": "done"},
+        "argv": ["powershell.exe", "-NoExit", "-Command", "prompt"],
+    }
+    detail.update(extra)
+    return detail
+
+
+def test_an_unnamed_labelled_worker_is_reused(stage):
+    """F05: a manually opened, labelled, unnamed codex is a member, not invisible."""
+    roster = _hc_ls()
+    roster["terminals"].append(_unnamed("t24", "codex", "codex", str(stage.project)))
+    roster["terminals"].append(_unnamed("t11", "devin", "devin", str(stage.project)))
+    roster["terminals"].append(_unnamed("t13", "opencode", "opencode", str(stage.project)))
+    stage.app_ls.write_text(json.dumps(_app_ls("t1", "t24", "t11", "t13")))
+    proc, calls = stage.run(roster)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "already live t24" in proc.stdout
+    assert not [line for line in proc.stdout.splitlines() if line.startswith("hc run ")]
+    proc2, calls2 = stage.run(roster)
+    assert proc2.returncode == 0
+    assert not [line for line in proc2.stdout.splitlines() if line.startswith("hc run ")]
+
+
+@pytest.mark.parametrize("kind", ["provider", "cwd"])
+def test_an_incompatible_labelled_worker_is_a_conflict(stage, kind):
+    t = _unnamed("t24", "codex", "codex", str(stage.project))
+    if kind == "provider":
+        t["status"] = {"app": "claude-code", "state": "done"}
+    else:
+        t["cwd"] = str(stage.home)
+    roster = _hc_ls()
+    roster["terminals"].append(t)
+    proc, calls = stage.run(roster, dry=False)
+    assert proc.returncode != 0
+    assert "t24" in proc.stdout
+    assert not [c for c in calls if c[0] in {"run", "label", "do"}]
+
+
+def test_a_stale_named_teammate_warns_but_never_blocks(stage):
+    """Review finding 2: after a handover the lead keeps the raw name dev-codex."""
+    roster = _hc_ls()
+    roster["terminals"].append(_unnamed(
+        "t24", "lead", "codex", str(stage.project), name="dev-codex",
+        argv=["powershell.exe", "-Command", "codex --no-daemon -p trusted-dev"]))
+    stage.app_ls.write_text(json.dumps(_app_ls("t1", "t24")))
+    proc, calls = stage.run(roster, lead="t24", dry=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "stale" in (proc.stdout + proc.stderr)
+    starts = [c for c in calls if c[0] == "run"]
+    assert len(starts) == 3
+    assert all(c[4] != "dev-codex" for c in starts)
+    assert "role=codex" in starts[0]
+
+
+def test_a_foreign_name_squatter_is_a_conflict(stage):
+    roster = _hc_ls()
+    roster["terminals"].append({
+        "address": "t40", "name": "dev-codex", "state": "live",
+        "cwd": str(stage.project), "argv": ["powershell.exe", "-Command", "codex"],
+        "labels": {"team": "other", "role": "codex"},
+        "status": {"app": "codex", "state": "done"}})
+    proc, calls = stage.run(roster, dry=False)
+    assert proc.returncode != 0
+    assert "t40" in proc.stdout
+    assert not [c for c in calls if c[0] in {"run", "label", "do"}]
+
+
+def test_a_worker_terminal_as_lead_is_refused(stage):
+    roster = _hc_ls(("t9", "dev-codex"))
+    stage.app_ls.write_text(json.dumps(_app_ls("t1", "t9")))
+    proc, calls = stage.run(roster, lead="t9", dry=False)
+    assert proc.returncode != 0
+    assert "Set-HerdrLead" in proc.stdout
+    assert not [c for c in calls if c[0] in {"run", "label", "do"}]
+
+
+def test_opencode_placement_is_reported_as_a_tab(stage):
+    proc, calls = stage.run(_hc_ls())
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    keeps = [line for line in proc.stdout.splitlines() if line.startswith("herdr-app do terminal.keep")]
+    assert keeps[-1] == "herdr-app do terminal.keep --terminal t-new-opencode --place tab"
+    assert "opencode t-new-opencode placed in tab" in proc.stdout
+    focus = [line for line in proc.stdout.splitlines() if "pane.focus" in line]
+    assert all("t-new-opencode" not in line for line in focus)
+
+
+def test_recovery_never_splits_an_opencode_lead(stage):
+    roster = _hc_ls()
+    roster["terminals"].extend([
+        _unnamed("t24", "codex", "codex", str(stage.project)),
+        _unnamed("t26", "devin", "devin", str(stage.project)),
+        _unnamed("t2h", "lead", "opencode", str(stage.project)),
+    ])
+    stage.app_ls.write_text(json.dumps(_app_ls("t2h", "t26")))
+    proc, calls = stage.run(roster, lead="t2h", dry=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    keeps = [c for c in calls if c[:2] == ["do", "terminal.keep"]]
+    assert keeps and all(c[-1] == "tab" for c in keeps)
+    assert not [c for c in calls if c[:2] == ["do", "pane.focus"]]
+
+
+@pytest.mark.parametrize("status", [{"app": "unrecognized-provider"}, {"app": ""}, {}])
+def test_current_unknown_provider_never_falls_back_to_startup_argv(stage, status):
+    roster = _hc_ls()
+    roster["terminals"].append(_unnamed(
+        "t24", "codex", "codex", str(stage.project), status=status,
+        argv=["powershell", "-Command", "codex --no-daemon"]))
+    proc, calls = stage.run(roster, dry=False)
+    assert proc.returncode != 0
+    assert "t24" in proc.stdout
+    assert not [c for c in calls if c[0] in {"run", "label", "do"}]
+
+
+def test_dry_run_resolves_installed_tools_without_path(stage):
+    local = stage.home / "local"
+    core = local / "Programs" / "herdr-core"
+    app = local / "Programs" / "herdr-app"
+    core.mkdir(parents=True)
+    app.mkdir(parents=True)
+    detail = stage.home / "lead.json"
+    detail.write_text(json.dumps(_hc_ls()["terminals"][0]))
+    runner = Path(stage._args[5])
+    prelude = r'''
+$env:LOCALAPPDATA = Join-Path $HomePath 'local'
+$env:HX_TEST_HC_LS = $HcLsFile
+$env:HX_TEST_HC_DETAIL = Join-Path $HomePath 'lead.json'
+$env:HX_TEST_APP_LS = $AppLsFile
+$code = @'
+using System;
+using System.IO;
+public class HostFixture {
+    public static int Main(string[] args) {
+        string tool = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);
+        string key = tool == "herdr-app" ? "HX_TEST_APP_LS" :
+            args.Length > 0 && args[0] == "get" ? "HX_TEST_HC_DETAIL" : "HX_TEST_HC_LS";
+        Console.WriteLine(File.ReadAllText(Environment.GetEnvironmentVariable(key)));
+        return 0;
+    }
+}
+'@
+$hcExe = Join-Path $env:LOCALAPPDATA 'Programs\herdr-core\hc.exe'
+Add-Type -TypeDefinition $code -OutputAssembly $hcExe -OutputType ConsoleApplication
+Copy-Item $hcExe (Join-Path $env:LOCALAPPDATA 'Programs\herdr-app\herdr-app.exe')
+$env:PATH = Join-Path $env:SystemRoot 'System32'
+'''
+    runner.write_text(
+        RUNNER.replace("function hc {", "function fixture-hc {")
+        .replace("function herdr-app {", "function fixture-app {")
+        .replace("$global:LASTEXITCODE = 0", "$global:LASTEXITCODE = 0\n" + prelude),
+        encoding="utf-8",
+    )
+    proc, calls = stage.run(_hc_ls())
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "hc run --bg" in proc.stdout
+    assert "--place tab" in proc.stdout
+    assert calls == []

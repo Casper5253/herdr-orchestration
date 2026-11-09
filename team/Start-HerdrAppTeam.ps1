@@ -1,5 +1,6 @@
 # Builds the Herdr app team grid for one project from the lead's own hc terminal:
-# the lead (this terminal) top-left, codex to its right, devin below it, opencode below codex.
+# the lead (this terminal) top-left, codex to its right, devin below it, opencode in its own
+# tab (a small pane segfaults it). Members are found by their team/role labels, never a raw name.
 # Usage:
 #   & team\Start-HerdrAppTeam.ps1 -Project C:\path\to\repo [-Team dev] [-DevinCwd <dir>] [-Lead <terminal>] [-DryRun]
 # Safe to run twice: validated live roles are reused and missing panes are restored.
@@ -60,12 +61,31 @@ function Format-Command([string[]]$Argv) {
     }) -join ' '
 }
 
+function Resolve-HostTool([string]$Name, [string]$Folder) {
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($command) {
+        if ($command.CommandType -in @('Function', 'Filter', 'Alias')) { return $Name }
+        return $command.Source
+    }
+    $install = Join-Path $env:LOCALAPPDATA "Programs\$Folder"
+    $candidates = @((Join-Path $install "$Name.exe"), (Join-Path $install $Name))
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    throw "No $Name executable found; searched PATH and $($candidates -join ', ')."
+}
+
+$hostTools = @{
+    hc = Resolve-HostTool 'hc' 'herdr-core'
+    'herdr-app' = Resolve-HostTool 'herdr-app' 'herdr-app'
+}
+
 function Invoke-Planned([string[]]$Argv) {
     if ($DryRun) { [Console]::WriteLine((Format-Command $Argv)); return }
     $rest = @($Argv | Select-Object -Skip 1)
     # herdr-app.exe is a windowed program: PowerShell neither waits for it nor captures its output
     # unless it sits in a pipeline, so every call pipes (9 Nov: a plain assignment returned nothing).
-    $out = & $Argv[0] @rest | Out-String
+    $out = & $hostTools[$Argv[0]] @rest | Out-String
     if ($LASTEXITCODE -ne 0) { throw "$(Format-Command $Argv) failed: $out" }
     return $out
 }
@@ -73,7 +93,7 @@ function Invoke-Planned([string[]]$Argv) {
 # A terminal has a pane once herdr-app ls lists it under a tab; a sub-agent without one sits in
 # its parent's sub_agents. pane.focus errors with "no such pane" before that.
 function Get-AppPanes {
-    $out = herdr-app ls | Out-String
+    $out = & $hostTools['herdr-app'] ls | Out-String
     if ($LASTEXITCODE -ne 0) { throw 'herdr-app ls failed.' }
     $ls = try { $out | ConvertFrom-Json } catch { throw 'herdr-app ls returned no JSON.' }
     if ($ls -isnot [pscustomobject] -or $ls.spaces -isnot [array]) { throw 'Invalid herdr-app roster.' }
@@ -98,7 +118,7 @@ function Wait-AppPane([string]$Terminal) {
     }
 }
 
-$lsOut = & hc ls --json
+$lsOut = & $hostTools.hc ls --json
 if ($LASTEXITCODE -ne 0) { throw 'hc ls --json failed.' }
 $roster = try { $lsOut | Out-String | ConvertFrom-Json } catch { throw 'hc ls --json returned no JSON.' }
 if ($roster -isnot [pscustomobject] -or $roster.terminals -isnot [array]) { throw 'Invalid hc roster.' }
@@ -127,44 +147,103 @@ $roles = [ordered]@{
     }
 }
 
+# Details for every live terminal once: labels are the canonical identity (a raw
+# name is set at launch, cannot be renamed, and may be stale after a handover).
+$details = @{}
+foreach ($t in @($terminals | Where-Object { $_.state -eq 'live' })) {
+    $out = & $hostTools.hc get $t.address --json | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "hc get $($t.address) failed." }
+    $detail = try { $out | ConvertFrom-Json } catch { throw "Invalid terminal details for $($t.address)." }
+    if ($detail.address -ne $t.address -or $detail.state -ne 'live') { throw "Invalid terminal details for $($t.address)." }
+    $details[$t.address] = $detail
+}
+
+function Get-ProviderKind($Detail) {
+    # `hc get` reports the provider under status.app; a raw name says nothing about it.
+    $app = [string]$Detail.status.app
+    switch ($app) {
+        'claude-code' { return 'claude' }
+        'codex' { return 'codex' }
+        'opencode' { return 'opencode' }
+        'devin' { return 'devin' }
+        default { return $null }
+    }
+}
+
+# A -Lead that already holds a worker role would be silently stripped of it; refuse first.
+$leadDetail = $details[$lead]
+if (-not $leadDetail) { throw "Lead $lead is not a live hc terminal." }
+if ($leadDetail.labels.team -and $leadDetail.labels.team -ne $Team) {
+    throw "$lead is labelled team=$($leadDetail.labels.team); refusing to pull a foreign terminal into team $Team."
+}
+if ($leadDetail.labels.team -eq $Team -and $leadDetail.labels.role -and $leadDetail.labels.role -ne $leadRole) {
+    throw "$lead already holds role=$($leadDetail.labels.role) on team $Team; hand the seat over with Set-HerdrLead.ps1 first."
+}
+
 $live = @{}
 foreach ($role in $roles.Keys) {
     $name = "$Team-$role"
-    $matches = @($terminals | Where-Object { $_.name -eq $name -and $_.state -eq 'live' })
-    if ($matches.Count -gt 1) { throw "Conflicting live name $name at $(($matches | ForEach-Object { $_.address }) -join ', '); correct it before retrying." }
-    if ($matches.Count -eq 1) {
-        $address = $matches[0].address
-        $out = hc get $address --json | Out-String
-        if ($LASTEXITCODE -ne 0) { throw "hc get $address failed." }
-        $detail = try { $out | ConvertFrom-Json } catch { throw "Invalid terminal details for $address." }
+    $candidates = @($details.Values | Where-Object {
+        $_.labels.team -eq $Team -and $_.labels.role -eq $role })
+    if ($candidates.Count -gt 1) {
+        throw "Conflicting live role $name at $(($candidates | ForEach-Object { $_.address }) -join ', '); correct it before retrying."
+    }
+    if ($candidates.Count -eq 1) {
+        $detail = $candidates[0]
+        $address = $detail.address
         $sameCwd = $false
         try { $sameCwd = (Resolve-Path $detail.cwd).Path -eq $roles[$role].Cwd } catch {}
-        $argv = @($detail.argv)
-        $programOK = $false
-        if ($role -eq 'devin') {
-            $programOK = $argv.Count -gt 0 -and [IO.Path]::GetFileNameWithoutExtension($argv[0]) -eq 'devin'
-        } elseif ($argv.Count -ge 3 -and [IO.Path]::GetFileNameWithoutExtension($argv[0]) -in @('powershell', 'pwsh')) {
-            $commandIndex = [array]::IndexOf($argv, '-Command')
-            $programOK = $commandIndex -ge 0 -and $commandIndex + 1 -lt $argv.Count -and
-                $argv[$commandIndex + 1] -match "(?:^|;)\s*$role(?:\s|$)"
+        # status.app identifies the provider even when the terminal was opened by hand
+        # and its argv is only the shell; a launcher-shaped argv is the fallback.
+        $provider = Get-ProviderKind $detail
+        $programOK = $provider -eq $role
+        if (-not $programOK -and $null -eq $detail.status) {
+            $argv = @($detail.argv)
+            if ($role -eq 'devin') {
+                $programOK = $argv.Count -gt 0 -and [IO.Path]::GetFileNameWithoutExtension($argv[0]) -eq 'devin'
+            } elseif ($argv.Count -ge 3 -and [IO.Path]::GetFileNameWithoutExtension($argv[0]) -in @('powershell', 'pwsh')) {
+                $commandIndex = [array]::IndexOf($argv, '-Command')
+                $programOK = $commandIndex -ge 0 -and $commandIndex + 1 -lt $argv.Count -and
+                    $argv[$commandIndex + 1] -match "(?:^|;)\s*$role(?:\s|$)"
+            }
         }
-        if ($detail.address -ne $address -or $detail.name -ne $name -or $detail.state -ne 'live' -or
-            -not $sameCwd -or $detail.labels.team -ne $Team -or $detail.labels.role -ne $role -or -not $programOK) {
+        if (-not $sameCwd -or -not $programOK) {
             throw "Conflicting live terminal $address ($name); expected cwd $($roles[$role].Cwd), team=$Team, role=$role and program $role. Correct it before retrying."
         }
         $live[$role] = $address
     }
+    # A terminal named like the role whose labels do not claim it: a foreign squatter
+    # is a conflict; a teammate with a stale post-handover name only warns.
+    foreach ($sq in @($details.Values | Where-Object {
+            $_.name -eq $name -and -not ($_.labels.team -eq $Team -and $_.labels.role -eq $role) })) {
+        if ($sq.labels.team -eq $Team) {
+            Write-Warning "$($sq.address) is named $name but holds role=$($sq.labels.role); its raw name is stale."
+        } else {
+            throw "$($sq.address) is named $name but is not a $Team $role; correct the conflict before retrying."
+        }
+    }
 }
 
 # Two terminals with one role break every hx lookup on the team, so a second lead is refused.
-foreach ($t in $terminals) {
-    if ($t.state -ne 'live' -or $t.address -eq $lead -or $t.address -in $live.Values) { continue }
-    $out = hc get $t.address --json | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "hc get $($t.address) failed." }
-    $detail = try { $out | ConvertFrom-Json } catch { throw "Invalid terminal details for $($t.address)." }
-    if ($detail.labels.team -eq $Team -and $detail.labels.role -eq $leadRole) {
+foreach ($t in @($details.Values)) {
+    if ($t.address -eq $lead -or $t.address -in $live.Values) { continue }
+    if ($t.labels.team -eq $Team -and $t.labels.role -eq $leadRole) {
         throw "$($t.address) already holds role=$leadRole on team $Team. Hand the seat over with Set-HerdrLead.ps1 first."
     }
+}
+
+$launchNames = @{}
+$takenNames = @{}
+foreach ($detail in $details.Values) {
+    if ($detail.name) { $takenNames[[string]$detail.name] = $true }
+}
+foreach ($role in $roles.Keys) {
+    if ($live.ContainsKey($role)) { continue }
+    $baseName = "$Team-$role"
+    $name = $baseName
+    for ($n = 2; $takenNames.ContainsKey($name); $n++) { $name = "$baseName-$n" }
+    $takenNames[$name] = $true
+    $launchNames[$role] = $name
 }
 
 if (-not $live.ContainsKey('devin')) {
@@ -188,7 +267,7 @@ foreach ($role in $roles.Keys) {
         Write-Output "already live $($live[$role])"
         continue
     }
-    $name = "$Team-$role"
+    $name = $launchNames[$role]
     if ($role -eq 'devin') {
         if (-not $DryRun) {
             New-Item -ItemType Directory -Force $devinState | Out-Null
@@ -199,7 +278,7 @@ foreach ($role in $roles.Keys) {
     $runArgv = @('hc', 'run', '--bg', '--outlive-parent', '--name', $name, '--cwd', $spec.Cwd,
         '--label', "team=$Team", '--label', "role=$role", '--json', '--') + $spec.Argv
     $out = Invoke-Planned $runArgv
-    $live[$role] = if ($DryRun) { $name } else { ($out | Out-String | ConvertFrom-Json).address }
+    $live[$role] = if ($DryRun) { "t-new-$role" } else { ($out | Out-String | ConvertFrom-Json).address }
     if (-not $live[$role]) { throw "hc run returned no address for $name." }
     if (-not $DryRun) { Write-Output "started $($live[$role])" }
 }
@@ -207,11 +286,20 @@ foreach ($role in $roles.Keys) {
 foreach ($role in $roles.Keys) {
     $terminal = $live[$role]
     if (-not $DryRun) { $panes = @(Get-AppPanes) }
-    if ($terminal -in $panes) { continue }
-    $anchor = if ($role -eq 'opencode') { $live.codex } else { $lead }
-    $place = if ($role -eq 'codex') { 'right' } else { 'down' }
-    Wait-AppPane $anchor
-    Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $anchor) | Out-Null
+    if ($terminal -in $panes) {
+        Write-Output "$role $terminal already has a pane"
+        continue
+    }
+    # OpenCode segfaults at a small pane size (Bun, measured at 37x16 on 9 Nov); a tab
+    # is the proven large surface, so it never gets a grid slot.
+    $leadProvider = Get-ProviderKind $leadDetail
+    $place = if ($role -eq 'opencode' -or -not $leadProvider -or $leadProvider -eq 'opencode') {
+        'tab'
+    } elseif ($role -eq 'codex') { 'right' } else { 'down' }
+    if ($place -ne 'tab') {
+        Wait-AppPane $lead
+        Invoke-Planned @('herdr-app', 'do', 'pane.focus', '--terminal', $lead) | Out-Null
+    }
     # A terminal hc just started can take a moment before herdr-app sees it running.
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while ($true) {
@@ -222,4 +310,5 @@ foreach ($role in $roles.Keys) {
         }
     }
     Wait-AppPane $terminal
+    Write-Output "$role $terminal placed in $place"
 }
