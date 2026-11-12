@@ -325,6 +325,20 @@ def test_unverified_completion_is_unknown(controller, monkeypatch, failure):
     assert json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]["state"] == "compact-unknown"
 
 
+def test_compact_interrupt_leaves_compact_unknown_not_compacting(controller, monkeypatch):
+    """F3: an interrupt after reservation must not strand a compacting lease."""
+    def boom(member, command):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(context, "_send_slash", boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        controller.compact("hx-codex")
+
+    lease = json.loads(controller.ledger.leases_path.read_text())["sessions"]["sid"]
+    assert lease["state"] == "compact-unknown"
+    assert lease["heartbeat_at"]
+
+
 def test_existing_lease_prevents_send(controller):
     ledger._atomic_write_json(controller.ledger.leases_path, {"files": {}, "sessions": {"sid": {"state": "dispatch"}}})
     assert controller.compact("hx-codex")["action"] == "keep"

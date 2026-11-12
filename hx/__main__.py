@@ -169,6 +169,8 @@ def _build_parser() -> argparse.ArgumentParser:
     compact.add_argument("agent")
     compact.add_argument("--task")
     compact.add_argument("--related", action="store_true")
+    compact.add_argument("--quick", action="store_true",
+                         help="Taskless compaction: record compacting on the session lease, type /compact, wait for idle at a lower reading.")
     compact.set_defaults(func=_compact)
     team_parser = subparsers.add_parser("team", help="Team observer commands.")
     team_sub = team_parser.add_subparsers(dest="team_command", required=True)
@@ -198,7 +200,13 @@ def _team_watch(args: argparse.Namespace) -> int:
 
 
 def _compact(args: argparse.Namespace) -> None:
-    result = context.Controller().compact(args.agent, args.task, args.related)
+    controller = context.Controller()
+    if args.quick:
+        if args.task or args.related:
+            raise ValueError("--quick takes no --task or --related")
+        result = controller.compact_quick(args.agent)
+    else:
+        result = controller.compact(args.agent, args.task, args.related)
     print(json.dumps(result))
     if result["action"] == "compact-unknown":
         raise SystemExit(1)

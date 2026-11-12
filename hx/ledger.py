@@ -20,6 +20,7 @@ import datetime
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -237,6 +238,72 @@ def _release_lock(lock_path: Path, attempts: int = 50, delay: float = 0.02) -> N
             if attempt == attempts - 1:
                 raise
             time.sleep(delay)
+
+
+# A live compaction or delivery refreshes ``heartbeat_at`` on its session
+# lease at this cadence; a heartbeat older than the dead threshold — several
+# missed intervals — proves the owner is gone to ``hx context recover`` and
+# to reservation checks, where a pid could have been reused.
+LEASE_HEARTBEAT_SECONDS = 2.0
+LEASE_HEARTBEAT_DEAD_SECONDS = 10.0
+
+
+def _parse_timestamp(value: Any) -> datetime.datetime | None:
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _heartbeat_dead(entry: dict[str, Any], now: datetime.datetime | None = None) -> bool:
+    """A lease owner's heartbeat is missing, unparsable, or too old."""
+    beat = _parse_timestamp(entry.get("heartbeat_at"))
+    if beat is None:
+        return True
+    return ((now or _utcnow()) - beat).total_seconds() > LEASE_HEARTBEAT_DEAD_SECONDS
+
+
+class LeaseHeartbeat:
+    """Refresh ``heartbeat_at`` on one sessions-lease entry while work runs.
+
+    The owner proves liveness by refreshing under the shared lock on a daemon
+    thread, so a stalled transport keeps proving life. A missed beat only ages
+    the heartbeat; the entry itself is never recreated, and a beat whose
+    token no longer matches is a no-op.
+    """
+
+    def __init__(self, led: "Ledger", key: str, token: str,
+                 interval: float = LEASE_HEARTBEAT_SECONDS):
+        self._led, self._key, self._token = led, key, token
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            def refresh(leases: dict[str, Any]) -> None:
+                entry = leases.get("sessions", {}).get(self._key)
+                if isinstance(entry, dict) and entry.get("token") == self._token:
+                    entry["heartbeat_at"] = _utcnow().isoformat()
+
+            try:
+                self._led.mutate_leases(refresh)
+            except Exception:
+                pass  # a missed beat only ages the heartbeat
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name=f"lease-heartbeat-{self._key}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 1.0)
+            self._thread = None
 
 
 class LeaseLock:
@@ -581,7 +648,8 @@ class Ledger:
         if agent in sessions:
             return agent, sessions[agent]
         for key, entry in sessions.items():
-            if isinstance(entry, dict) and entry.get("agent") == agent:
+            if (isinstance(entry, dict) and entry.get("agent") == agent
+                    and entry.get("state") != "delivering"):
                 return key, entry
         return None, None
 

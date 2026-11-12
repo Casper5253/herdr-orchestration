@@ -22,7 +22,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hx import context, devin, host, paths, usage
+from hx import context, devin, host, ledger, paths, usage
 
 # A process that dies between claiming and marking a record leaves the claim;
 # after this long the delivery is unknown, not unsent.
@@ -103,6 +103,40 @@ def _under_pressure(name: str) -> bool:
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError, OverflowError, subprocess.SubprocessError):
         # Unknown or unavailable telemetry must not block team communication.
         return False
+
+
+_LEASE_READ_ERRORS = (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError)
+
+
+def _compaction_hold(led: ledger.Ledger, name: str) -> str | None:
+    """The recorded session state when hx itself is compacting the target, else None.
+
+    `hx compact` writes `compacting` on the session lease before typing
+    /compact and leaves `compact-unknown` when the outcome is unproven. A
+    message sent meanwhile dies in the compaction, so say holds on that
+    recorded lease state — never on screen text. The caller holds the
+    leases lock across this check and the delivery claim, so no `hx
+    compact` reservation can interleave before the delivery is reserved.
+    Unreadable leases raise: the caller fails closed, since a state it
+    cannot read is a state it cannot rule out.
+    """
+    sessions = led._load_leases().get("sessions", {})
+    states = [
+        str(entry.get("state"))
+        for key, entry in sessions.items()
+        if isinstance(entry, dict) and (key == name or entry.get("agent") == name)
+    ]
+    for state in ("compacting", "compact-unknown"):
+        if state in states:
+            print(
+                f"Held: {name} session is {state}; hx recorded the compaction. "
+                f"Resend with `hx say --pending` once it clears "
+                f"(`hx context recover {name}` releases compact-unknown). "
+                "Use --force only to send an intentional recovery/control message.",
+                file=sys.stderr,
+            )
+            return state
+    return None
 
 
 def _denied_line_for(destination: host.Member) -> str:
@@ -464,25 +498,95 @@ def _deliver(
                      pointer=pointer)
         if destination["status"] == "blocked":
             return "pending", "blocked", (where, "pending")
+        led = ledger.default_ledger()
+        deliver_key = f"deliver:{name}"
+        deliver_token = str(uuid.uuid4())
         try:
-            result = detected.send_checked(name, text)
-        except host.SendNotAttempted as exc:
-            # Provably never sent (vanished target, missing hc): pending, and
-            # the claim releases so --pending can retry it immediately.
+            # The hold check and the delivery claim share one leases-lock
+            # critical section, so a compact reservation cannot interleave;
+            # the lock is released before host I/O so a stalled send never
+            # blocks unrelated sends or compactions. The claim itself stops a
+            # compaction of this agent mid-send; it heartbeats while the send
+            # runs so a dead sender is reclaimed instead of holding forever.
+            # An unreadable leases file fails closed — a state that cannot
+            # be read cannot be ruled out.
+            with led._leases_lock():
+                claimed = False
+                try:
+                    if not force:
+                        hold = _compaction_hold(led, name)
+                        if hold:
+                            return "pending", f"session {hold}", (where, "pending")
+                    leases = led._load_leases()
+                    sessions = leases.setdefault("sessions", {})
+                    existing = sessions.get(deliver_key)
+                    if isinstance(existing, dict) and not ledger._heartbeat_dead(existing):
+                        print(
+                            f"Held: a delivery to {name} is already in flight; "
+                            "resend with `hx say --pending` once it finishes.",
+                            file=sys.stderr,
+                        )
+                        return "pending", "delivery in flight", (where, "pending")
+                    stamp = ledger._utcnow().isoformat()
+                    sessions[deliver_key] = {
+                        "agent": name, "session_id": context._session(destination),
+                        "state": "delivering", "token": deliver_token,
+                        "started_at": stamp, "heartbeat_at": stamp}
+                    led._save_leases(leases)
+                    claimed = True
+                except _LEASE_READ_ERRORS as exc:
+                    if not force:
+                        print(
+                            f"Held: cannot read session leases at {led.leases_path} "
+                            f"({exc}); resend with `hx say --pending` once readable, "
+                            "or --force to bypass.",
+                            file=sys.stderr,
+                        )
+                        return "pending", f"leases unreadable: {exc}", (where, "pending")
+                    # --force is the intentional bypass: an unwritable
+                    # reservation degrades to an unreserved send.
+            heartbeat = ledger.LeaseHeartbeat(led, deliver_key, deliver_token)
+            if claimed:
+                heartbeat.start()
             try:
-                _write_state(path, "pending", note=str(exc))
-            except OSError:
-                pass
-            return "pending", str(exc), (where, "pending")
-        except Exception:
-            # The send may have happened. Keep the claim so a later retry sees
-            # an in-flight or stale claim and never replays it blindly.
-            release = False
-            try:
-                _write_state(path, "uncertain", note="send raised")
-            except OSError:
-                pass
-            raise
+                try:
+                    result = detected.send_checked(name, text)
+                except host.SendNotAttempted as exc:
+                    # Provably never sent (vanished target, missing hc): pending, and
+                    # the claim releases so --pending can retry it immediately.
+                    try:
+                        _write_state(path, "pending", note=str(exc))
+                    except OSError:
+                        pass
+                    return "pending", str(exc), (where, "pending")
+                except Exception:
+                    # The send may have happened. Keep the claim so a later retry sees
+                    # an in-flight or stale claim and never replays it blindly.
+                    release = False
+                    try:
+                        _write_state(path, "uncertain", note="send raised")
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                heartbeat.stop()
+
+                def release_delivery(leases_data: dict) -> None:
+                    entry = leases_data.get("sessions", {}).get(deliver_key)
+                    if isinstance(entry, dict) and entry.get("token") == deliver_token:
+                        del leases_data["sessions"][deliver_key]
+
+                try:
+                    led.mutate_leases(release_delivery)
+                except Exception:
+                    pass  # an unreleased reservation heartbeats out and recovers
+        except ledger.LockTimeout as exc:
+            print(
+                f"Held: session leases lock at {led.leases_path} is unavailable "
+                f"({exc}); resend with `hx say --pending` once free, or --force to bypass.",
+                file=sys.stderr,
+            )
+            return "pending", f"leases lock unavailable: {exc}", (where, "pending")
         state, reason = _delivery_state(result)
         outcome = _OUTCOME_WORDS.get(state, "uncertain")
         if state == "delivered":
