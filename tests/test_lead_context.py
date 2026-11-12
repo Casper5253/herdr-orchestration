@@ -22,8 +22,8 @@ def lead(tmp_path, monkeypatch):
     c.agent = host.member({"name": "test-claude", "agent": "claude", "agent_status": "working",
                            "agent_session": {"value": "lead-sid"}})
     c.status = {"session_id": "lead-sid", "timestamp": context._now().isoformat(),
-                "context_window": {"context_window_size": 1000000, "used_percentage": 25,
-                                   "current_usage": {"input_tokens": 10000,
+                "context_window": {"context_window_size": 1000000, "used_percentage": 63,
+                                   "current_usage": {"input_tokens": 390000,
                                                      "cache_creation_input_tokens": 20000,
                                                      "cache_read_input_tokens": 220000,
                                                      "output_tokens": 5000}}}
@@ -52,15 +52,57 @@ def _confirm_compaction(lead, monkeypatch, when, tokens=20000, session="lead-sid
     return lead.self_compacted("test-claude", session)
 
 
-@pytest.mark.parametrize("tokens,action", [(239999, "keep"), (240000, "self-compact"), (300000, "self-compact")])
-def test_lead_threshold_uses_tokens_and_effective_limit(lead, tokens, action):
+@pytest.mark.parametrize("tokens,action", [(599999, "keep"), (600000, "self-compact"), (700000, "self-compact")])
+def test_lead_threshold_uses_tokens_and_reported_window(lead, tokens, action):
     lead.status["context_window"]["current_usage"] = {"input_tokens": tokens}
     lead.path.write_text(json.dumps(lead.status))
     decision = lead.decide("test-claude")
     assert decision["action"] == action
-    assert decision["telemetry"]["utilisation"] == tokens / 400000
+    assert decision["telemetry"]["utilisation"] == pytest.approx(tokens / 1000000)
     assert lead.ledger.list_tasks() == []
     assert not lead.guard_path.exists()
+
+
+def test_lead_utilisation_uses_the_window_the_statusline_reports(lead):
+    """Q-273: 630K of a reported 1M window is 63%, not 157% of the 400K fallback."""
+    lead.status["context_window"]["current_usage"] = {"input_tokens": 630000}
+    lead.path.write_text(json.dumps(lead.status), encoding="utf-8")
+    decision = lead.decide("test-claude")
+    assert decision["telemetry"]["utilisation"] == pytest.approx(0.63)
+    assert decision["action"] == "self-compact"
+
+
+@pytest.mark.parametrize("reported", [
+    pytest.param(None, id="absent"),
+    pytest.param(0, id="zero"),
+    pytest.param(-1, id="negative"),
+    pytest.param("not a number", id="text"),
+    pytest.param(10**400, id="overflowing-int"),
+    pytest.param(1e400, id="infinite-float"),
+])
+def test_lead_falls_back_to_the_policy_limit_without_a_usable_window(lead, reported):
+    window = lead.status["context_window"]
+    if reported is None:
+        window.pop("context_window_size", None)
+    else:
+        window["context_window_size"] = reported
+    window["current_usage"] = {"input_tokens": 240000}
+    lead.path.write_text(json.dumps(lead.status), encoding="utf-8")
+    decision = lead.decide("test-claude")
+    assert decision["telemetry"]["utilisation"] == pytest.approx(0.6)
+    assert decision["action"] == "self-compact"
+
+
+@pytest.mark.parametrize("reported", [
+    pytest.param(10**400, id="overflowing-int"),
+    pytest.param(1e400, id="infinite-float"),
+])
+def test_lead_percentage_branch_falls_back_for_an_overflowing_window(lead, reported):
+    lead.status["context_window"] = {"context_window_size": reported, "used_percentage": 60}
+    lead.path.write_text(json.dumps(lead.status), encoding="utf-8")
+    decision = lead.decide("test-claude")
+    assert decision["telemetry"]["utilisation"] == pytest.approx(0.6)
+    assert decision["action"] == "self-compact"
 
 
 def test_lead_steps_and_repeated_decisions_do_not_burn_guard(lead):
@@ -101,7 +143,7 @@ def test_lead_without_current_usage_can_convert_native_percentage(lead):
     lead.path.write_text(json.dumps(lead.status))
     result = lead.decide("test-claude")
     assert result["action"] == "self-compact"
-    assert result["telemetry"]["utilisation"] == .625
+    assert result["telemetry"]["utilisation"] == pytest.approx(.63)
 
 
 @pytest.mark.parametrize("current", [{}, {"input_tokens": None}, {"input_tokens": float("nan")},
@@ -185,12 +227,12 @@ def test_lead_max_per_task_guard_after_interval(lead, monkeypatch):
     _confirm_compaction(lead, monkeypatch, now + dt.timedelta(seconds=2))
     t2 = now + dt.timedelta(minutes=21)
     monkeypatch.setattr(context, "_now", lambda: t2)
-    _set_lead_usage(lead, 250000, t2)
+    _set_lead_usage(lead, 650000, t2)
     assert lead.decide("test-claude")["action"] == "self-compact"
     _confirm_compaction(lead, monkeypatch, t2 + dt.timedelta(seconds=2))
     t4 = t2 + dt.timedelta(minutes=21)
     monkeypatch.setattr(context, "_now", lambda: t4)
-    _set_lead_usage(lead, 250000, t4)
+    _set_lead_usage(lead, 650000, t4)
     assert lead.decide("test-claude")["reason"] == "task compaction loop guard"
 
 
@@ -202,13 +244,13 @@ def test_lead_changed_checkpoint_objective_starts_a_new_work_item(lead, monkeypa
     _confirm_compaction(lead, monkeypatch, t1)
     t2 = t1 + dt.timedelta(seconds=2)
     monkeypatch.setattr(context, "_now", lambda: t2)
-    _set_lead_usage(lead, 250000, t2)
+    _set_lead_usage(lead, 650000, t2)
     lead.decide('test-claude')
     t3 = t2 + dt.timedelta(seconds=2)
     _confirm_compaction(lead, monkeypatch, t3)
     t4 = t3 + dt.timedelta(seconds=2)
     monkeypatch.setattr(context, "_now", lambda: t4)
-    _set_lead_usage(lead, 250000, t4)
+    _set_lead_usage(lead, 650000, t4)
     assert lead.decide('test-claude')['reason'] == 'task compaction loop guard'
     lead.checkpoint.write_text('## Objective\nShip the next release.\n')
     decision = lead.decide('test-claude')

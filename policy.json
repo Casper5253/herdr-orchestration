@@ -189,7 +189,7 @@
       "devin": "/clear",
       "claude": "/clear"
     },
-    "claude_lead_note": "Compact at a boundary around 240K tokens (0.6 of the 400K effective lead limit). The native window is 1M, but every turn re-reads the cached context, so cost and attention pressure start well before the window is full."
+    "claude_lead_note": "Compact at 0.6 of the context window the statusline reports, so a 1M lead compacts near 600K. The 400K context_limits entry is only the fallback when the statusline has no positive context_window_size."
   },
   "devin": {
     "enabled": true,

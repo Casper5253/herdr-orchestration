@@ -377,6 +377,15 @@ def _fresh(sample: dict[str, Any], sid: str, now: dt.datetime, after: dt.datetim
     )
 
 
+def _positive(value: Any) -> float | None:
+    """A finite positive number, or None when the value is missing or unusable."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
 def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
     unknown = {"session_id": sid, "utilisation": None, "sampled_at": None}
     if not sid:
@@ -388,8 +397,10 @@ def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
         if data.get("session_id") != sid:
             return unknown
         window = data.get("context_window") or {}
+        fallback = policy.get("context_limits", {}).get("claude-lead", 400000)
         current = window.get("current_usage")
         if current is not None:
+            limit = _positive(window.get("context_window_size")) or fallback
             counters = [float(current["input_tokens"]),
                         float(current.get("cache_creation_input_tokens", 0)),
                         float(current.get("cache_read_input_tokens", 0))]
@@ -397,9 +408,13 @@ def _lead_telemetry(sid: str, policy: dict[str, Any]) -> dict[str, Any]:
                 return unknown
             tokens = sum(counters)
         else:
-            tokens = float(window.get("used_percentage")) * float(window.get("context_window_size")) / 100
+            reported = _positive(window.get("context_window_size"))
+            if reported is None and "context_window_size" not in window:
+                return unknown
+            limit = reported or fallback
+            tokens = float(window.get("used_percentage")) * limit / 100
         timestamp = data.get("timestamp") or dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).isoformat()
-        return _sample(sid, tokens, policy.get("context_limits", {}).get("claude-lead", 400000), timestamp)
+        return _sample(sid, tokens, limit, timestamp)
     except (OSError, ValueError, TypeError, AttributeError, KeyError):
         return unknown
 
