@@ -16,6 +16,7 @@ import datetime
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -38,6 +39,31 @@ POINTER_MAX_CHARS = 280
 # checks for unsubmitted text, and how long the Enter press gets to settle.
 SUBMIT_POLL_SECONDS = 10.0  # a busy receiver's turn advances at its next provider turn
 ENTER_SETTLE_SECONDS = 0.75
+# A send into a pane that is still compacting is eaten: no queued-message line,
+# never acted on (creator, 10 and 11 Nov). `hc wait` returning done is not a
+# reliable end-of-compaction signal, so the target's own screen is the evidence.
+# `hx say` waits this long for the marker to clear (live compactions finish in
+# tens of seconds), then holds the message in the outbox instead.
+COMPACT_WAIT_SECONDS = 60.0
+COMPACT_POLL_SECONDS = 0.5
+COMPACT_READ_LINES = 40
+# The compaction-in-progress marker per provider kind. It is a live-status
+# claim: it counts only on the lines where the provider draws its status,
+# never as words in transcript output or in a composer draft. Confirmed live:
+# Codex's "Compacting context"
+# (creator, 10-11 Nov). The rest are the best-known strings for their TUIs, to
+# be tightened as they are observed; a wrong guess only holds a message that
+# `hx say --pending` can still send.
+_COMPACTING_MARKERS = {
+    "codex": ("Compacting context",),
+    "claude": ("Compacting conversation",),
+    "opencode": ("Compacting",),
+    "devin": ("Compacting",),
+}
+_COMPACTING_MARKERS_ANY = tuple(
+    marker for markers in _COMPACTING_MARKERS.values() for marker in markers)
+# A rule of box-drawing or plain dashes separates status chrome from output.
+_STATUS_RULE = re.compile(r"[─—\-=\s]*[─—\-=][─—\-=\s]*")
 # The host explicitly refused or never accepted the text; a retry is safe.
 UNSENT_REASONS = frozenset({
     "blocked", "finished", "unavailable", "status_mismatch", "not_found",
@@ -73,6 +99,128 @@ def with_header(sender: str, message: str) -> str:
     if not header.endswith(f"from {sender}"):
         raise ValueError(f"message header {header}] must name the sender {sender}")
     return message
+
+
+def _marker_pattern(marker: str) -> re.Pattern[str]:
+    return re.compile(r"\s+".join(re.escape(part) for part in marker.split()),
+                      re.IGNORECASE)
+
+
+def _composer_line(line: str, kind: str) -> bool:
+    """This provider's input-draft chrome: typed text, not live status."""
+    prompt = {"codex": ("›",), "claude": ("❯", ">"), "opencode": ("┃",),
+              "devin": ("❭",)}.get(kind)
+    return bool(prompt) and line.lstrip().startswith(prompt)
+
+
+def _status_lines(text: str, kind: str) -> tuple[list[str], list[str]]:
+    """(status lines, lookbehind) for where this provider draws live status.
+
+    The compaction marker is a status claim: output quoting it is a mention,
+    not a compaction, and must not hold the message. Composer drafts are typed
+    text, not status, so the composer lines never enter the region. The
+    lookbehind is the few lines just above the region: a marker wrapped on a
+    narrow pane may start there and finish inside the region, but a mention
+    that lives entirely in the lookbehind never counts. Kinds whose region
+    sits directly below the composer get no lookbehind, because a draft is
+    the one line that must never join a marker match.
+    """
+    lines = (text or "").rstrip().splitlines()
+    lookbehind: list[str] = []
+    if kind == "codex":
+        # Codex keeps its › composer; live status sits on the line(s) below it.
+        for index in range(len(lines) - 1, -1, -1):
+            if lines[index].lstrip().startswith("›"):
+                region = lines[index + 1:]
+                break
+        else:
+            region = lines[-2:]
+    elif kind == "devin":
+        region = list(reversed(context._devin_footer_lines(text)))
+    elif kind == "opencode":
+        # Live status is the Build line; the input box lines sit above it.
+        status = next((index for index in range(len(lines) - 1, -1, -1)
+                       if lines[index].strip().startswith("Build")), None)
+        region = lines[-2:] if status is None else lines[status:]
+    elif kind == "claude":
+        # The spinner lives directly above the bottom rule; composer and the
+        # context footer sit below it.
+        for index in range(len(lines) - 1, 0, -1):
+            if _STATUS_RULE.fullmatch(lines[index].strip()):
+                region = lines[index - 1:]
+                lookbehind = lines[max(0, index - 4):index - 1]
+                break
+        else:
+            region = lines[-2:]
+            lookbehind = lines[-5:-2] if len(lines) > 4 else []
+    else:
+        region = lines[-2:]
+        lookbehind = lines[-5:-2] if len(lines) > 4 else []
+    region = [line for line in region if not _composer_line(line, kind)]
+    return region, lookbehind
+
+
+def _squashed(lines: list[str]) -> str:
+    """Lines joined with all whitespace collapsed, so a wrapped marker matches."""
+    return " ".join(" ".join(lines).split())
+
+
+def _compaction_marker(detected: host.Host, name: str, kind: str) -> bool | None:
+    """True: the provider's compaction marker is on its live status.
+
+    False: a complete read without it. None: the screen could not be read or
+    the read came back incomplete (in-progress or truncated), which is not a
+    clear signal either way.
+    """
+    try:
+        view = detected.read(name, COMPACT_READ_LINES)
+    except Exception:
+        return None
+    markers = _COMPACTING_MARKERS.get(kind, _COMPACTING_MARKERS_ANY)
+    regexes = [_marker_pattern(marker) for marker in markers]
+    region, lookbehind = _status_lines(view, kind)
+    status = _squashed(region)
+    before = _squashed(lookbehind)
+    for regex in regexes:
+        if regex.search(status):
+            return True
+        # A wrapped marker may start just above the region and finish inside
+        # it; a mention fully inside the lookbehind never counts.
+        if before and regex.search(f"{before} {status}") \
+                and not regex.search(before):
+            return True
+    if getattr(view, "complete", None) is False:
+        return None
+    return False
+
+
+def _ready_after_compaction(detected: host.Host, name: str, kind: str) -> bool:
+    """The receiver's screen is clear of its compaction-in-progress marker.
+
+    Only the Herdr app's `hc read` returns the TUI screen the marker lives on;
+    the standalone herdr read is unwrapped agent output, so it is never a
+    not-ready signal. A marker that appears gets COMPACT_WAIT_SECONDS to clear,
+    because live compactions finish in tens of seconds and the message lands
+    right after instead of being eaten. Once a marker has been seen, only a
+    complete read without it ends the wait: a failed or incomplete read after
+    observed compaction keeps the hold, since that is exactly the lost-brief
+    state.
+    """
+    if not isinstance(detected, host.HcHost):
+        return True
+    seen = False
+    deadline = time.monotonic() + COMPACT_WAIT_SECONDS
+    while True:
+        marked = _compaction_marker(detected, name, kind)
+        if marked is False:
+            return True
+        if marked:
+            seen = True
+        elif not seen:
+            return True  # a screen that was never readable is not evidence
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(COMPACT_POLL_SECONDS)
 
 
 def _under_pressure(name: str) -> bool:
@@ -431,6 +579,14 @@ def _deliver(
         _write_state(path, "failed", note=f"undeliverable: {exc}")
         return "failed", f"undeliverable: {exc}", (name, "failed")
     where = str(destination["address"]) or name
+    if not force and not _ready_after_compaction(
+            detected, name, str(destination["kind"])):
+        print(
+            f"Held: {name} is still compacting its context; the message stayed "
+            f"in the outbox. Resend with `hx say --pending` once it is ready.",
+            file=sys.stderr,
+        )
+        return "pending", "compacting", (where, "pending")
     if not force and _under_pressure(name):
         return "pending", "pressure", (where, "pending")
     line = _denied_line_for(destination)
