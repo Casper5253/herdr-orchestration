@@ -115,6 +115,10 @@
     "stale_seconds": 3600,
     "pool_soft_limit_note": "2026-10-17 owner directive: spend all OpenCode allowance before falling back to Codex (was 0.85); 0.98 keeps a margin because spend is estimated."
   },
+  "say": {
+    "work_ttl_seconds": 86400,
+    "work_ttl_note": "Ordinary worker briefs expire one day after creation when hx say gets no --ttl. Lead reports are durable and never expire through this guard."
+  },
   "persistent_opencode_model": "deepseek-v4.1-flash",
   "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark. 2026-11-06 creator executive decision: deepseek-v4.1-flash is the go-to model, first in every ladder and the persistent OpenCode model (Global regions enabled; smoke test passed).",
   "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.167.0/bin",

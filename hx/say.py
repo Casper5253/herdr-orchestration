@@ -9,6 +9,16 @@ Every message is written to a per-sender outbox before delivery. A send the
 host reports as started is marked delivered; any other outcome (a blocked lead,
 a finished terminal, an unknown response) leaves it pending, so a report is
 never lost and `hx say --pending` can retry it.
+
+A record may also carry the task id it belongs to, the destination session, an
+expiry time and an optional `supersedes` id. Worker records without an explicit
+expiry get the policy's default work TTL, measured from `created_at` for legacy
+records. Inside the per-record delivery claim, the shared path marks a worker
+record `cancelled` when it is expired, its task is closed, its destination
+session changed, or a newer record to the same target supersedes it. Messages
+resolved to the lead role are durable reports and are never cancelled by this
+guard. `cancelled` is terminal. An `uncertain` record was already attempted:
+it is never resent by --pending (a record with no valid age counts as uncertain); it waits for reconciliation.
 """
 from __future__ import annotations
 
@@ -22,7 +32,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hx import context, devin, host, paths, usage
+from hx import context, devin, host, ledger, paths, usage
 
 # A process that dies between claiming and marking a record leaves the claim;
 # after this long the delivery is unknown, not unsent.
@@ -220,6 +230,7 @@ _OUTCOME_WORDS = {
     "pending": "pending",
     "uncertain": "uncertain",
     "failed": "failed",
+    "cancelled": "cancelled",
 }
 
 
@@ -267,7 +278,9 @@ def _atomic_write(path: Path, text: str) -> None:
             pass
 
 
-def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: str) -> Path:
+def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: str,
+                  *, task_id: str | None = None, session_id: str | None = None,
+                  expires_at: str | None = None, supersedes: str | None = None) -> Path:
     directory = _outbox_dir(sender_key)
     directory.mkdir(parents=True, exist_ok=True)
     message_id = uuid.uuid4().hex
@@ -283,6 +296,10 @@ def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: st
         "state": "pending",
         "delivered": False,
         "delivered_at": None,
+        "task_id": task_id,
+        "session_id": session_id,
+        "expires_at": expires_at,
+        "supersedes": supersedes,
     }
     path = directory / f"{message_id}.json"
     _atomic_write(path, json.dumps(record, indent=2) + "\n")
@@ -299,7 +316,7 @@ def _read_record(path: Path) -> dict | None:
 
 def _record_state(record: dict) -> str:
     state = record.get("state")
-    if state in ("pending", "delivered", "uncertain", "failed"):
+    if state in ("pending", "delivered", "uncertain", "failed", "cancelled"):
         return state
     return "delivered" if record.get("delivered") else "pending"
 
@@ -323,7 +340,7 @@ def records_for(sender: str) -> list[tuple[str, Path, dict | None]]:
     directories = {_outbox_dir(sender), _outbox_dir(sender, legacy=True)}
     for path in (path for directory in directories for path in directory.glob("*.json")):
         record = _read_record(path)
-        if record is not None and _record_state(record) in ("delivered", "failed"):
+        if record is not None and _record_state(record) in ("delivered", "failed", "cancelled"):
             continue
         stamp = str(record.get("created_at") or "") if record else ""
         try:
@@ -334,6 +351,104 @@ def records_for(sender: str) -> list[tuple[str, Path, dict | None]]:
     entries.sort()
     return [(path, record, record and _record_state(record) or "corrupt")
             for _, _, path, record in entries]
+
+
+def _all_records(sender_key: str) -> list[dict]:
+    """Every readable record in the sender's outboxes, terminal states included."""
+    records = []
+    directories = {_outbox_dir(sender_key), _outbox_dir(sender_key, legacy=True)}
+    for directory in directories:
+        for path in directory.glob("*.json"):
+            record = _read_record(path)
+            if record is not None:
+                records.append(record)
+    return records
+
+
+def _task_closed(task_id: object) -> bool:
+    """The record's task is closed; an unknown or unreadable task proves nothing."""
+    if not isinstance(task_id, str) or not task_id:
+        return False
+    try:
+        task = ledger.default_ledger().get_task(task_id)
+    except Exception:
+        return False
+    return task.get("status") in ledger.Ledger.CLOSED_STATUSES
+
+
+def _policy() -> dict:
+    try:
+        return usage.load_policy()
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _is_lead(destination: host.Member, policy: dict) -> bool:
+    return str(destination.get("role") or "") == str(policy.get("lead_role", "lead"))
+
+
+# Used when policy.json is missing or unreadable, so worker briefs never become
+# immortal by accident; policy say.work_ttl_seconds overrides it.
+DEFAULT_WORK_TTL_SECONDS = 86400.0
+
+
+def _work_ttl_seconds(policy: dict) -> float:
+    say_policy = policy.get("say")
+    raw = say_policy.get("work_ttl_seconds") if isinstance(say_policy, dict) else None
+    if (isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            and math.isfinite(raw) and raw > 0):
+        return float(raw)
+    return DEFAULT_WORK_TTL_SECONDS
+
+
+def _obsolete_state(
+    path: Path,
+    sender_key: str,
+    record: dict,
+    destination: host.Member,
+    policy: dict,
+) -> tuple[str, str] | None:
+    """The worker-record transition this delivery must take, or None to send.
+
+    Lead reports are classified by the resolved destination role before this
+    runs. For worker records an explicit expiry wins; a missing expiry falls
+    back to `created_at` plus the policy work TTL. An expiry that cannot be
+    proven becomes `uncertain`, because reconciliation is safer than either
+    terminal cancellation or a blind send.
+    """
+    expires_at = record.get("expires_at")
+    expires = context._timestamp(expires_at) if expires_at is not None else None
+    unknown = None
+    if expires_at is not None and expires is None:
+        unknown = "invalid expires_at; reconcile before resend"
+    elif expires is None:
+        created = context._timestamp(record.get("created_at"))
+        ttl = _work_ttl_seconds(policy)
+        if created is None:
+            if ttl is not None:
+                unknown = "missing or invalid created_at; reconcile before resend"
+        elif ttl is not None:
+            expires = created + datetime.timedelta(seconds=ttl)
+    if expires is not None and expires <= datetime.datetime.now(datetime.timezone.utc):
+        return "cancelled", f"expired {expires.isoformat()}"
+    task_id = record.get("task_id")
+    if _task_closed(task_id):
+        return "cancelled", f"task {task_id} is closed"
+    old_session = str(record.get("session_id") or "")
+    new_session = str(destination.get("session_id") or "")
+    if old_session and new_session and old_session != new_session:
+        return "cancelled", f"destination session changed from {old_session} to {new_session}"
+    record_id = str(record.get("id") or path.stem)
+    target = str(record.get("target") or "")
+    for sibling in _all_records(sender_key):
+        if (str(sibling.get("id") or "") != record_id
+                and str(sibling.get("supersedes") or "") == record_id
+                and str(sibling.get("target") or "") == target
+                and _record_state(sibling) not in ("cancelled", "failed")):
+            return "cancelled", f"superseded by {sibling.get('id')}"
+    if unknown is not None:
+        return "uncertain", unknown
+    return None
 
 
 def _claim_path(path: Path) -> Path:
@@ -420,33 +535,9 @@ def _deliver(
     sender = sender_member["name"]
     try:
         name, destination = resolve(sender_member, target)
-    except ValueError as exc:
-        # The role is gone (a lead handover left records for the old name):
-        # report it once with the reason and resolve the record, never reprint.
-        _write_state(path, "failed", note=f"undeliverable: {exc}")
-        return "failed", f"undeliverable: {exc}", (target, "failed")
-    try:
-        text = with_header(sender, body)
-    except ValueError as exc:
-        _write_state(path, "failed", note=f"undeliverable: {exc}")
-        return "failed", f"undeliverable: {exc}", (name, "failed")
-    where = str(destination["address"]) or name
-    if not force and _under_pressure(name):
-        return "pending", "pressure", (where, "pending")
-    line = _denied_line_for(destination)
-    if line:
-        text += " " + line
-    pointer = (
-        isinstance(detected, host.HcHost)
-        and destination["kind"] == "codex"
-        and len(body) > UNCONFIRMED_LONG_CHARS
-    )
-    if pointer:
-        short = _pointer_message(sender, path)
-        if short is None:
-            _write_state(path, "pending", note="pointer too long")
-            return "pending", "pointer too long", (where, "pending")
-        text = short
+        where = str(destination["address"]) or name
+    except ValueError:
+        where = target
     claimed = _claim(path)
     if claimed == "busy":
         return "pending", "delivery in flight", (where, "pending")
@@ -460,10 +551,56 @@ def _deliver(
         current_state = _record_state(current)
         if current_state != "pending":
             return current_state, current.get("note"), (where, _OUTCOME_WORDS.get(current_state, "uncertain"))
+        try:
+            name, destination = resolve(sender_member, target)
+        except ValueError as exc:
+            # The role is gone (a lead handover left records for the old name):
+            # report it once with the reason and resolve the record, never reprint.
+            _write_state(path, "failed", note=f"undeliverable: {exc}")
+            return "failed", f"undeliverable: {exc}", (target, "failed")
+        try:
+            text = with_header(sender, body)
+        except ValueError as exc:
+            _write_state(path, "failed", note=f"undeliverable: {exc}")
+            return "failed", f"undeliverable: {exc}", (name, "failed")
+        where = str(destination["address"]) or name
+        policy = _policy()
+        work = not _is_lead(destination, policy)
+        transition = (
+            _obsolete_state(path, _sender_key(sender_member), current, destination, policy)
+            if work else None
+        )
+        if transition is not None:
+            state, note = transition
+            _write_state(path, state, note=note)
+            return state, note, (where, _OUTCOME_WORDS.get(state, "uncertain"))
+        if not force and _under_pressure(name):
+            return "pending", "pressure", (where, "pending")
+        line = _denied_line_for(destination)
+        if line:
+            text += " " + line
+        pointer = (
+            isinstance(detected, host.HcHost)
+            and destination["kind"] == "codex"
+            and len(body) > UNCONFIRMED_LONG_CHARS
+        )
+        if pointer:
+            short = _pointer_message(sender, path)
+            if short is None:
+                _write_state(path, "pending", note="pointer too long")
+                return "pending", "pointer too long", (where, "pending")
+            text = short
         _write_state(path, "pending", body=body, target=name, text=text,
-                     pointer=pointer)
+                     pointer=pointer, session_id=destination.get("session_id"))
         if destination["status"] == "blocked":
             return "pending", "blocked", (where, "pending")
+        if work:
+            transition = _obsolete_state(
+                path, _sender_key(sender_member), current, destination, policy)
+            if transition is not None:
+                state, note = transition
+                _write_state(path, state, note=note)
+                return state, note, (where, _OUTCOME_WORDS.get(state, "uncertain"))
         try:
             result = detected.send_checked(name, text)
         except host.SendNotAttempted as exc:
@@ -558,14 +695,18 @@ def retry_pending() -> int:
         outcome, reason, (where, word) = _deliver(detected, sender_member, target, body, path)
         suffix = f" ({reason})" if reason and outcome != "delivered" else ""
         print(f"{message_id} -> {where}: {word}{suffix}")
-        if outcome != "delivered":
+        if outcome not in ("delivered", "cancelled"):
             unresolved += 1
     return 0 if unresolved == 0 else 1
 
 
-def say(target: str | None, message: str, *, force: bool = False) -> int:
+def say(target: str | None, message: str, *, force: bool = False,
+        task: str | None = None, ttl: float | None = None,
+        supersedes: str | None = None) -> int:
     if not target:
         raise ValueError("hx say needs a teammate role or name, or --pending")
+    if ttl is not None and not (math.isfinite(ttl) and ttl > 0):
+        raise ValueError("--ttl must be a positive, finite number of seconds")
     detected = host.detect()
     if detected is None:
         raise ValueError("hx say runs only in a team host (an agent named <team>-<role>)")
@@ -573,10 +714,20 @@ def say(target: str | None, message: str, *, force: bool = False) -> int:
     if not sender_member:
         raise ValueError("hx say runs only in a team host (an agent named <team>-<role>)")
     sender = sender_member["name"]
-    name, _destination = resolve(sender_member, target)
+    name, destination = resolve(sender_member, target)
     text = with_header(sender, message)
     key = _sender_key(sender_member)
-    path = _write_outbox(key, sender, name, message, text)
+    policy = _policy()
+    lifetime = ttl
+    if lifetime is None and not _is_lead(destination, policy):
+        lifetime = _work_ttl_seconds(policy)
+    expires_at = (
+        (datetime.datetime.now(datetime.timezone.utc)
+         + datetime.timedelta(seconds=lifetime)).isoformat()
+        if lifetime is not None else None)
+    path = _write_outbox(key, sender, name, message, text,
+                         task_id=task, session_id=destination.get("session_id"),
+                         expires_at=expires_at, supersedes=supersedes)
     outcome, reason, (where, word) = _deliver(
         detected, sender_member, target, message, path, force=force)
     suffix = f" ({reason})" if reason and outcome != "delivered" else ""
