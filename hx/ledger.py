@@ -489,6 +489,7 @@ class Ledger:
         model: str | None = None,
         effort: str | None = None,
         method: str | None = None,
+        review_required: bool = False,
     ) -> dict[str, Any]:
         with self._dual_lock():
             ledger = self._load_ledger()
@@ -511,6 +512,7 @@ class Ledger:
                 "depends": list(depends) if depends else [],
                 "status": "open",
                 "review": None,
+                "review_required": bool(review_required),
                 "attempts": 0,
                 "created": now,
                 "updated": now,
@@ -683,6 +685,12 @@ class Ledger:
             task = ledger.get("tasks", {}).get(task_id)
             if task is None:
                 raise TaskNotFound(task_id)
+            if status == "done" and task.get("review_required"):
+                from hx import review as review_mod
+
+                guard = review_mod.close_guard(task)
+                if not guard["ok"]:
+                    raise ValueError(guard["reason"])
             task["status"] = status
             task["updated"] = _utcnow().isoformat()
             if status in self.CLOSED_STATUSES:
@@ -743,24 +751,59 @@ class Ledger:
 
         return self.mutate_leases_with_repo(release)
 
-    def update_task(self, task_id: str, **fields: Any) -> dict[str, Any]:
+    def mutate_task(
+        self,
+        task_id: str,
+        mutator: Callable[[dict[str, Any]], Any],
+    ) -> dict[str, Any]:
+        """Apply ``mutator(task)`` under the dual lock and commit one revision.
+
+        The mutator runs before anything is saved, so raising from it leaves
+        the ledger untouched. On success the task's ``rev`` and ``updated``
+        are bumped and the derived file leases are rebuilt.
+        """
         with self._dual_lock():
             ledger = self._load_ledger()
             leases = self._load_leases()
             task = ledger.get("tasks", {}).get(task_id)
             if task is None:
                 raise TaskNotFound(task_id)
-            for key, value in fields.items():
-                if key in {"id", "created", "rev"}:
-                    continue
-                if value is not None:
-                    task[key] = value
+            mutator(task)
             task["updated"] = _utcnow().isoformat()
             task["rev"] = task.get("rev", 0) + 1
             self._next_rev(ledger)
             leases = self._recompute_leases(ledger, leases)
             self._save(ledger, leases)
             return task
+
+    def update_task(self, task_id: str, **fields: Any) -> dict[str, Any]:
+        """Field update for callers that hold no task-specific API.
+
+        Review fields stay owned by the hx review transitions, and closing a
+        review-required task stays behind the close guard: use
+        :meth:`set_status` or :meth:`complete_task` for those.
+        """
+        review_fields = sorted({"review", "review_required"} & fields.keys())
+        if review_fields:
+            raise ValueError(
+                f"update_task cannot change review fields {review_fields}; "
+                "use the hx review transitions"
+            )
+        status = fields.get("status")
+
+        def update(task: dict[str, Any]) -> None:
+            if status in self.CLOSED_STATUSES and task.get("review_required"):
+                raise ValueError(
+                    f"update_task cannot set status {status} on a review-required "
+                    "task; use the review close path (hx task status or hx task done)"
+                )
+            for key, value in fields.items():
+                if key in {"id", "created", "rev"}:
+                    continue
+                if value is not None:
+                    task[key] = value
+
+        return self.mutate_task(task_id, update)
 
     def acquire_session(
         self,
@@ -862,6 +905,12 @@ class Ledger:
             task = ledger.get("tasks", {}).get(task_id)
             if task is None:
                 raise TaskNotFound(task_id)
+            if status == "done" and task.get("review_required"):
+                from hx import review as review_mod
+
+                guard = review_mod.close_guard(task)
+                if not guard["ok"]:
+                    raise ValueError(guard["reason"])
             task["status"] = status
             if status == "failed":
                 task["attempts"] = task.get("attempts", 0) + 1

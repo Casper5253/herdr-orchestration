@@ -82,11 +82,12 @@ Effort is set at dispatch: `opencode run --variant`, `codex exec -c model_reason
 
 ## 3. Ledger (`hx task`)
 
-`.hx/ledger.json`: tasks `{id, title, owner, model, effort, method, files[], depends[], status, review, attempts, created, updated, checkpoint}`. Status: `open -> assigned -> in_progress -> review -> done | failed | blocked`.
+`.hx/ledger.json`: tasks `{id, title, owner, model, effort, method, files[], depends[], status, review, review_required, attempts, created, updated, checkpoint}`. Status: `open -> assigned -> in_progress -> review -> done | failed | blocked`.
 
 - `hx task add|assign|status|done|list|show`.
 - `assign` refuses when any listed file is owned by another open task (conflict), unless `--worktree` is given (parallel work in its own worktree).
 - `done` and `failed` write the outcome into the routing log entry and trigger `hx checkpoint` for that task.
+- `hx review` keeps an append-only request, verdict, correction, recheck, park and exception history on the task. A review-required task closes as `done` only with a current merge verdict or a recorded park exception. Two corrections are allowed per task, dispatched or implicit (an artifact that moves after a fix verdict); a third dispatch or a new fix verdict returns `redesign-required`.
 - Atomic writes (temp file + replace) with a lock file, so two agents can update the ledger without corruption.
 
 ## 4. Checkpoints (`hx checkpoint`)

@@ -45,6 +45,7 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     add.add_argument("--model")
     add.add_argument("--effort")
     add.add_argument("--method")
+    add.add_argument("--review-required", action="store_true")
     add.set_defaults(func=_task_add)
 
     assign = task_sub.add_parser("assign", help="Assign a task to an owner.")
@@ -221,6 +222,7 @@ def _task_add(args: argparse.Namespace) -> None:
         model=args.model,
         effort=args.effort,
         method=args.method,
+        review_required=args.review_required,
     )
     print(json.dumps(task, indent=2))
 
