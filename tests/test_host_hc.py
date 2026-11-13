@@ -207,6 +207,15 @@ def test_labels_override_a_raw_name(fake: FakeHc) -> None:
     assert (member["team"], member["role"]) == ("dev", "codex")
 
 
+def _without_marker(text: str) -> str:
+    head, sep, tail = text.rpartition(" ")
+    return head if sep and tail.startswith("[m:") and tail.endswith("]") else text
+
+
+def _sent_texts(calls: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(address, _without_marker(text)) for address, text in calls]
+
+
 def test_own_refreshes_its_terminal_labels_after_late_labelling(fake, monkeypatch):
     fake.terminals["t7"]["labels"] = {}
     fake.add(_terminal("t24", name="dev-claude", app="codex", state="working", pid=14))
@@ -218,7 +227,7 @@ def test_own_refreshes_its_terminal_labels_after_late_labelling(fake, monkeypatc
     assert own["address"] == "t24"
     assert own["name"] == "dev-codex"
     assert main(["say", "claude", "[team report from dev-codex] done"]) == 0
-    assert fake.sent == [("t1", "[team report from dev-codex] done")]
+    assert _sent_texts(fake.sent) == [("t1", "[team report from dev-codex] done")]
 
 
 def test_own_rejects_details_for_a_different_terminal(fake, monkeypatch):
@@ -311,7 +320,7 @@ def test_authorization_uses_the_sender_team_label_not_the_joined_name(
                        app="claude-code", state="idle", pid=40))
     monkeypatch.setenv("HC_TERMINAL_ID", "t30")
     assert main(["say", "claude", "ping"]) == 0
-    assert fake.sent == [("t1", "[team from dev-foo-bar] ping")]
+    assert _sent_texts(fake.sent) == [("t1", "[team from dev-foo-bar] ping")]
     assert all(address != "t40" for address, _ in fake.sent)
 
 
@@ -440,7 +449,7 @@ def test_send_never_passes_force(fake: FakeHc) -> None:
 
 def test_say_reaches_the_unnamed_lead_by_its_address(fake: FakeHc, tmp_path: Path) -> None:
     assert main(["say", "claude", "ping"]) == 0
-    assert fake.sent == [("t1", "[team from dev-codex] ping")]
+    assert _sent_texts(fake.sent) == [("t1", "[team from dev-codex] ping")]
     record = json.loads(_outbox(tmp_path)[0].read_text(encoding="utf-8"))
     assert record["target"] == "dev-claude"
     assert record["state"] == "delivered"
@@ -453,7 +462,7 @@ def test_a_colliding_raw_name_cannot_steal_the_report(fake: FakeHc) -> None:
     fake.add(_terminal("t22", name="dev-claude", team="other", role="claude",
                        app="claude-code", state="idle"))
     assert main(["say", "claude", "ping"]) == 0
-    assert fake.sent == [("t1", "[team from dev-codex] ping")]
+    assert _sent_texts(fake.sent) == [("t1", "[team from dev-codex] ping")]
     assert all(address != "t22" for address, _ in fake.sent)
 
 
@@ -469,7 +478,7 @@ def test_pending_retry_after_recovery_delivers(fake: FakeHc, tmp_path: Path) -> 
     _pending_record(fake, tmp_path)
     fake.terminals["t1"]["status"] = {"app": "claude-code", "state": "idle"}
     assert main(["say", "--pending"]) == 0
-    assert fake.sent == [("t1", "[team from dev-codex] ping")]
+    assert _sent_texts(fake.sent) == [("t1", "[team from dev-codex] ping")]
     record = json.loads(_outbox(tmp_path)[0].read_text(encoding="utf-8"))
     assert record["state"] == "delivered"
 

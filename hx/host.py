@@ -34,12 +34,14 @@ _DEVIN_FOOTER_RULE = re.compile(r"[─—\-=\s]*[─—\-=][─—\-=\s]*")
 _CODEX_STATUS_LINE = re.compile(r"context left|^\s*gpt-", re.IGNORECASE)
 
 
-def _composer_text(text: str, kind: str) -> str | None:
+def composer_text(text: str, kind: str) -> str | None:
     """The text staged in the provider's composer at its fixed position.
 
     An empty string means the composer rendered with nothing staged — the
     typed command provably left. None means no composer was identified: an
-    unknown provider kind or a screen without the position anchors.
+    unknown provider kind or a screen without the position anchors. OpenCode
+    returns the whole input box, every line, so a multiline paste cannot hide
+    a line from the caller.
     """
     lines = (text or "").rstrip().splitlines()
     if kind == "devin":
@@ -51,15 +53,17 @@ def _composer_text(text: str, kind: str) -> str | None:
     if kind == "opencode":
         status = next((index for index in range(len(lines) - 1, -1, -1)
                        if lines[index].strip().startswith("Build")), None)
-        if status is None:
+        if status is None or status == 0:
             return None
         box = status - 1
+        if not lines[box].lstrip().startswith("┃"):
+            return None
+        chunks = []
         while box >= 0 and lines[box].lstrip().startswith("┃"):
-            inner = lines[box].strip().strip("┃").strip()
-            if inner:
-                return inner
+            chunks.append(lines[box].strip().strip("┃").strip())
             box -= 1
-        return "" if box < status - 1 else None
+        chunks.reverse()
+        return "\n".join(chunks).strip("\n")
     if kind == "codex":
         for index in range(len(lines) - 2, -1, -1):
             if (lines[index].lstrip().startswith("›")
@@ -856,7 +860,7 @@ class HcHost:
         text = data.get("text") if isinstance(data, dict) else None
         if not isinstance(text, str):
             return None
-        staged = _composer_text(text, kind)
+        staged = composer_text(text, kind)
         if staged is None:
             return None
         return staged == command

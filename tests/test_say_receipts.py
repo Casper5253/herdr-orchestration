@@ -78,6 +78,7 @@ def fake(monkeypatch: pytest.MonkeyPatch, tmp_path):
     hc = FakeHc()
     monkeypatch.setenv("HC_TERMINAL_ID", "t9")
     monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(host, "detect", lambda: hc)
     monkeypatch.setattr(say, "_under_pressure", lambda name: False)
     monkeypatch.setattr(say, "SUBMIT_POLL_SECONDS", 0.3)
@@ -101,8 +102,8 @@ def test_a_busy_receiver_is_reported_queued(fake, capsys):
 
 def test_a_stuck_paste_gets_one_enter_press(fake, capsys):
     fake.advance = False  # send accepted but the turn never advanced
-    text = "[team from dev-codex] brief ends here"
-    fake.views["dev-lead"] = f"prompt\n<hc from=t9>{text}</hc>\n>"
+    fake.on_send = lambda name: fake.views.__setitem__(
+        "dev-lead", f"prompt\n<hc from=t9>{fake.sent[-1][1]}</hc>\n>")
     assert say.say("lead", "brief ends here") == 0
     (line,) = [ln for ln in capsys.readouterr().out.splitlines() if "-> t24:" in ln]
     assert line.endswith("submitted")
@@ -111,7 +112,8 @@ def test_a_stuck_paste_gets_one_enter_press(fake, capsys):
 
 def test_a_stuck_paste_that_never_submits_is_uncertain(fake, capsys):
     fake.advance = False
-    fake.views["dev-lead"] = "prompt\n<hc from=t9>[team from dev-codex] brief</hc>\n>"
+    fake.on_send = lambda name: fake.views.__setitem__(
+        "dev-lead", f"prompt\n<hc from=t9>{fake.sent[-1][1]}</hc>\n>")
     fake.press = lambda member, *keys: (fake.keys.append(["keys", member["address"], *keys]) or True)
     assert say.say("lead", "brief") == 1
     out = capsys.readouterr().out
@@ -156,7 +158,7 @@ def test_send_not_attempted_is_pending_and_retried(fake, capsys):
     fake.attempt_error = None
     fake.on_send = lambda name: fake.members["dev-lead"].update(status="working")
     assert say.retry_pending() == 0
-    assert any(call[1].endswith("retry me") for call in fake.sent)
+    assert any("retry me" in call[1] for call in fake.sent)
 
 
 def test_a_dead_role_record_resolves_once_with_a_reason(fake, capsys, tmp_path):
@@ -170,3 +172,49 @@ def test_a_dead_role_record_resolves_once_with_a_reason(fake, capsys, tmp_path):
     capsys.readouterr()
     assert say.retry_pending() == 0
     assert "No pending messages for dev-codex." in capsys.readouterr().out
+
+
+def _devin_screen(paste: str, composer: str) -> str:
+    """A Devin pane: the delivered message above the live composer and footer."""
+    return (
+        f"Working on the brief.\n<hc from=\"t9 dev-codex\">{paste}</hc>\n"
+        f"{composer}\n" + "-" * 20 + "\nSWE-2 High · bypass"
+    )
+
+
+def test_a_devin_send_that_started_working_is_submitted(fake, capsys, tmp_path):
+    """hc's turn rises only when a status leaves working, so a Devin turn that
+    outlasts the poll never advances it. The paste above the live composer is
+    the submission itself, so the receipt must not stay uncertain."""
+    fake.members["dev-devin"] = _member("dev-devin", kind="devin", address="t3b")
+    fake.advance = False
+
+    def on_send(name):
+        paste = fake.sent[-1][1]
+        fake.views["dev-devin"] = _devin_screen(paste, "❭ Guide Devin while it works")
+        fake.members[name]["status"] = "working"
+
+    fake.on_send = on_send
+    assert say.say("devin", "status please") == 0
+    assert " -> t3b: submitted" in capsys.readouterr().out
+    record = json.loads(
+        next((tmp_path / ".hx" / "outbox" / "dev__codex").glob("*.json"))
+        .read_text(encoding="utf-8"))
+    assert record["state"] == "delivered"
+    assert record["receipt"] == "submitted"
+
+
+def test_a_devin_paste_still_in_its_composer_is_uncertain(fake, capsys, tmp_path):
+    fake.members["dev-devin"] = _member("dev-devin", kind="devin", status="working", address="t3b")
+    fake.advance = False
+
+    def on_send(name):
+        fake.views["dev-devin"] = _devin_screen("still working", "❭ " + fake.sent[-1][1])
+
+    fake.on_send = on_send
+    assert say.say("devin", "status please") == 1
+    assert " -> t3b: uncertain" in capsys.readouterr().out
+    record = json.loads(
+        next((tmp_path / ".hx" / "outbox" / "dev__codex").glob("*.json"))
+        .read_text(encoding="utf-8"))
+    assert record["state"] == "uncertain"

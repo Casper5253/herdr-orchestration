@@ -16,6 +16,7 @@ import datetime
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,9 +35,10 @@ CLAIM_STALE_SECONDS = 120
 UNCONFIRMED_LONG_CHARS = 1000
 # The pointer must stay inside the transport bound that the probe showed works.
 POINTER_MAX_CHARS = 280
-# How long `hx say` watches an idle receiver for a turn to start before it
-# checks for unsubmitted text, and how long the Enter press gets to settle.
-SUBMIT_POLL_SECONDS = 10.0  # a busy receiver's turn advances at its next provider turn
+# How long `hx say` waits for a whole turn to end after a send, and how long
+# the Enter press gets to settle. A longer turn is proved by the composer
+# instead, so this is only the cheap first look.
+SUBMIT_POLL_SECONDS = 10.0
 ENTER_SETTLE_SECONDS = 0.75
 # The host explicitly refused or never accepted the text; a retry is safe.
 UNSENT_REASONS = frozenset({
@@ -133,11 +135,14 @@ def _host_status(detected: host.Host, name: str) -> str:
 
 
 def _await_advance(detected: host.Host, name: str, sent_turn: int | None, seconds: float) -> bool:
-    """Submission evidence: the receiver's turn number advanced past ours.
+    """A whole turn ended after our send: the receiver's turn moved past ours.
 
-    `hc get` reports no progress counter finer than `turn`. Status alone is
-    never proof — a stale or unrelated working status would mark an
-    unsubmitted message delivered and prevent retry.
+    hc's `turn` goes up only when a status leaves `working`, so this proves a
+    turn finished, never that our text went in while the turn was running. A
+    receiver whose turn outlasts the poll, Devin's minutes-long turns above
+    all, never shows it here; `_paste_left_composer` carries that evidence.
+    Status alone is still no proof: a stale or unrelated working status would
+    mark an unsubmitted message delivered and prevent retry.
     """
     deadline = time.monotonic() + seconds
     while True:
@@ -156,6 +161,11 @@ def _await_advance(detected: host.Host, name: str, sent_turn: int | None, second
         time.sleep(0.25)
 
 
+def _without_whitespace(text: str) -> str:
+    """Remove every space and line break so a wrapped token still matches."""
+    return re.sub(r"\s+", "", text)
+
+
 def _sits_unsubmitted(detected: host.Host, name: str, text: str) -> bool:
     """The pasted text is still in the receiver's composer.
 
@@ -167,8 +177,50 @@ def _sits_unsubmitted(detected: host.Host, name: str, text: str) -> bool:
         view = str(detected.read(name, 60))
     except Exception:
         return False
-    tail = text[-20:]
-    return bool(tail) and tail in view[-400:] and "</hc>" in view[-200:]
+    tail = _without_whitespace(text)[-20:]
+    flat_view = _without_whitespace(view)
+    return bool(tail) and tail in flat_view[-400:] and "</hc>" in flat_view[-200:]
+
+
+# The last token of the sent text names this outbox record, so a different
+# message with the same tail can never prove this delivery.
+MESSAGE_MARKER = re.compile(r"\[m:[^\]]{1,32}\]\Z")
+# A submitted message sits between the hc tags, unlike an echo in output.
+HC_MESSAGE = re.compile(r"<hc[^>]*>(.*?)</hc>", re.DOTALL)
+
+
+def _message_marker(text: str) -> str:
+    match = MESSAGE_MARKER.search(text)
+    return match.group(0) if match else ""
+
+
+def _paste_left_composer(detected: host.Host, name: str, text: str, kind: str) -> bool:
+    """The pasted message left the provider's composer and sits in its transcript.
+
+    `hc send` pastes and presses Enter, so text still staged in the composer
+    did not submit, and a paste visible above a live composer did. This is the
+    only immediate submission proof: hc's `turn` goes up only when a status
+    leaves `working`, so a turn that outlasts the poll, Devin's minutes-long
+    turns above all, never shows one. The marker names this delivery, so an
+    older message cannot prove it, and it must sit inside a submitted message's
+    hc envelope, so an echo in arbitrary output cannot prove it either. A
+    provider with no identifiable composer position earns nothing here; the
+    caller stays uncertain.
+    """
+    try:
+        view = str(detected.read(name, 60))
+    except Exception:
+        return False
+    composer = host.composer_text(view, kind)
+    marker = _message_marker(text)
+    if composer is None or not marker:
+        return False
+    flat_marker = _without_whitespace(marker)
+    flat_composer = _without_whitespace(composer)
+    flat_view = _without_whitespace(view)
+    if not flat_marker or flat_marker in flat_composer:
+        return False
+    return any(flat_marker in body for body in HC_MESSAGE.findall(flat_view))
 
 
 def _submission_evidence(
@@ -176,26 +228,29 @@ def _submission_evidence(
     name: str,
     text: str,
     result: host.SendResult,
+    kind: str,
 ) -> str:
     """What an accepted hc send actually did: submitted, queued, or uncertain.
 
     hc's exit code says nothing about submission: a paste can sit in the
-    receiver's composer while hc reports started. A receiver already working
-    got the text queued to its turn; an idle one is watched briefly, then the
-    unsubmitted-paste check decides whether one Enter press is owed.
+    receiver's composer while hc reports started. The composer shows the paste
+    leaving, and that is immediate; a turn advance is the slower proof that a
+    whole turn ended with our text in it. An idle receiver whose paste is
+    still staged gets one Enter press.
     """
-    if result["status"] == "working":
-        if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
-            return "queued"
-        return "uncertain"
-    if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
-        return "submitted"
+    started = result["started"] is True or result["status"] == "working"
+    proven = started and _paste_left_composer(detected, name, text, kind)
+    proven = proven or _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS)
+    # The first read can catch the screen before the provider repaints.
+    proven = proven or (started and _paste_left_composer(detected, name, text, kind))
+    if proven:
+        return "queued" if result["status"] == "working" else "submitted"
     member = _host_member(detected, name)
     if member is None or member["status"] not in ("idle", "done"):
         return "uncertain"
-    # Settled with no visible paste and no turn advance proves nothing: an
+    # A settled pane with no staged paste and no ended turn proves nothing: an
     # incomplete read, an unavailable composer, or a vanished paste would all
-    # look identical — the outcome stays uncertain, never delivered.
+    # look identical, so the outcome stays uncertain, never delivered.
     if not _sits_unsubmitted(detected, name, text):
         return "uncertain"
     if member["status"] != "idle":
@@ -207,6 +262,10 @@ def _submission_evidence(
     if not pressed:
         return "uncertain"
     time.sleep(ENTER_SETTLE_SECONDS)
+    # Our own Enter is the start signal; the paste then leaving the composer
+    # proves it just as well as a turn ending.
+    if _paste_left_composer(detected, name, text, kind):
+        return "submitted"
     fresh = _host_member(detected, name)
     if (fresh is not None and isinstance(fresh.get("turn"), int)
             and isinstance(result["turn"], int) and not isinstance(result["turn"], bool)
@@ -447,6 +506,7 @@ def _deliver(
             _write_state(path, "pending", note="pointer too long")
             return "pending", "pointer too long", (where, "pending")
         text = short
+    text = f"{text} [m:{path.stem}]"
     claimed = _claim(path)
     if claimed == "busy":
         return "pending", "delivery in flight", (where, "pending")
@@ -490,7 +550,8 @@ def _deliver(
             # herdr CLI, which reports the provider response inline and can
             # press no keys.
             if not isinstance(detected, host.HerdrHost):
-                outcome = _submission_evidence(detected, name, text, result)
+                outcome = _submission_evidence(
+                    detected, name, text, result, str(destination["kind"]))
             if outcome == "uncertain":
                 state = "uncertain"
                 reason = "sent; no submission evidence"

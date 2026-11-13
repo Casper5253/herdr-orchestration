@@ -52,12 +52,21 @@ def _pane_config(tmp_path: Path, text: str) -> Path:
     return config
 
 
+def _without_marker(text: str) -> str:
+    head, sep, tail = text.rpartition(" ")
+    return head if sep and tail.startswith("[m:") and tail.endswith("]") else text
+
+
+def _sent_without_markers(calls: list[list[str]]) -> list[list[str]]:
+    return [call[:4] + [_without_marker(call[4])] for call in calls]
+
+
 def test_devin_target_gets_the_deny_line_from_its_state_config(tmp_path: Path, sent: list[list[str]]) -> None:
     _pane_config(tmp_path, json.dumps({"permissions": {"deny": [
         "Exec(git push)", "Exec(herdr)", "Exec(hx route)", "Write(.env*)", "Read(~/.ssh/**)",
     ]}}))
     assert main(["say", "devin", "status?"]) == 0
-    text = sent[0][4]
+    text = _without_marker(sent[0][4])
     assert "\n" not in text
     assert text == (
         "[team from dev-codex] status? "
@@ -91,13 +100,13 @@ def test_both_configs_unreadable_sends_the_message_unchanged(
     _pane_config(tmp_path, "{ not json")
     monkeypatch.setattr(devin, "pane_config_template", lambda: tmp_path / "missing.json")
     assert main(["say", "devin", "hi"]) == 0
-    assert sent == [["herdr", "agent", "prompt", "dev-devin", "[team from dev-codex] hi"]]
+    assert _sent_without_markers(sent) == [["herdr", "agent", "prompt", "dev-devin", "[team from dev-codex] hi"]]
 
 
 def test_non_devin_target_gets_no_deny_line(tmp_path: Path, sent: list[list[str]]) -> None:
     _pane_config(tmp_path, json.dumps({"permissions": {"deny": ["Exec(herdr)"]}}))
     assert main(["say", "opencode", "hi"]) == 0
-    assert sent == [["herdr", "agent", "prompt", "dev-opencode", "[team from dev-codex] hi"]]
+    assert _sent_without_markers(sent) == [["herdr", "agent", "prompt", "dev-opencode", "[team from dev-codex] hi"]]
 
 
 def test_header_rules_still_apply_to_devin_targets(tmp_path: Path, sent: list[list[str]]) -> None:

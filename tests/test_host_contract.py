@@ -158,6 +158,16 @@ def test_context_uses_only_declared_methods(roster):
     assert fake.checked == [("dev-codex", "/compact", True, ("idle", "done"), 1000)]
 
 
+def _without_marker(text: str) -> str:
+    head, sep, tail = text.rpartition(" ")
+    return head if sep and tail.startswith("[m:") and tail.endswith("]") else text
+
+
+def _checked_without_markers(checked):
+    return [(name, _without_marker(text), wait, until, timeout)
+            for name, text, wait, until, timeout in checked]
+
+
 def test_say_sends_through_the_declared_checked_send(monkeypatch, tmp_path):
     fake = MinimalHost([_member("dev-codex"), _member("dev-claude")])
     unknown = {"session_id": None, "utilisation": None, "sampled_at": None}
@@ -166,7 +176,9 @@ def test_say_sends_through_the_declared_checked_send(monkeypatch, tmp_path):
             patch.object(context, "telemetry", return_value=unknown), \
             patch.object(usage, "load_policy", return_value={"lead_role": "claude"}):
         assert say.say("claude", "hi") == 0
-    assert fake.checked == [("dev-claude", "[team from dev-codex] hi", False, (), None)]
+    assert _checked_without_markers(fake.checked) == [
+        ("dev-claude", "[team from dev-codex] hi", False, (), None)
+    ]
 
 
 def test_focused_is_nullable_not_dropped():
