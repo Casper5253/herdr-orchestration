@@ -1,6 +1,7 @@
 """hx say reaches only the sender's own team."""
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import time
@@ -173,16 +174,16 @@ def _legacy_record(tmp_path):
     return path
 
 
-def test_legacy_outbox_retries_exact_artifact_record_once(monkeypatch, sent, tmp_path, capsys):
+def test_legacy_outbox_without_age_waits_for_reconcile(monkeypatch, sent, tmp_path):
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
     path = _legacy_record(tmp_path)
-    assert say.retry_pending() == 0
-    assert len(sent) == 1
-    assert sent[0][-1] == "[team from dev-codex] old blocked report"
-    assert json.loads(path.read_text(encoding="utf-8"))["delivered"] is True
-    assert say.retry_pending() == 0
-    assert len(sent) == 1
-    assert "No pending messages for dev-codex." in capsys.readouterr().out
+    assert say.retry_pending() == 1
+    assert sent == []
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["state"] == "uncertain"
+    assert "created_at" in record["note"]
+    assert say.retry_pending() == 1
+    assert sent == []
 
 
 @pytest.mark.parametrize("stale", [False, True])
@@ -202,6 +203,9 @@ def test_legacy_retry_keeps_existing_claim_guards(monkeypatch, sent, tmp_path, s
 def test_legacy_retry_claim_stays_held_until_outcome_written(monkeypatch, sent, tmp_path):
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
     path = _legacy_record(tmp_path)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["created_at"] = say._now()
+    path.write_text(json.dumps(record), encoding="utf-8")
     original = say._write_state
     observed = []
 
@@ -235,7 +239,10 @@ def test_current_and_legacy_outboxes_share_the_retry_order(monkeypatch, sent, tm
     monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
     path = _legacy_record(tmp_path)
     record = json.loads(path.read_text(encoding="utf-8"))
-    record["created_at"] = "2020-01-01T00:00:00Z"
+    record["created_at"] = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(hours=1)
+    ).isoformat()
     path.write_text(json.dumps(record), encoding="utf-8")
     say._write_outbox("dev__codex", "dev-codex", "dev-claude", "new report", "new report")
     assert say.retry_pending() == 0
