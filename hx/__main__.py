@@ -185,7 +185,7 @@ def _build_parser() -> argparse.ArgumentParser:
     team_sub = team_parser.add_subparsers(dest="team_command", required=True)
     watch_parser = team_sub.add_parser(
         "watch",
-        help="Wake once when a worker goes from working to idle/done/blocked or exits; prints one JSON event line.")
+        help="Wake when a worker goes from working to idle/done/blocked or exits; compact when needed and print JSON lines.")
     watch_parser.add_argument("--team", help="Team name; default is this pane's own team.")
     watch_parser.add_argument("--interval", type=float, default=1.0, help="Roster rescan period in seconds.")
     watch_parser.add_argument("--timeout", type=float, default=None, help="Seconds to watch before exiting quietly.")

@@ -574,6 +574,22 @@ class Controller:
             raise ValueError("lead work item unknown; pass --work-item <item> or --task <id>, or write the lead checkpoint objective")
         return "objective:" + hashlib.sha256(objective.encode("utf-8")).hexdigest()[:16]
 
+    @staticmethod
+    def _has_session_lease(sessions: dict[str, Any], sid: str, name: str) -> bool:
+        for key, lease in sessions.items():
+            if key == sid:
+                return True
+            if isinstance(lease, dict) and lease.get("agent") == name:
+                return True
+        return False
+
+    @staticmethod
+    def _stale_after_compaction(sample: dict[str, Any], guard: dict[str, Any]) -> bool:
+        """The sample predates the last successful compaction, so it cannot drive a new one."""
+        proof = _timestamp(guard.get("last_compacted_sample"))
+        sampled = _timestamp(sample.get("sampled_at"))
+        return bool(proof and sampled and sampled < proof)
+
     def _agent(self, name: str) -> host.Member:
         prefix = usage.team_prefix(self.policy)
         if not (name.startswith(prefix) and usage.TEAM_AGENT.fullmatch(name)):
@@ -773,6 +789,17 @@ class Controller:
             pressure = sample["utilisation"] >= context_policy.get("pressure_threshold", 0.75)
             owned_tasks = [t for t in self.ledger.list_tasks() if t.get("owner") == name]
             if not owned_tasks and not task_id:
+                guard = (ledger._load_json(self.guard_path) or {}).get(sid, {})
+                if not isinstance(guard, dict):
+                    guard = {}
+                if self._stale_after_compaction(sample, guard):
+                    raise _DeferredContext("post-compaction telemetry not fresh yet")
+                with self.ledger._leases_lock():
+                    leases = self.ledger._load_leases()
+                    if ledger.delivery_hold(leases, name):
+                        raise ValueError("delivery in flight")
+                    if self._has_session_lease(leases.get("sessions", {}), sid, name):
+                        raise ValueError("session is leased; recovery required for compact-unknown")
                 if sample["utilisation"] < context_policy.get("boundary_threshold", 0.40):
                     raise _RetainContext("below boundary threshold")
                 result.update(action="compact-needed", reason="no hx task is registered; native compaction recommended after registering the work and checkpointing", steps=[
@@ -793,6 +820,8 @@ class Controller:
                 if _has_blocking_session_lease(leases.get("sessions", {}), sid, name, task):
                     raise ValueError("session is leased; recovery required for compact-unknown")
                 guard = guards.get(sid, {})
+                if self._stale_after_compaction(sample, guard):
+                    raise _DeferredContext("post-compaction telemetry not fresh yet")
                 task_guard = guard.get("tasks", {}).get(task["id"], {})
                 if task_guard.get("failed") or task_guard.get("count", 0) >= self.policy.get("context", {}).get("max_per_task", 2):
                     raise ValueError("task compaction loop guard")
@@ -815,13 +844,17 @@ class Controller:
             result["disposition"] = getattr(exc, "disposition", "refused")
         return result
 
-    def _finish(self, sid: str, token: str, state: str | None, failed: bool) -> None:
+    def _finish(self, sid: str, token: str, state: str | None, failed: bool,
+                proof_sampled_at: str | None = None) -> None:
         def finish(leases: dict[str, Any]) -> None:
             lease = leases.get("sessions", {}).get(sid)
             if not lease or lease.get("token") != token:
                 raise RuntimeError("session lease lost; manual reconciliation required")
             guards = ledger._load_json(self.guard_path) or {}
             guards[sid]["tasks"][lease["task_id"]]["failed"] = failed
+            if not state and not failed:
+                guards[sid]["last_compacted_sample"] = (
+                    proof_sampled_at or lease.get("before_sampled_at"))
             ledger._atomic_write_json(self.guard_path, guards)
             if state:
                 lease["state"] = state
@@ -1006,7 +1039,8 @@ class Controller:
                     if _session(current) != sid or time.monotonic() >= verify_deadline:
                         raise ValueError("post-acknowledgement telemetry never proved the compaction")
                     time.sleep(.25)
-            self._finish(sid, token, None, False)
+            self._finish(sid, token, None, False,
+                         proof_sampled_at=after.get("sampled_at"))
             return {**decision, "action": "compacted", "telemetry": after}
         except host.SendNotAttempted as exc:
             self._finish(sid, token, None, True)
@@ -1017,11 +1051,28 @@ class Controller:
                 return {**decision, "action": "compact-unknown" if submitted else "keep", "reason": str(exc)}
             raise
 
-    def _finish_quick(self, sid: str, token: str, state: str | None) -> None:
+    def _finish_quick(self, sid: str, token: str, state: str | None, *,
+                      watch_guard: bool = False, compacted: bool = False,
+                      proof_sampled_at: str | None = None) -> None:
         def finish(leases: dict[str, Any]) -> None:
             lease = leases.get("sessions", {}).get(sid)
             if not lease or lease.get("token") != token:
                 raise RuntimeError("session lease lost; manual reconciliation required")
+            if compacted:
+                guards = ledger._load_json(self.guard_path) or {}
+                guard = guards.setdefault(sid, {"tasks": {}})
+                guard["last_compacted_sample"] = (
+                    proof_sampled_at or lease.get("before_sampled_at"))
+                if watch_guard:
+                    task_guard = guard.setdefault("tasks", {}).setdefault("watch", {"count": 0})
+                    task_guard["failed"] = False
+                ledger._atomic_write_json(self.guard_path, guards)
+            elif watch_guard and state:
+                guards = ledger._load_json(self.guard_path) or {}
+                guard = guards.setdefault(sid, {"tasks": {}})
+                task_guard = guard.setdefault("tasks", {}).setdefault("watch", {"count": 0})
+                task_guard["failed"] = True
+                ledger._atomic_write_json(self.guard_path, guards)
             if state:
                 lease["state"] = state
                 lease["phase"] = "unknown"
@@ -1030,9 +1081,10 @@ class Controller:
 
         self.ledger.mutate_leases(finish)
 
-    def compact_quick(self, name: str) -> dict[str, Any]:
-        """Record a manual compaction before keys, then verify the same session."""
-        result: dict[str, Any] = {"action": "keep", "agent": name, "source": "quick"}
+    def compact_quick(self, name: str, *, checkpoint_path: Path | None = None,
+                      source: str = "quick", watch_guard: bool = False) -> dict[str, Any]:
+        """Record a manual or watcher compaction before keys, then verify the same session."""
+        result: dict[str, Any] = {"action": "keep", "agent": name, "source": source}
         try:
             agent = self._agent(name)
             if agent.get("status") not in READY:
@@ -1041,9 +1093,24 @@ class Controller:
             result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("kind"))
             if not sid or not _fresh(sample, sid, _now()):
                 raise ValueError("session telemetry unknown or stale")
+            if watch_guard:
+                with self.ledger._leases_lock():
+                    guards = ledger._load_json(self.guard_path) or {}
+                    guard = guards.get(sid, {})
+                    if not isinstance(guard, dict):
+                        guard = {}
+                    task_guard = (guard.get("tasks") or {}).get("watch", {})
+                    if (task_guard.get("failed") or task_guard.get("count", 0)
+                            >= self.policy.get("context", {}).get("max_per_task", 2)):
+                        raise ValueError("watch compaction loop guard")
+                    last = _timestamp(guard.get("last_at"))
+                    if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
+                        raise _DeferredContext("minimum compaction interval")
         except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
             result["reason"] = str(exc)
             return result
+        if checkpoint_path is not None:
+            self._validate_watch_checkpoint(checkpoint_path)
 
         token = str(uuid.uuid4())
         reserved_at = _now()
@@ -1055,7 +1122,7 @@ class Controller:
                 return {"action": "keep", "reason": verdict[1]}
             sessions[sid] = {
                 "agent": name, "task_id": None, "token": token,
-                "state": "compacting", "phase": "reserved", "source": "quick",
+                "state": "compacting", "phase": "reserved", "source": source,
                 "reserved_at": reserved_at.isoformat(),
                 "requested_at": reserved_at.isoformat(),
                 "before_utilisation": sample["utilisation"],
@@ -1063,8 +1130,37 @@ class Controller:
             }
             return {"action": "reserved"}
 
+        def reserve_with_repo(ledger_data: dict[str, Any],
+                              leases: dict[str, Any]) -> dict[str, Any]:
+            if any(t.get("owner") == name for t in ledger_data.get("tasks", {}).values()):
+                return {"action": "keep",
+                        "reason": "an hx task appeared before the watcher compaction"}
+            guards = ledger._load_json(self.guard_path) or {}
+            guard = guards.get(sid, {})
+            if not isinstance(guard, dict):
+                guard = {}
+            task_guard = (guard.get("tasks") or {}).get("watch", {})
+            if (task_guard.get("failed") or task_guard.get("count", 0)
+                    >= self.policy.get("context", {}).get("max_per_task", 2)):
+                return {"action": "keep", "reason": "watch compaction loop guard"}
+            last = _timestamp(guard.get("last_at"))
+            if last and (_now() - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60:
+                return {"action": "keep", "reason": "minimum compaction interval"}
+            if self._stale_after_compaction(sample, guard):
+                return {"action": "keep", "reason": "post-compaction telemetry not fresh yet"}
+            reserved = reserve(leases)
+            if reserved.get("action") != "reserved":
+                return reserved
+            task_guard = guard.setdefault("tasks", {}).setdefault("watch", {"count": 0})
+            task_guard["count"] += 1
+            guard["last_at"] = reserved_at.isoformat()
+            guards[sid] = guard
+            ledger._atomic_write_json(self.guard_path, guards)
+            return reserved
+
         try:
-            reservation = self.ledger.mutate_leases(reserve)
+            reservation = (self.ledger.mutate_leases_with_repo(reserve_with_repo)
+                           if watch_guard else self.ledger.mutate_leases(reserve))
         except ledger.LockTimeout as exc:
             return {**result, "reason": str(exc)}
         if reservation["action"] != "reserved":
@@ -1084,6 +1180,9 @@ class Controller:
                 lease["requested_at"] = requested.isoformat()
 
             self.ledger.mutate_leases(mark_requested)
+            current = self._agent(name)
+            if _session(current) != sid or current.get("status") not in READY:
+                raise ValueError("session changed or agent became busy immediately before send")
             submitted = True
             sent_turn = current.get("turn")
             if not _send_slash(current, "/compact"):
@@ -1110,20 +1209,112 @@ class Controller:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("compaction completion not verified in same session with lower fresh telemetry")
                 time.sleep(.25)
-            self._finish_quick(sid, token, None)
+            self._finish_quick(sid, token, None, watch_guard=watch_guard, compacted=True,
+                               proof_sampled_at=after.get("sampled_at"))
             return {**result, "action": "compacted", "telemetry": after}
         except host.SendNotAttempted as exc:
-            self._finish_quick(sid, token, None)
+            self._finish_quick(sid, token, None, watch_guard=watch_guard)
             return {**result, "action": "keep", "reason": str(exc)}
         except BaseException as exc:
             try:
-                self._finish_quick(sid, token, "compact-unknown" if submitted else None)
+                self._finish_quick(sid, token, "compact-unknown" if submitted else None,
+                                   watch_guard=watch_guard)
             except Exception:
                 if isinstance(exc, Exception):
                     raise
             if isinstance(exc, Exception):
                 return {**result, "action": "compact-unknown" if submitted else "keep", "reason": str(exc)}
             raise
+
+    def _write_watch_checkpoint(self, name: str, sid: str,
+                                sample: dict[str, Any]) -> Path:
+        directory = self.ledger.repo_root / ".hx" / "watch-checkpoints"
+        path = directory / f"{name}.md"
+        value = sample.get("utilisation")
+        percent = (f"{float(value):.0%}"
+                   if isinstance(value, (int, float)) and not isinstance(value, bool)
+                   else "unknown")
+        text = "\n".join([
+            f"# Watcher checkpoint: {name}",
+            f"session_id: {sid}",
+            f"utilisation: {value}",
+            f"sampled_at: {sample.get('sampled_at')}",
+            "task: none registered",
+            "",
+            "## Objective",
+            f"Recover the idle worker {name} without inventing an hx task; keep its provider session and resume pending messages.",
+            "",
+            "## Owner",
+            name,
+            "",
+            "## Status",
+            "watcher-recovery",
+            "",
+            "## Files changed",
+            "No files changed; this is a watcher-owned checkpoint, not a task checkpoint.",
+            "",
+            "## Decisions",
+            "Run the provider compact command in the same session because the decision is compact-needed and no hx task is registered.",
+            "",
+            "## Exact errors",
+            "None.",
+            "",
+            "## Tests",
+            f"Wait for fresh same-session telemetry below {percent} before declaring success.",
+            "",
+            "## Next action",
+            "Resume the worker and deliver its pending messages.",
+            "",
+            "## References",
+            "Watcher-owned checkpoint; no ledger task was created.",
+            "",
+        ])
+        directory.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        return path
+
+    def _validate_watch_checkpoint(self, path: Path) -> None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"watcher checkpoint unreadable: {exc}") from exc
+        for section in checkpoint.SECTIONS:
+            if checkpoint._extract_section(text, section) is None:
+                raise ValueError(f"watcher checkpoint missing section: {section}")
+        for section in checkpoint.AGENT_SECTIONS:
+            if not checkpoint._extract_section(text, section):
+                raise ValueError(f"watcher checkpoint section empty: {section}")
+
+    def compact_watch(self, name: str) -> dict[str, Any]:
+        """Compact an idle worker that has no registered hx task."""
+        if self._is_lead(name):
+            return {"action": "keep", "agent": name,
+                    "reason": "watcher never compacts the lead"}
+        decision = self.decide(name)
+        if decision.get("action") == "compact":
+            return self.compact(name)
+        if decision.get("action") != "compact-needed":
+            return decision
+        sample = decision.get("telemetry") or {}
+        value = sample.get("utilisation")
+        threshold = self.policy.get("context", {}).get("pressure_threshold", 0.75)
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or value < threshold):
+            return {**decision, "action": "keep",
+                    "reason": "below the pressure threshold; no task boundary"}
+        sid = str(decision.get("session_id") or "")
+        if not sid:
+            return {**decision, "action": "keep",
+                    "reason": "watcher checkpoint needs a session id"}
+        path = self._write_watch_checkpoint(name, sid, sample)
+        result = self.compact_quick(name, checkpoint_path=path, source="watch",
+                                    watch_guard=True)
+        return {**decision, **result, "watch_checkpoint": str(path)}
 
     def recover(self, name: str, session_id: str | None = None, token: str | None = None) -> dict[str, Any]:
         """Release only a matching operation after fresh proof or session replacement."""

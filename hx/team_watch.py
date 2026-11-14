@@ -7,9 +7,12 @@ one JSON line per event when a member goes from working (or an unknown status)
 to idle, done, blocked, error, or exits the roster entirely. A member first seen
 idle only sets a baseline: startup idle is never finished work.
 
-On a transition into a ready status the watcher also runs the guarded
-`hx context decide` for that worker once — the retry a busy-deferred decision
-never got — and folds its disposition into the event line.
+On a transition into a ready status the watcher runs the guarded decide for that
+worker once. When the decision is compact, a registered task is compacted with
+`hx compact`; when it is compact-needed, a watcher-owned checkpoint compacts the
+same session without inventing a ledger task. The lead and busy workers are
+never touched. A successful compaction delivers that worker's pending messages.
+Every action prints as one JSON line.
 """
 
 from __future__ import annotations
@@ -19,11 +22,12 @@ import json
 import time
 from typing import Any
 
-from hx import context, host, usage
+from hx import context, host, say, usage
 
 # A member settling into one of these counts as finished work when it was busy.
 SETTLED = frozenset({"idle", "done", "blocked", "error"})
 BUSY = frozenset({"working", "unknown"})
+COMPACT_ACTIONS = frozenset({"compact", "compact-needed"})
 
 
 def _member_turn(member: host.Member) -> int | None:
@@ -37,7 +41,40 @@ def _decision(controller: context.Controller, name: str) -> dict[str, Any]:
         result = controller.decide(name)
     except Exception as exc:
         return {"disposition": "refused", "reason": str(exc)}
-    return {"disposition": result.get("disposition"), "action": result.get("action")}
+    return {
+        key: result.get(key)
+        for key in ("disposition", "action", "reason", "task_id", "session_id")
+        if result.get(key) is not None
+    }
+
+
+def _compact(controller: context.Controller, name: str,
+             decision: dict[str, Any]) -> dict[str, Any]:
+    """Run the matching guarded compaction and return its outcome as data."""
+    try:
+        if decision.get("action") == "compact":
+            return controller.compact(name)
+        if decision.get("action") == "compact-needed":
+            return controller.compact_watch(name)
+    except Exception as exc:
+        return {"action": "error", "agent": name, "reason": str(exc)}
+    return {"action": "keep", "agent": name, "reason": "no compaction action"}
+
+
+def _outcome(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: result.get(key)
+        for key in ("action", "reason", "task_id", "session_id", "telemetry",
+                    "watch_checkpoint")
+        if result.get(key) is not None
+    }
+
+
+def _deliver_pending(detected: host.Host, name: str) -> dict[str, Any]:
+    try:
+        return say.retry_pending_for(detected, name)
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 def watch(
@@ -47,19 +84,23 @@ def watch(
     timeout: float | None = None,
     detected: host.Host | None = None,
     controller: context.Controller | None = None,
-    emit=print,
+    emit=None,
     sleep=time.sleep,
     clock=time.monotonic,
 ) -> int:
     """Watch the team until a worker finishes work, then return.
 
     Every event prints as one JSON line with address, name, role, from, to and
-    turn; an idle/done transition also carries the guarded decision outcome.
-    Returns 0 whether an event fired or the timeout elapsed, 1 on misuse.
+    turn; a ready transition carries the guarded decision outcome. A recoverable
+    decision prints a second line with the compaction outcome and, after a
+    verified success, the pending-delivery counts. Returns 0 whether an event
+    fired or the timeout elapsed, 1 on misuse.
     """
+    if emit is None:
+        emit = lambda line: print(line, flush=True)
     detected = detected if detected is not None else context._detect()
     controller = controller or context.Controller()
-    # The caller is never a worker event — exclude own even under --team.
+    # The caller is never a worker event - exclude own even under --team.
     try:
         own = detected.own()
     except Exception:
@@ -70,6 +111,7 @@ def watch(
         team = str(own["team"])
     own_name = str(own["name"]) if own else None
     prefix = team.rstrip("-")
+    lead = usage.lead_name(getattr(controller, "policy", None) or {}, prefix + "-")
 
     seen: dict[str, dict[str, Any]] = {}
     retried: set[str] = set()
@@ -77,8 +119,9 @@ def watch(
     while True:
         members = detected.team(prefix) or {}
         events: list[dict[str, Any]] = []
+        pending: list[tuple[str, dict[str, Any]]] = []
         for name, member in members.items():
-            if name == own_name:
+            if name == own_name or name == lead:
                 continue
             status = str(member.get("status") or "unknown")
             if status not in SETTLED | BUSY:
@@ -110,7 +153,10 @@ def watch(
                 }
                 if status in usage.READY and name not in retried:
                     retried.add(name)
-                    event["decision"] = _decision(controller, name)
+                    decision = _decision(controller, name)
+                    event["decision"] = decision
+                    if decision.get("action") in COMPACT_ACTIONS:
+                        pending.append((name, decision))
                 events.append(event)
         for name in list(seen):
             if name in members or name == own_name:
@@ -129,6 +175,17 @@ def watch(
         if events:
             for event in events:
                 emit(json.dumps(event))
+            for name, decision in pending:
+                recovery = {
+                    "type": "recovery",
+                    "name": name,
+                    "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+                result = _compact(controller, name, decision)
+                recovery.update(_outcome(result))
+                if result.get("action") == "compacted":
+                    recovery["delivery"] = _deliver_pending(detected, name)
+                emit(json.dumps(recovery))
             return 0
         if deadline is not None and clock() >= deadline:
             return 0

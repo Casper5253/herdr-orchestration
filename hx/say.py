@@ -745,6 +745,54 @@ def retry_pending() -> int:
     return 0 if unresolved == 0 else 1
 
 
+def _worker_targets(sender_member: host.Member, record_target: str, worker: str) -> bool:
+    try:
+        resolved, _ = resolve(sender_member, record_target)
+    except ValueError:
+        resolved = record_target
+    return resolved == worker or record_target == worker
+
+
+def retry_pending_for(detected: host.Host, worker: str) -> dict[str, int]:
+    """Deliver the sender's pending records addressed to one worker."""
+    sender_member = detected.own()
+    if not sender_member:
+        raise ValueError("hx say has no live sender identity; pending records were kept")
+    sender = sender_member["name"]
+    key = _sender_key(sender_member)
+    counts = {"considered": 0, "delivered": 0, "cancelled": 0,
+              "pending": 0, "uncertain": 0, "failed": 0, "unresolved": 0}
+    for path, record, state in records_for(key):
+        if record is None or state == "corrupt":
+            counts["unresolved"] += 1
+            continue
+        target = str(record.get("target") or "")
+        if not _worker_targets(sender_member, target, worker):
+            continue
+        counts["considered"] += 1
+        body = record.get("body", record.get("text"))
+        if record.get("sender") != sender:
+            counts["unresolved"] += 1
+            continue
+        record_key = record.get("sender_key")
+        if ((record_key is not None and record_key != key)
+                or (record_key is None and "-" in sender_member["role"])):
+            counts["unresolved"] += 1
+            continue
+        if not isinstance(body, str) or not body or not target:
+            counts["unresolved"] += 1
+            continue
+        if state == "uncertain":
+            counts["unresolved"] += 1
+            continue
+        outcome, _, _ = _deliver(detected, sender_member, target, body, path)
+        if outcome in counts:
+            counts[outcome] += 1
+        else:
+            counts["unresolved"] += 1
+    return counts
+
+
 def say(target: str | None, message: str, *, force: bool = False,
         control: bool = False, task: str | None = None, ttl: float | None = None,
         supersedes: str | None = None) -> int:
