@@ -14,7 +14,7 @@ def test_default_opencode_worker_has_a_measured_context_utilisation(tmp_path, mo
         conn.execute('CREATE TABLE message (session_id TEXT, time_created INTEGER, data TEXT)')
         conn.execute('INSERT INTO message VALUES (?, ?, ?)', ('current', 1000, json.dumps({
             'role': 'assistant', 'modelID': model,
-            'tokens': {'input': 25000, 'cache': {'read': 75000}},
+            'tokens': {'input': 125000, 'cache': {'read': 375000}},
         })))
     monkeypatch.setenv('HX_OPENCODE_DB', str(db))
     sample = context.telemetry(host.member({'agent': 'opencode', 'agent_session': {'value': 'current'}}), policy)
