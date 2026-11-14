@@ -1,0 +1,11 @@
+{
+  "files": {},
+  "sessions": {},
+  "deliveries": {
+    "test-claude": {
+      "agent": "test-claude",
+      "holder": "record-1",
+      "acquired_at": "2026-11-14T01:31:03.483483+00:00"
+    }
+  }
+}

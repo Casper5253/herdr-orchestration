@@ -293,6 +293,7 @@ def test_timeout_holds_lease_until_safe_recovery(controller, monkeypatch):
     controller.agent["status"] = "working"
     assert controller.recover("hx-codex")["action"] == "keep"
     controller.agent["status"] = "idle"
+    controller.sample["utilisation"] = .2
     assert controller.recover("hx-codex")["action"] == "recovered"
     assert "loop guard" in controller.decide("hx-codex")["reason"]
 
@@ -485,6 +486,7 @@ def test_lease_access_is_shared_locked_and_herdr_is_unlocked(controller, monkeyp
     else:
         assert result["action"] == "compact-unknown"
         controller.sample["sampled_at"] = context._now().isoformat()
+        controller.sample["utilisation"] = .2
         assert controller.recover("hx-codex")["action"] == "recovered"
     assert reads
 

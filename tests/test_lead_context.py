@@ -111,8 +111,8 @@ def test_lead_steps_and_repeated_decisions_do_not_burn_guard(lead):
     assert result["task_id"] == "lead"
     assert result["steps"][0].startswith("hx checkpoint write lead ")
     assert "Start-Process powershell.exe -WindowStyle Hidden" in result["steps"][1]
-    assert "Start-Sleep 60; herdr agent prompt" in result["steps"][1]
-    assert "/compact" in result["steps"][1]
+    assert "Start-Sleep 60; hx compact" in result["steps"][1]
+    assert "--quick" in result["steps"][1]
     assert "End the turn" in result["steps"][2]
     assert "hx context self-compacted 'test-claude' --session 'lead-sid'" in result["steps"][3]
     assert lead.decide("test-claude")["action"] == "self-compact"

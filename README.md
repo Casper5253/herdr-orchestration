@@ -32,6 +32,8 @@ Windows, Python 3.11+, Herdr 0.9, and the three agent CLIs.
 
 `hx say` holds worker messages at or above the policy's pressure threshold and exits 1 with recovery commands. Use `hx say --force <agent> '<message>'` for intentional recovery/control messages. Reports to the lead remain reachable. Unknown or stale telemetry retains the existing send behavior.
 
+`hx say` also keeps an ordinary brief in the outbox while the target has an active or unknown compaction operation. Run `hx say --pending` after `hx context recover` verifies the operation. Reports to the lead and messages sent with `--control` or `--force` bypass this admission. Use `hx compact <agent> --quick` for a manual compaction. It records the operation before it types `/compact`.
+
 A worker reset starts a new provider session only on its first message, so hx still reads the old session and would hold the message that creates the new one. Send the reset through `hx reset <agent>` (from Python, so a leading `/` is not mangled) or record one you sent yourself with `hx boundary <agent> --reset-sent`. Either clears the pressure hold for that worker until a different session id is sampled, for at most `context.reset_grace_min` (default 10 minutes). After that an unchanged session holds again as a fake reset. `hx reset` refuses a busy agent and the Claude lead.
 
 An idle pane without a registered task gets concrete recovery steps: register and checkpoint the work, then protected native compaction. Every provider recovers with `/compact`; `hx compact` types it as keys and presses Enter once more when the provider's command menu keeps it staged (Devin and OpenCode). `/clear` (OpenCode `/new`) is only a manual reset through `hx reset`. No working agent is cleared automatically.

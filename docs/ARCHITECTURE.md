@@ -120,6 +120,8 @@ Execution `hx compact <agent>`:
 
 The lead (Claude) is not compacted by hx: Claude's own auto-compact runs, the `PreCompact` hook writes the checkpoint and returns compact instructions (keep task ids, exact errors, decisions), and `SessionStart(compact)` injects `hx task list --active` + the latest checkpoint. Codex and OpenCode native auto-compaction stay on as the safety net.
 
+**Admission.** `hx say` writes the outbox record, then checks the target's compaction operation and reserves a per-target delivery slot in one short leases lock. An ordinary brief stays `pending` while the operation is `compacting` or `compact-unknown`. `hx say --pending` retries after `hx context recover` proves the outcome. Reports to the lead and messages sent with `--control` or `--force` skip admission. `hx compact <agent> --quick` records the same operation before typing `/compact` and verifies the same session at lower fresh utilisation.
+
 ## 6. Observability
 
 `.hx/routing.jsonl`: one line per routing decision and one per outcome: task id, worker, model, effort, method, reason, duration, tokens/cost when known (ocrun and codex exec report them), attempts, result. `hx report` summarises by pool and model: tasks, success rate, cost, and the Claude/Codex work avoided. No dashboard.

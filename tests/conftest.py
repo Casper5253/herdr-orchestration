@@ -40,3 +40,5 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.delenv("HC_TERMINAL_SOCKET", raising=False)
     monkeypatch.setenv("HX_OPENCODE_AUTH", str(tmp_path / "missing-opencode-auth.json"))
     monkeypatch.setenv("HX_CONTEXT_RESETS_PATH", str(tmp_path / "context-resets.json"))
+    monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / "leases.json"))
+    monkeypatch.setenv("HX_LEASES_LOCK_PATH", str(tmp_path / "leases.lock"))
