@@ -1140,8 +1140,9 @@ class Controller:
             peek = self.ledger._load_leases().get("sessions", {})
             for peek_key, entry in peek.items():
                 if (isinstance(entry, dict) and entry.get("agent") == name
-                        and "token" in entry
-                        and entry.get("state") in ledger.COMPACTION_STATES):
+                        and (entry.get("state") == "reset-unknown"
+                             or ("token" in entry
+                                 and entry.get("state") in ledger.COMPACTION_STATES))):
                     held = str(entry.get("session_id") or peek_key)
                     if held and held not in held_samples:
                         held_samples[held] = telemetry(
@@ -1207,7 +1208,15 @@ class Controller:
             reset_hold = sessions.get(f"reset:{name}")
             if isinstance(reset_hold, dict) and reset_hold.get("state") == "reset-unknown":
                 held_sid = reset_hold.get("session_id")
-                if live_sid != held_sid or agent.get("status") in READY:
+                held_sample = held_samples.get(str(held_sid or ""))
+                requested = _timestamp(reset_hold.get("requested_at"))
+                idle_proof = agent.get("status") in READY and (
+                    (bool(live_sid) and requested is not None
+                     and _fresh(sample, live_sid, now, after=requested))
+                    or (not live_sid and held_sample is not None
+                        and held_sample.get("utilisation") is None
+                        and held_sample.get("sampled_at") is None))
+                if (live_sid and live_sid != held_sid) or idle_proof:
                     del sessions[f"reset:{name}"]
                     return {"action": "recovered", "session_id": live_sid,
                             "reason": "reset reservation released"}

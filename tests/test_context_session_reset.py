@@ -249,7 +249,12 @@ def test_a_failed_reset_send_marks_the_hold_recoverable(pane, capsys, monkeypatc
     hold = json.loads(leases_path.read_text())["sessions"].get("reset:dev-opencode")
     assert hold is not None and hold["state"] == "reset-unknown"
 
-    # recover releases a dead-send hold: idle agent, session unchanged.
+    # Pre-request telemetry cannot prove that failed keys have settled.
+    assert cli.context.Controller().recover("dev-opencode")["action"] == "keep"
+    monkeypatch.setattr(context, "telemetry", lambda *a: {
+        "session_id": "old", "utilisation": .7,
+        "sampled_at": context._now().isoformat(),
+    })
     out = cli.context.Controller().recover("dev-opencode")
     assert out["action"] == "recovered"
     assert "reset:dev-opencode" not in json.loads(leases_path.read_text())["sessions"]

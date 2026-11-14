@@ -3,7 +3,7 @@
 Each test asserts the behavior the recheck requires, so a failure documents a
 real gap in the worktree code. Run:
 
-    python -m pytest .artifacts/q346-recheck2/probes -q
+    python -m pytest tests/test_q346_recheck2.py -q
 """
 
 from __future__ import annotations
@@ -206,7 +206,6 @@ def test_ordinary_pending_message_is_still_held_by_compaction(
 # Finding 2 root: the unknown-live-session rule is shared by every held
 # operation. A reset whose outcome is unknown must not be released just because
 # the live session id is unknown; a busy pane is not proof the keys never landed.
-@pytest.mark.xfail(strict=True, reason="Q-346 follow-up: open edge case")
 def test_recover_keeps_reset_unknown_when_live_sid_is_unknown(
     controller: context.Controller
 ) -> None:
@@ -226,6 +225,102 @@ def test_recover_keeps_reset_unknown_when_live_sid_is_known_and_same(
     controller.member["session_id"] = "ses-target"
     controller.member["status"] = "working"
     assert controller.recover("dev-opencode")["action"] == "keep"
+
+
+@pytest.mark.parametrize("live_sid,status,sample_kind,expected", [
+    ("", "idle", "fresh", "keep"),
+    ("", "idle", "stale", "keep"),
+    ("", "idle", "value-only", "keep"),
+    ("", "idle", "stamp-only", "keep"),
+    ("", "idle", "absent", "recovered"),
+    ("", "working", "absent", "keep"),
+    ("ses-new", "working", "absent", "recovered"),
+    ("ses-target", "idle", "stale", "keep"),
+    ("ses-target", "idle", "value-only", "keep"),
+    ("ses-target", "idle", "stamp-only", "keep"),
+    ("ses-target", "idle", "absent", "keep"),
+    ("ses-target", "idle", "fresh", "recovered"),
+])
+def test_reset_recovery_requires_replacement_or_idle_proof(
+    controller: context.Controller, live_sid: str, status: str,
+    sample_kind: str, expected: str,
+) -> None:
+    _seed_reset_hold(controller.ledger, sid="ses-target")
+    controller.member.update(session_id=live_sid, status=status)
+    if sample_kind == "stale":
+        controller.sample["sampled_at"] = (
+            context._now() - datetime.timedelta(hours=1)).isoformat()
+    if sample_kind in {"stamp-only", "absent"}:
+        controller.sample["utilisation"] = None
+    if sample_kind in {"value-only", "absent"}:
+        controller.sample["sampled_at"] = None
+    assert controller.recover("dev-opencode")["action"] == expected
+    assert ("reset:dev-opencode" in controller.ledger._load_leases()["sessions"]) == (
+        expected == "keep")
+
+
+@pytest.mark.parametrize("mode", ["lead", "control", "force"])
+def test_control_waits_for_delivery_then_retries_through_compaction(
+    fake: FakeHc, led: ledger.Ledger, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    monkeypatch.setattr(say, "DELIVERY_WAIT_SECONDS", 0)
+    target = "dev-lead" if mode == "lead" else "dev-opencode"
+    sid = fake.members[target]["session_id"]
+    admitted, _ = led.admit_delivery(target, "other-send", session_id=sid)
+    assert admitted
+    _seed_operation(led, agent=target, sid=sid)
+    options = {} if mode == "lead" else {mode: True}
+    assert say.say(target, "recovery report", **options) == 1
+    assert fake.sent == []
+    assert _record(tmp_path)["state"] == "pending"
+    assert led._load_leases()["deliveries"][target]["holder"] == "other-send"
+    assert led.release_delivery(target, "other-send")
+    assert say.retry_pending() == 0
+    assert len(fake.sent) == 1
+    leases = led._load_leases()
+    assert target not in leases.get("deliveries", {})
+    assert sid in leases["sessions"]
+
+
+@pytest.mark.parametrize("outcome", ["not-attempted", "raised", "uncertain"])
+def test_control_releases_delivery_reservation_on_send_failure(
+    fake: FakeHc, led: ledger.Ledger, monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    def send(name: str, text: str, **kwargs: object) -> host.SendResult:
+        assert ledger.delivery_hold(led._load_leases(), name) is not None
+        assert not led.leases_lock_path.exists()
+        if outcome == "not-attempted":
+            raise host.SendNotAttempted("not sent")
+        if outcome == "raised":
+            raise RuntimeError("unknown send outcome")
+        return host.SendResult(started=True, status="idle", turn=4,
+                               ended=False, reason="unknown send outcome")
+
+    monkeypatch.setattr(fake, "send_checked", send)
+    if outcome == "uncertain":
+        monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: "uncertain")
+    if outcome == "raised":
+        with pytest.raises(RuntimeError, match="unknown send outcome"):
+            say.say("lead", "report")
+    else:
+        assert say.say("lead", "report") == 1
+    assert "dev-lead" not in led._load_leases().get("deliveries", {})
+
+
+def test_control_still_arrives_when_the_ledger_cannot_admit(
+    fake: FakeHc, led: ledger.Ledger, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(*args: object, **kwargs: object) -> tuple[bool, str]:
+        raise ledger.LockTimeout("leases lock held")
+
+    monkeypatch.setattr(led, "admit_delivery", broken)
+    monkeypatch.setattr(ledger, "default_ledger", lambda: led)
+    assert say.say("lead", "report") == 0
+    assert len(fake.sent) == 1
+    assert say.say("opencode", "ordinary brief") == 1
+    assert len(fake.sent) == 1
 
 
 # Finding 3 root: the guarded reserve consults the shared rule for real state,
@@ -273,9 +368,7 @@ def test_guarded_compact_refuses_a_real_reset_hold(guarded: context.Controller) 
 
 # Finding 4 root: a control send is a key stream. While one is in flight to the
 # lead, the lead's guarded quick compaction must not type /compact into the same
-# pane. Lead reports are control by role, so they take no delivery reservation
-# and the shared rule cannot see them.
-@pytest.mark.xfail(strict=True, reason="Q-346 follow-up: open edge case")
+# pane. Lead reports are control by role and must reserve their key stream.
 def test_lead_quick_compact_waits_for_an_in_flight_control_send(
     monkeypatch: pytest.MonkeyPatch, led: ledger.Ledger
 ) -> None:
@@ -301,9 +394,6 @@ def test_lead_quick_compact_waits_for_an_in_flight_control_send(
     sender.start()
     assert started.wait(2), "the control send never started"
     try:
-        # The control send holds no leases reservation, so the shared rule is blind.
-        assert "dev-lead" not in led._load_leases().get("deliveries", {})
-
         c = context.Controller(led, POLICY)
         c.calls = []
         lead = hc.members["dev-lead"]
@@ -327,6 +417,10 @@ def test_lead_quick_compact_waits_for_an_in_flight_control_send(
     finally:
         release.set()
         sender.join(5)
+    assert not sender.is_alive()
+    assert "dev-lead" not in led._load_leases().get("deliveries", {})
+    assert c.compact_quick("dev-lead")["action"] == "compacted"
+    assert c.calls == [("dev-lead", "/compact")]
 
 
 # Design invariant 5: every lease mutation preserves deliveries. A task release

@@ -522,10 +522,10 @@ def _pointer_message(sender: str, path: Path) -> str | None:
     return text if len(text) <= POINTER_MAX_CHARS else None
 
 
-def _admit_work(
-    name: str, holder: str, destination: host.Member
+def _admit_delivery(
+    name: str, holder: str, destination: host.Member, *, control: bool = False,
 ) -> tuple[bool, str]:
-    """Check the target's compaction operation and reserve one ordinary send."""
+    """Reserve one send, allowing control to bypass session-operation holds."""
     try:
         led = ledger.default_ledger()
         return led.admit_delivery(
@@ -533,6 +533,7 @@ def _admit_work(
             holder,
             session_id=context._session(destination),
             wait_seconds=DELIVERY_WAIT_SECONDS,
+            control=control,
         )
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, ledger.LockTimeout) as exc:
         return False, f"admission unavailable: {exc}"
@@ -634,12 +635,14 @@ def _deliver(
                 return state, note, (where, _OUTCOME_WORDS.get(state, "uncertain"))
         message_control = bool(
             force or (current.get("control") if control is None else control) or not work)
-        if not message_control:
-            holder = str(current.get("id") or path.stem)
-            admitted, reason = _admit_work(name, holder, destination)
-            if not admitted:
-                _write_state(path, "pending", note=reason or "compaction active")
-                return "pending", reason or "compaction active", (where, "pending")
+        holder = str(current.get("id") or path.stem)
+        admitted, reason = _admit_delivery(name, holder, destination, control=message_control)
+        # A control message must still arrive when the ledger itself is unreadable.
+        unavailable = (reason or "").startswith("admission unavailable")
+        if not admitted and not (message_control and unavailable):
+            _write_state(path, "pending", note=reason or "compaction active")
+            return "pending", reason or "compaction active", (where, "pending")
+        if admitted:
             delivery_agent, delivery_holder = name, holder
         try:
             result = detected.send_checked(name, text)
