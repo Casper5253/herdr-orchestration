@@ -136,6 +136,8 @@ def key_stream_reason(
     agent: str,
     session_id: str | None = None,
     now: datetime.datetime | None = None,
+    *,
+    control: bool = False,
 ) -> tuple[str, str] | None:
     """Why a new key stream must not start on this pane, or None.
 
@@ -144,16 +146,19 @@ def key_stream_reason(
     reset — so two key streams can never reach one pane. ``("blocked",
     reason)`` means a durable operation owns the pane; ``("busy", reason)``
     means a short-lived stream may clear inside a caller's wait window.
+    Control can bypass session-operation holds for recovery, but still owns
+    a delivery reservation so new compaction/reset streams wait for it.
     """
-    sessions = leases.get("sessions", {})
-    operations = compaction_operations(sessions, agent, session_id)
-    if operations:
-        _key, operation = operations[0]
-        return "blocked", f"compaction {operation.get('phase') or operation.get('state')}"
-    for entry in sessions.values():
-        if (isinstance(entry, dict) and entry.get("agent") == agent
-                and entry.get("state") in RESET_STATES):
-            return "busy", f"reset {entry.get('state')}"
+    if not control:
+        sessions = leases.get("sessions", {})
+        operations = compaction_operations(sessions, agent, session_id)
+        if operations:
+            _key, operation = operations[0]
+            return "blocked", f"compaction {operation.get('phase') or operation.get('state')}"
+        for entry in sessions.values():
+            if (isinstance(entry, dict) and entry.get("agent") == agent
+                    and entry.get("state") in RESET_STATES):
+                return "busy", f"reset {entry.get('state')}"
     if delivery_hold(leases, agent, now) is not None:
         return "busy", "delivery in flight"
     return None
@@ -429,17 +434,21 @@ class Ledger:
         holder: str,
         session_id: str | None = None,
         wait_seconds: float = 0.0,
+        *,
+        control: bool = False,
     ) -> tuple[bool, str]:
-        """Reserve a target for one ordinary send, or report why it must wait.
+        """Reserve a target for one send, or report why it must wait.
 
         The compaction check and the delivery reservation share one short leases
         lock. Host I/O never runs here; the caller sends outside the lock and
-        releases the reservation afterwards.
+        releases the reservation afterwards. Control bypasses session-operation
+        holds but still serializes with every other delivery.
         """
         deadline = time.monotonic() + max(0.0, wait_seconds)
         while True:
             status, reason = self.mutate_leases(
-                lambda leases: self._admit_delivery_locked(leases, agent, holder, session_id)
+                lambda leases: self._admit_delivery_locked(
+                    leases, agent, holder, session_id, control=control)
             )
             if status != "busy":
                 return status == "admitted", reason
@@ -448,10 +457,11 @@ class Ledger:
             time.sleep(.1)
 
     def _admit_delivery_locked(
-        self, leases: dict[str, Any], agent: str, holder: str, session_id: str | None
+        self, leases: dict[str, Any], agent: str, holder: str, session_id: str | None,
+        *, control: bool = False,
     ) -> tuple[str, str]:
         now = _utcnow()
-        verdict = key_stream_reason(leases, agent, session_id, now)
+        verdict = key_stream_reason(leases, agent, session_id, now, control=control)
         if verdict is not None:
             return verdict
         leases.setdefault("deliveries", {})[agent] = {
