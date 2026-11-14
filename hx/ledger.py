@@ -1,10 +1,10 @@
 """hx.ledger: atomic task ledger with file ownership and locking.
 
 The ledger lives in ``<repo>/.hx/ledger.json``; cross-agent leases live in
-``~/.herdr-team/state/leases.json`` with two maps: ``files`` partitioned per
-project root (only this project's partition is rebuilt on mutation) and
-``sessions`` (per-agent session leases, written only through the public
-session functions). Every mutation takes the repo lock (``.hx/ledger.lock``)
+``~/.herdr-team/state/leases.json`` with three maps: ``files`` partitioned per
+project root (only this project's partition is rebuilt on mutation),
+``sessions`` (per-agent session leases and compaction operations) and
+``deliveries`` (per-target send reservations). Every mutation takes the repo lock (``.hx/ledger.lock``)
 and, because leases.json is machine-wide, a shared lock next to leases.json
 (``leases.lock``) in a stable order. Lock files record the owning pid; a lock
 is only stolen when its pid is dead (never a live lock by age alone).
@@ -73,6 +73,90 @@ def default_lock_path() -> Path:
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+COMPACTION_STATES = frozenset({"compacting", "compact-unknown"})
+RESET_STATES = frozenset({"resetting", "reset-unknown"})
+DELIVERY_STALE_SECONDS = 300.0
+
+
+def _timestamp(value: Any) -> datetime.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def compaction_operations(
+    sessions: dict[str, Any], agent: str, session_id: str | None = None
+) -> list[tuple[str, dict[str, Any]]]:
+    """Live compaction operations for an agent, optionally only one session."""
+    found: list[tuple[str, dict[str, Any]]] = []
+    for key, entry in sessions.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("agent") != agent or "token" not in entry:
+            continue
+        if entry.get("state") not in COMPACTION_STATES:
+            continue
+        held_sid = str(entry.get("session_id") or key)
+        if session_id and held_sid and held_sid != session_id:
+            continue
+        found.append((key, entry))
+    return found
+
+
+def delivery_hold(
+    leases: dict[str, Any], agent: str, now: datetime.datetime | None = None
+) -> dict[str, Any] | None:
+    """A live per-target send reservation, or None when absent or stale.
+
+    ``acquired_at`` alone bounds the reservation: it is never renewed, so it
+    covers the whole send plus evidence read. A stamp the reader cannot
+    parse counts as abandoned — a reservation must expire, never block a
+    pane forever. ``heartbeat_at`` is read only for entries older writers
+    left behind.
+    """
+    entry = leases.get("deliveries", {}).get(agent)
+    if not isinstance(entry, dict):
+        return None
+    stamp = _timestamp(entry.get("acquired_at") or entry.get("heartbeat_at"))
+    if stamp is None:
+        return None
+    if ((now or _utcnow()) - stamp).total_seconds() > DELIVERY_STALE_SECONDS:
+        return None
+    return entry
+
+
+def key_stream_reason(
+    leases: dict[str, Any],
+    agent: str,
+    session_id: str | None = None,
+    now: datetime.datetime | None = None,
+) -> tuple[str, str] | None:
+    """Why a new key stream must not start on this pane, or None.
+
+    The one admission rule every path that types into a pane checks inside
+    the leases lock — a send reservation, a guarded or quick compaction, a
+    reset — so two key streams can never reach one pane. ``("blocked",
+    reason)`` means a durable operation owns the pane; ``("busy", reason)``
+    means a short-lived stream may clear inside a caller's wait window.
+    """
+    sessions = leases.get("sessions", {})
+    operations = compaction_operations(sessions, agent, session_id)
+    if operations:
+        _key, operation = operations[0]
+        return "blocked", f"compaction {operation.get('phase') or operation.get('state')}"
+    for entry in sessions.values():
+        if (isinstance(entry, dict) and entry.get("agent") == agent
+                and entry.get("state") in RESET_STATES):
+            return "busy", f"reset {entry.get('state')}"
+    if delivery_hold(leases, agent, now) is not None:
+        return "busy", "delivery in flight"
+    return None
 
 
 def _canonical_path(path: str | Path) -> str:
@@ -339,6 +423,56 @@ class Ledger:
             self._save_leases(data)
             return result
 
+    def admit_delivery(
+        self,
+        agent: str,
+        holder: str,
+        session_id: str | None = None,
+        wait_seconds: float = 0.0,
+    ) -> tuple[bool, str]:
+        """Reserve a target for one ordinary send, or report why it must wait.
+
+        The compaction check and the delivery reservation share one short leases
+        lock. Host I/O never runs here; the caller sends outside the lock and
+        releases the reservation afterwards.
+        """
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while True:
+            status, reason = self.mutate_leases(
+                lambda leases: self._admit_delivery_locked(leases, agent, holder, session_id)
+            )
+            if status != "busy":
+                return status == "admitted", reason
+            if time.monotonic() >= deadline:
+                return False, reason
+            time.sleep(.1)
+
+    def _admit_delivery_locked(
+        self, leases: dict[str, Any], agent: str, holder: str, session_id: str | None
+    ) -> tuple[str, str]:
+        now = _utcnow()
+        verdict = key_stream_reason(leases, agent, session_id, now)
+        if verdict is not None:
+            return verdict
+        leases.setdefault("deliveries", {})[agent] = {
+            "agent": agent,
+            "holder": holder,
+            "session_id": session_id,
+            "acquired_at": now.isoformat(),
+        }
+        return "admitted", ""
+
+    def release_delivery(self, agent: str, holder: str) -> bool:
+        """Release the target reservation only when this holder still owns it."""
+        def release(leases: dict[str, Any]) -> bool:
+            entry = leases.get("deliveries", {}).get(agent)
+            if not isinstance(entry, dict) or entry.get("holder") != holder:
+                return False
+            del leases["deliveries"][agent]
+            return True
+
+        return self.mutate_leases(release)
+
     def mutate_leases_with_repo(
         self,
         mutator: Callable[[dict[str, Any], dict[str, Any]], Any],
@@ -377,6 +511,8 @@ class Ledger:
             data["files"] = {}
         if "sessions" not in data:
             data["sessions"] = {}
+        if not isinstance(data.get("deliveries"), dict):
+            data["deliveries"] = {}
         data["files"] = _partition_files(data["files"])
         return data
 
@@ -420,7 +556,11 @@ class Ledger:
                     "leased_at": task.get("updated", _utcnow().isoformat()),
                 }
         partitions[key] = mine
-        leases: dict[str, Any] = {"files": partitions, "sessions": existing.get("sessions", {})}
+        leases: dict[str, Any] = {
+            "files": partitions,
+            "sessions": existing.get("sessions", {}),
+            "deliveries": existing.get("deliveries", {}),
+        }
         return leases
 
     def _check_conflicts(
@@ -736,9 +876,13 @@ class Ledger:
                 task["updated"] = task["released"]
                 task["rev"] = task.get("rev", 0) + 1
                 self._next_rev(ledger_data)
+            kept = {
+                "files": leases.get("files", {}),
+                "sessions": leases.get("sessions", {}),
+                "deliveries": leases.get("deliveries", {}),
+            }
             leases.clear()
-            leases.update(self._recompute_leases(ledger_data, {
-                "files": leases.get("files", {}), "sessions": leases.get("sessions", {})}))
+            leases.update(self._recompute_leases(ledger_data, kept))
             return freed
 
         return self.mutate_leases_with_repo(release)

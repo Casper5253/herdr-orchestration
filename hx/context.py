@@ -273,6 +273,10 @@ def _has_blocking_session_lease(
             return True
         if not isinstance(lease, dict) or lease.get("agent") != name:
             continue
+        if "token" in lease:
+            held_sid = str(lease.get("session_id") or key)
+            if held_sid and held_sid != sid:
+                continue
         is_current_task_hold = (
             key == name
             and lease.get("state") == "held"
@@ -474,16 +478,22 @@ class Controller:
         hold = f"reset:{name}"
 
         def reserve(leases: dict[str, Any]) -> dict[str, Any]:
-            entry = leases.setdefault("sessions", {}).get(hold)
+            sessions = leases.setdefault("sessions", {})
+            entry = sessions.get(hold)
             if isinstance(entry, dict):
                 observed = _session(agent)
                 if (entry.get("state") == "reset-unknown" and observed
                         and observed != entry.get("session_id")):
-                    del leases["sessions"][hold]
+                    del sessions[hold]
                     return {"action": "verified", "session_id": observed,
                             "from_sid": entry.get("session_id")}
-                return {"action": "blocked"}
-            leases["sessions"][hold] = {
+                return {"action": "blocked",
+                        "reason": f"a reset for {name} is still unverified; "
+                                  "its reservation blocks another send"}
+            verdict = ledger.key_stream_reason(leases, name, sid)
+            if verdict is not None:
+                return {"action": "blocked", "reason": verdict[1]}
+            sessions[hold] = {
                 "agent": name, "state": "resetting", "reset_of": name,
                 "session_id": sid, "requested_at": _now().isoformat()}
             return {"action": "reserved"}
@@ -494,8 +504,7 @@ class Controller:
                     "new_session_id": verdict["session_id"],
                     **write_reset(self.resets_path, name, verdict.get("from_sid") or sid)}
         if verdict["action"] == "blocked":
-            raise RuntimeError(
-                f"a reset for {name} is still unverified; its reservation blocks another send")
+            raise RuntimeError(verdict["reason"])
         try:
             accepted = _send_slash(agent, command)
         except Exception:
@@ -678,6 +687,9 @@ class Controller:
         # confirmation must beat: same provider session, fresh lower telemetry.
         # Written only once the decision survives every refusal check.
         with self.ledger._leases_lock():
+            verdict = ledger.key_stream_reason(self.ledger._load_leases(), name, sid)
+            if verdict is not None:
+                raise _DeferredContext(verdict[1])
             pending = ledger._load_json(self.recovery_path) or {}
             pending[name] = {"session_id": sid, "utilisation": sample["utilisation"],
                              "work_item": item, "at": _now().isoformat()}
@@ -685,14 +697,12 @@ class Controller:
         quoted_name = "'" + name.replace("'", "''") + "'"
         quoted_sid = "'" + sid.replace("'", "''") + "'"
         quoted_item = "'" + item.replace("'", "''") + "'"
-        # hc keys through the resolved executable: a typed slash command, never a
-        # standalone herdr or a wrapped hc send (which the provider cannot run).
-        command = f"Start-Sleep 60; {host.prompt_command(quoted_name, '/compact')}"
+        command = f"Start-Sleep 60; hx compact {quoted_name} --quick"
         background = "Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', '" + command.replace("'", "''") + "'"
         result.update(action="self-compact", reason=f"{kind} lead above threshold; /compact at the next turn boundary", steps=[
             f"hx checkpoint write lead --owner {quoted_name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
             background,
-            "End the turn so the background /compact prompt can reach the idle pane. If the provider's command menu keeps /compact staged, send one more `enter` keys call.",
+            "End the turn so the background guarded /compact can reach the idle pane.",
             f"After compaction resumes, confirm with hx context self-compacted {quoted_name} --session {quoted_sid} --work-item {quoted_item}",
         ])
         return result
@@ -778,6 +788,8 @@ class Controller:
             with self.ledger._leases_lock():
                 leases = self.ledger._load_leases()
                 guards = ledger._load_json(self.guard_path) or {}
+                if ledger.delivery_hold(leases, name):
+                    raise ValueError("delivery in flight")
                 if _has_blocking_session_lease(leases.get("sessions", {}), sid, name, task):
                     raise ValueError("session is leased; recovery required for compact-unknown")
                 guard = guards.get(sid, {})
@@ -798,7 +810,7 @@ class Controller:
                 raise _RetainContext("below boundary threshold")
             result.update(action="compact", reason="idle at task boundary above threshold",
                           steps=_compact_steps(name, task["id"]))
-        except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+        except (ValueError, OSError, KeyError, RuntimeError, ledger.LockTimeout, subprocess.SubprocessError) as exc:
             result["reason"] = str(exc)
             result["disposition"] = getattr(exc, "disposition", "refused")
         return result
@@ -813,6 +825,7 @@ class Controller:
             ledger._atomic_write_json(self.guard_path, guards)
             if state:
                 lease["state"] = state
+                lease["phase"] = "unknown" if state == "compact-unknown" else lease.get("phase")
             else:
                 del leases["sessions"][sid]
 
@@ -828,6 +841,9 @@ class Controller:
 
         def reserve(ledger_data: dict[str, Any], leases: dict[str, Any]) -> dict[str, Any]:
             sessions = leases.setdefault("sessions", {})
+            verdict = ledger.key_stream_reason(leases, name, sid)
+            if verdict is not None:
+                return {"action": "keep", "reason": verdict[1]}
             task = ledger_data["tasks"].get(task_id)
             if task is None or task.get("owner") != name:
                 return {"action": "keep", "reason": "task changed before reservation"}
@@ -850,13 +866,18 @@ class Controller:
                     or (last and (started - last).total_seconds() < self.policy.get("context", {}).get("min_interval_min", 20) * 60)):
                 return {"action": "keep", "reason": "compaction guard changed before reservation"}
             sessions[sid] = {"agent": name, "task_id": task_id, "token": token,
-                             "state": "compacting", "requested_at": started.isoformat()}
+                             "state": "compacting", "phase": "reserved",
+                             "source": "guarded", "reserved_at": started.isoformat(),
+                             "requested_at": started.isoformat()}
             guard["last_at"] = started.isoformat()
             task_guard["count"] += 1
             ledger._atomic_write_json(self.guard_path, guards)
             return {"action": "reserved", "task": task}
 
-        reservation = self.ledger.mutate_leases_with_repo(reserve)
+        try:
+            reservation = self.ledger.mutate_leases_with_repo(reserve)
+        except ledger.LockTimeout as exc:
+            return {**decision, "action": "keep", "reason": str(exc)}
         if reservation["action"] != "reserved":
             return reservation
         task = reservation["task"]
@@ -886,7 +907,10 @@ class Controller:
                 lease = leases.get("sessions", {}).get(sid)
                 if not lease or lease.get("token") != token:
                     raise ValueError("session lease lost before send")
+                lease["phase"] = "requested"
                 lease["requested_at"] = started.isoformat()
+                lease["before_utilisation"] = before["utilisation"]
+                lease["before_sampled_at"] = before["sampled_at"]
 
             self.ledger.mutate_leases(mark_requested)
             current = self._agent(name)
@@ -984,36 +1008,213 @@ class Controller:
                     time.sleep(.25)
             self._finish(sid, token, None, False)
             return {**decision, "action": "compacted", "telemetry": after}
-        except Exception as exc:
+        except host.SendNotAttempted as exc:
+            self._finish(sid, token, None, True)
+            return {**decision, "action": "keep", "reason": str(exc)}
+        except BaseException as exc:
             self._finish(sid, token, "compact-unknown" if submitted else None, True)
-            return {**decision, "action": "compact-unknown" if submitted else "keep", "reason": str(exc)}
+            if isinstance(exc, Exception):
+                return {**decision, "action": "compact-unknown" if submitted else "keep", "reason": str(exc)}
+            raise
 
-    def recover(self, name: str) -> dict[str, Any]:
-        """Release an unknown outcome only after same-session idle and fresh telemetry."""
+    def _finish_quick(self, sid: str, token: str, state: str | None) -> None:
+        def finish(leases: dict[str, Any]) -> None:
+            lease = leases.get("sessions", {}).get(sid)
+            if not lease or lease.get("token") != token:
+                raise RuntimeError("session lease lost; manual reconciliation required")
+            if state:
+                lease["state"] = state
+                lease["phase"] = "unknown"
+            else:
+                del leases["sessions"][sid]
+
+        self.ledger.mutate_leases(finish)
+
+    def compact_quick(self, name: str) -> dict[str, Any]:
+        """Record a manual compaction before keys, then verify the same session."""
+        result: dict[str, Any] = {"action": "keep", "agent": name, "source": "quick"}
+        try:
+            agent = self._agent(name)
+            if agent.get("status") not in READY:
+                raise ValueError("agent is not idle")
+            sid, sample = session_telemetry(agent, self.policy)
+            result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("kind"))
+            if not sid or not _fresh(sample, sid, _now()):
+                raise ValueError("session telemetry unknown or stale")
+        except (ValueError, OSError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+            result["reason"] = str(exc)
+            return result
+
+        token = str(uuid.uuid4())
+        reserved_at = _now()
+
+        def reserve(leases: dict[str, Any]) -> dict[str, Any]:
+            sessions = leases.setdefault("sessions", {})
+            verdict = ledger.key_stream_reason(leases, name, sid)
+            if verdict is not None:
+                return {"action": "keep", "reason": verdict[1]}
+            sessions[sid] = {
+                "agent": name, "task_id": None, "token": token,
+                "state": "compacting", "phase": "reserved", "source": "quick",
+                "reserved_at": reserved_at.isoformat(),
+                "requested_at": reserved_at.isoformat(),
+                "before_utilisation": sample["utilisation"],
+                "before_sampled_at": sample["sampled_at"],
+            }
+            return {"action": "reserved"}
+
+        try:
+            reservation = self.ledger.mutate_leases(reserve)
+        except ledger.LockTimeout as exc:
+            return {**result, "reason": str(exc)}
+        if reservation["action"] != "reserved":
+            return {**result, **reservation}
+        submitted = False
+        requested = _now()
+        try:
+            current = self._agent(name)
+            if _session(current) != sid or current.get("status") not in READY:
+                raise ValueError("session changed or agent became busy before send")
+
+            def mark_requested(leases: dict[str, Any]) -> None:
+                lease = leases.get("sessions", {}).get(sid)
+                if not lease or lease.get("token") != token:
+                    raise ValueError("session lease lost before send")
+                lease["phase"] = "requested"
+                lease["requested_at"] = requested.isoformat()
+
+            self.ledger.mutate_leases(mark_requested)
+            submitted = True
+            sent_turn = current.get("turn")
+            if not _send_slash(current, "/compact"):
+                current = self._agent(name)
+                turn = current.get("turn")
+                turn_started = _session(current) == sid and (
+                    current.get("status") not in READY
+                    or (isinstance(sent_turn, int) and not isinstance(sent_turn, bool)
+                        and isinstance(turn, int) and not isinstance(turn, bool)
+                        and turn > sent_turn))
+                if not turn_started:
+                    raise RuntimeError("host did not accept the compaction keys")
+            deadline = time.monotonic() + float(
+                self.policy.get("context", {}).get("compact_wait_seconds", 300))
+            while True:
+                current = self._agent(name)
+                after = telemetry(current, self.policy)
+                if (_session(current) == sid and current.get("status") in READY
+                        and _fresh(after, sid, _now(), after=requested)
+                        and after["utilisation"] < sample["utilisation"]):
+                    break
+                if _session(current) != sid:
+                    raise ValueError("session changed during quick compaction")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("compaction completion not verified in same session with lower fresh telemetry")
+                time.sleep(.25)
+            self._finish_quick(sid, token, None)
+            return {**result, "action": "compacted", "telemetry": after}
+        except host.SendNotAttempted as exc:
+            self._finish_quick(sid, token, None)
+            return {**result, "action": "keep", "reason": str(exc)}
+        except BaseException as exc:
+            try:
+                self._finish_quick(sid, token, "compact-unknown" if submitted else None)
+            except Exception:
+                if isinstance(exc, Exception):
+                    raise
+            if isinstance(exc, Exception):
+                return {**result, "action": "compact-unknown" if submitted else "keep", "reason": str(exc)}
+            raise
+
+    def recover(self, name: str, session_id: str | None = None, token: str | None = None) -> dict[str, Any]:
+        """Release only a matching operation after fresh proof or session replacement."""
         agent = self._agent(name)
-        sid = _session(agent)
+        live_sid = _session(agent)
         sample = telemetry(agent, self.policy)
+        now = _now()
+        # Stale telemetry can belong to a live idle session. With no live
+        # session id, only an idle pane with no held-session telemetry releases.
+        # Held-session telemetry is read before the leases lock, never under
+        # it; a candidate absent from this map is kept, never released.
+        held_samples: dict[str, dict[str, Any]] = {}
+        if not live_sid:
+            peek = self.ledger._load_leases().get("sessions", {})
+            for peek_key, entry in peek.items():
+                if (isinstance(entry, dict) and entry.get("agent") == name
+                        and "token" in entry
+                        and entry.get("state") in ledger.COMPACTION_STATES):
+                    held = str(entry.get("session_id") or peek_key)
+                    if held and held not in held_samples:
+                        held_samples[held] = telemetry(
+                            {**agent, "session_id": held}, self.policy)
 
         def recover(leases: dict[str, Any]) -> dict[str, Any]:
             sessions = leases.get("sessions", {})
-            lease = sessions.get(sid)
-            if lease and lease.get("agent") == name and lease.get("state") == "compact-unknown":
-                requested = _timestamp(lease.get("requested_at"))
-                if not requested or agent.get("status") not in READY or not _fresh(sample, sid, _now(), after=requested):
-                    return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
-                del sessions[sid]
-                return {"action": "recovered", "session_id": sid, "reason": "reservation released; task remains in no-retry guard"}
+            candidates = [
+                (key, entry) for key, entry in sessions.items()
+                if isinstance(entry, dict) and entry.get("agent") == name
+                and "token" in entry and entry.get("state") in ledger.COMPACTION_STATES
+            ]
+            if session_id:
+                candidates = [
+                    (key, entry) for key, entry in candidates
+                    if key == session_id or str(entry.get("session_id") or key) == session_id
+                ]
+            if token:
+                candidates = [
+                    (key, entry) for key, entry in candidates
+                    if str(entry.get("token") or "") == token
+                ]
+            candidates.sort(
+                key=lambda item: 0 if str(item[1].get("session_id") or item[0]) == live_sid else 1)
+            for key, lease in candidates:
+                held_sid = str(lease.get("session_id") or key)
+                if live_sid and held_sid and held_sid != live_sid:
+                    del sessions[key]
+                    return {"action": "recovered", "session_id": live_sid,
+                            "operation_session": held_sid,
+                            "reason": "obsolete session operation released"}
+                if not live_sid:
+                    held_sample = held_samples.get(held_sid)
+                    if (agent.get("status") in READY and held_sample is not None
+                            and held_sample.get("utilisation") is None
+                            and held_sample.get("sampled_at") is None):
+                        del sessions[key]
+                        return {"action": "recovered", "session_id": live_sid,
+                                "operation_session": held_sid,
+                                "reason": "obsolete session operation released"}
+                    return {"action": "keep",
+                            "reason": "live session unknown and the held session may still be active"}
+                if lease.get("state") == "compact-unknown" or lease.get("phase") in (None, "requested"):
+                    requested = _timestamp(lease.get("requested_at") or lease.get("reserved_at"))
+                    if (not requested or agent.get("status") not in READY
+                            or not _fresh(sample, held_sid or live_sid, now, after=requested)):
+                        return {"action": "keep", "reason": "recovery requires same-session idle and post-request telemetry"}
+                    before = lease.get("before_utilisation")
+                    if (isinstance(before, (int, float)) and not isinstance(before, bool)
+                            and sample.get("utilisation") >= before):
+                        return {"action": "keep", "reason": "no lower telemetry after the request"}
+                    del sessions[key]
+                    return {"action": "recovered", "session_id": held_sid or live_sid,
+                            "reason": "reservation released; task remains in no-retry guard"}
+                if lease.get("phase") == "reserved":
+                    reserved = _timestamp(lease.get("reserved_at") or lease.get("requested_at"))
+                    if (not reserved or agent.get("status") not in READY
+                            or not _fresh(sample, held_sid or live_sid, now, after=reserved)):
+                        return {"action": "keep", "reason": "reserved operation requires fresh same-session idle proof"}
+                    del sessions[key]
+                    return {"action": "recovered", "session_id": held_sid or live_sid,
+                            "reason": "reservation released before keys"}
             reset_hold = sessions.get(f"reset:{name}")
             if isinstance(reset_hold, dict) and reset_hold.get("state") == "reset-unknown":
                 held_sid = reset_hold.get("session_id")
-                # The session moved on: the reset provably ran — or the agent is
-                # idle on the same session: the send never landed. Both are safe
-                # to release; a busy agent keeps the reservation.
-                if sid != held_sid or agent.get("status") in READY:
+                if live_sid != held_sid or agent.get("status") in READY:
                     del sessions[f"reset:{name}"]
-                    return {"action": "recovered", "session_id": sid,
+                    return {"action": "recovered", "session_id": live_sid,
                             "reason": "reset reservation released"}
                 return {"action": "keep", "reason": "reset outcome still unverified"}
             return {"action": "keep", "reason": "no matching unknown outcome"}
 
-        return self.ledger.mutate_leases(recover)
+        try:
+            return self.ledger.mutate_leases(recover)
+        except ledger.LockTimeout as exc:
+            return {"action": "keep", "reason": str(exc)}

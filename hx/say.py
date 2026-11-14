@@ -37,6 +37,9 @@ from hx import context, devin, host, ledger, paths, usage
 # A process that dies between claiming and marking a record leaves the claim;
 # after this long the delivery is unknown, not unsent.
 CLAIM_STALE_SECONDS = 120
+# How long a second sender waits for the target's delivery reservation before
+# leaving its record pending for an explicit --pending retry.
+DELIVERY_WAIT_SECONDS = 2.0
 # Live probe on 9 Nov: a 103-char message arrived automatically; 1120-1312 char
 # report bodies stayed in Codex's composer as pasted content although hc
 # returned started=true. Long reports to an hc Codex lead travel as a short
@@ -280,7 +283,8 @@ def _atomic_write(path: Path, text: str) -> None:
 
 def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: str,
                   *, task_id: str | None = None, session_id: str | None = None,
-                  expires_at: str | None = None, supersedes: str | None = None) -> Path:
+                  expires_at: str | None = None, supersedes: str | None = None,
+                  control: bool = False) -> Path:
     directory = _outbox_dir(sender_key)
     directory.mkdir(parents=True, exist_ok=True)
     message_id = uuid.uuid4().hex
@@ -300,6 +304,7 @@ def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: st
         "session_id": session_id,
         "expires_at": expires_at,
         "supersedes": supersedes,
+        "control": bool(control),
     }
     path = directory / f"{message_id}.json"
     _atomic_write(path, json.dumps(record, indent=2) + "\n")
@@ -517,6 +522,29 @@ def _pointer_message(sender: str, path: Path) -> str | None:
     return text if len(text) <= POINTER_MAX_CHARS else None
 
 
+def _admit_work(
+    name: str, holder: str, destination: host.Member
+) -> tuple[bool, str]:
+    """Check the target's compaction operation and reserve one ordinary send."""
+    try:
+        led = ledger.default_ledger()
+        return led.admit_delivery(
+            name,
+            holder,
+            session_id=context._session(destination),
+            wait_seconds=DELIVERY_WAIT_SECONDS,
+        )
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, ledger.LockTimeout) as exc:
+        return False, f"admission unavailable: {exc}"
+
+
+def _release_delivery(agent: str, holder: str) -> None:
+    try:
+        ledger.default_ledger().release_delivery(agent, holder)
+    except Exception:
+        pass
+
+
 def _deliver(
     detected: host.Host,
     sender_member: host.Member,
@@ -525,6 +553,7 @@ def _deliver(
     path: Path,
     *,
     force: bool = False,
+    control: bool | None = None,
 ) -> tuple[str, str | None, tuple[str, str]]:
     """The one guarded delivery path, shared by a first send and a retry.
 
@@ -544,6 +573,8 @@ def _deliver(
     if claimed == "stale":
         return "uncertain", "stale delivery claim", (where, "uncertain")
     release = True
+    delivery_agent: str | None = None
+    delivery_holder: str | None = None
     try:
         current = _read_record(path)
         if current is None:
@@ -601,6 +632,15 @@ def _deliver(
                 state, note = transition
                 _write_state(path, state, note=note)
                 return state, note, (where, _OUTCOME_WORDS.get(state, "uncertain"))
+        message_control = bool(
+            force or (current.get("control") if control is None else control) or not work)
+        if not message_control:
+            holder = str(current.get("id") or path.stem)
+            admitted, reason = _admit_work(name, holder, destination)
+            if not admitted:
+                _write_state(path, "pending", note=reason or "compaction active")
+                return "pending", reason or "compaction active", (where, "pending")
+            delivery_agent, delivery_holder = name, holder
         try:
             result = detected.send_checked(name, text)
         except host.SendNotAttempted as exc:
@@ -646,6 +686,8 @@ def _deliver(
             return "uncertain", "outcome write failed", (where, "uncertain")
         return state, reason, (where, outcome)
     finally:
+        if delivery_agent is not None and delivery_holder is not None:
+            _release_delivery(delivery_agent, delivery_holder)
         if release:
             _release_claim(path)
 
@@ -701,7 +743,7 @@ def retry_pending() -> int:
 
 
 def say(target: str | None, message: str, *, force: bool = False,
-        task: str | None = None, ttl: float | None = None,
+        control: bool = False, task: str | None = None, ttl: float | None = None,
         supersedes: str | None = None) -> int:
     if not target:
         raise ValueError("hx say needs a teammate role or name, or --pending")
@@ -727,9 +769,10 @@ def say(target: str | None, message: str, *, force: bool = False,
         if lifetime is not None else None)
     path = _write_outbox(key, sender, name, message, text,
                          task_id=task, session_id=destination.get("session_id"),
-                         expires_at=expires_at, supersedes=supersedes)
+                         expires_at=expires_at, supersedes=supersedes,
+                         control=bool(control or force))
     outcome, reason, (where, word) = _deliver(
-        detected, sender_member, target, message, path, force=force)
+        detected, sender_member, target, message, path, force=force, control=control)
     suffix = f" ({reason})" if reason and outcome != "delivered" else ""
     print(f"{path.stem} -> {where}: {word}{suffix}")
     return 0 if outcome == "delivered" else 1

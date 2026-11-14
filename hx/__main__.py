@@ -21,13 +21,14 @@ def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("say", help="Message a teammate on your own team.")
     parser.add_argument("target", nargs="?", help="any live teammate role (claude, codex, devin, ...) or the full <team>-<role> name")
     parser.add_argument("message", nargs="*")
-    parser.add_argument("--force", action="store_true", help="Send despite fresh worker context pressure (for recovery/control messages).")
+    parser.add_argument("--force", action="store_true", help="Send despite fresh worker context pressure and compaction admission (for recovery/control messages).")
+    parser.add_argument("--control", action="store_true", help="Control message: never held by compaction admission.")
     parser.add_argument("--pending", action="store_true", help="List and retry this sender's pending messages.")
     parser.add_argument("--task", help="Ledger task this worker brief belongs to; a closed task cancels delivery. Reports to the lead are never cancelled.")
     parser.add_argument("--ttl", type=float, help="Seconds a worker brief stays deliverable (default from policy say.work_ttl_seconds). Reports to the lead never expire.")
     parser.add_argument("--supersedes", help="Id of the outbox record this message replaces.")
     parser.set_defaults(func=lambda args: say.retry_pending() if args.pending else say.say(
-        args.target, " ".join(args.message), force=args.force,
+        args.target, " ".join(args.message), force=args.force, control=args.control,
         task=args.task, ttl=args.ttl, supersedes=args.supersedes))
 
 
@@ -169,11 +170,15 @@ def _build_parser() -> argparse.ArgumentParser:
     confirmed.set_defaults(func=lambda args: print(json.dumps(context.Controller().self_compacted(args.agent, args.session, work_item=args.work_item))))
     recover = context_sub.add_parser("recover")
     recover.add_argument("agent")
-    recover.set_defaults(func=lambda args: print(json.dumps(context.Controller().recover(args.agent))))
+    recover.add_argument("--session")
+    recover.add_argument("--token")
+    recover.set_defaults(func=lambda args: print(json.dumps(
+        context.Controller().recover(args.agent, session_id=args.session, token=args.token))))
     compact = subparsers.add_parser("compact", help="Compact an idle worker at a completed task boundary.")
     compact.add_argument("agent")
     compact.add_argument("--task")
     compact.add_argument("--related", action="store_true")
+    compact.add_argument("--quick", action="store_true", help="Manual compaction: record the operation before sending keys, with no task checkpoint.")
     compact.set_defaults(func=_compact)
     team_parser = subparsers.add_parser("team", help="Team observer commands.")
     team_sub = team_parser.add_subparsers(dest="team_command", required=True)
@@ -203,7 +208,9 @@ def _team_watch(args: argparse.Namespace) -> int:
 
 
 def _compact(args: argparse.Namespace) -> None:
-    result = context.Controller().compact(args.agent, args.task, args.related)
+    controller = context.Controller()
+    result = (controller.compact_quick(args.agent) if args.quick
+              else controller.compact(args.agent, args.task, args.related))
     print(json.dumps(result))
     if result["action"] == "compact-unknown":
         raise SystemExit(1)

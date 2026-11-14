@@ -1,0 +1,26 @@
+{
+  "rev": 2,
+  "tasks": {
+    "t": {
+      "id": "t",
+      "title": "Completed work",
+      "owner": "hx-codex",
+      "model": null,
+      "effort": null,
+      "method": null,
+      "files": [
+        "c:\\users\\caspe\\documents\\projects\\herdr-orchestration-worktrees\\q346-compaction\\.artifacts\\q346-fix2\\probe-temp\\test_guarded_compact_consults_0\\owned.py"
+      ],
+      "depends": [],
+      "status": "done",
+      "review": null,
+      "attempts": 0,
+      "created": "2026-11-14T01:31:03.435253+00:00",
+      "updated": "2026-11-14T01:31:03.451599+00:00",
+      "checkpoint": null,
+      "base_commit": "base",
+      "worktree": null,
+      "rev": 2
+    }
+  }
+}
