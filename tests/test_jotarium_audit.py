@@ -145,3 +145,34 @@ def test_the_cli_exits_zero_on_a_clean_audit(monkeypatch: pytest.MonkeyPatch, ca
     })
     assert main(["jotarium", "audit"]) == 0
     assert '"ok": true' in capsys.readouterr().out
+
+
+def test_a_parent_with_open_children_is_a_container_not_unattended() -> None:
+    item = {"ref": "Q-500", "status": "in_progress", "assignee": None,
+            "children": {"open": 2, "done": 1},
+            "blockers": {"open": None, "resolved": []}}
+    flagged, covered = jotarium.find_unattended([item], [], [])
+    assert flagged == []
+    assert covered == [{"ref": "Q-500", "by": "2 open children"}]
+
+
+def test_a_parent_with_only_finished_children_is_still_flagged() -> None:
+    item = {"ref": "Q-501", "status": "in_progress", "assignee": None,
+            "children": {"open": 0, "done": 3},
+            "blockers": {"open": None, "resolved": []}}
+    flagged, _ = jotarium.find_unattended([item], [], [])
+    assert [row["ref"] for row in flagged] == ["Q-501"]
+
+
+def test_in_progress_items_keep_the_child_counts_from_the_list_summary() -> None:
+    summary = {"ref": "Q-502", "status": "in_progress", "children": {"open": 4, "done": 2}}
+    detail = {"ref": "Q-502", "status": "in_progress", "assignee": None,
+              "blockers": {"open": None, "resolved": []}}
+
+    def query(name: str, payload: dict) -> dict:
+        if name == "listItems":
+            return {"items": [summary], "nextCursor": None}
+        return {"item": detail}
+
+    items = jotarium.in_progress_items(query)
+    assert items == [{**detail, "children": {"open": 4, "done": 2}}]

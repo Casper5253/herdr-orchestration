@@ -118,6 +118,9 @@ def in_progress_items(query: Callable[[str, dict[str, Any]], dict[str, Any]]) ->
         item = data.get("item")
         if not isinstance(item, dict):
             raise JotariumError(f"Jotarium getItem {ref} returned no item")
+        children = summary.get("children")
+        if isinstance(children, dict):
+            item["children"] = children
         if item.get("status") == "in_progress":
             details.append(item)
     return details
@@ -186,6 +189,12 @@ def find_unattended(
             continue
         if open_tasks.get(ref):
             covered.append({"ref": ref, "by": "hx task " + ", ".join(open_tasks[ref])})
+            continue
+        children = item.get("children")
+        open_children = children.get("open") if isinstance(children, dict) else 0
+        if (isinstance(open_children, int) and not isinstance(open_children, bool)
+                and open_children > 0):
+            covered.append({"ref": ref, "by": f"{open_children} open children"})
             continue
         worker = live_worker(item.get("assignee"), live)
         if worker is not None:
