@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, context, doctor, handoff, ledger, ocrun, profile, review, route, say, team_watch, usage
+from hx import checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -32,6 +32,16 @@ def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
         task=args.task, ttl=args.ttl, supersedes=args.supersedes))
 
 
+def _add_jotarium_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("jotarium", help="Read-only Jotarium checks.")
+    sub = parser.add_subparsers(dest="jotarium_command", required=True)
+    audit = sub.add_parser(
+        "audit",
+        help="Flag in-progress items with no open hx task, live worker or Needs-you card.",
+    )
+    audit.set_defaults(func=lambda _args: jotarium.audit_command())
+
+
 def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     task_parser = subparsers.add_parser("task", help="Task ledger commands.")
     task_sub = task_parser.add_subparsers(dest="task_command", required=True)
@@ -47,6 +57,7 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     add.add_argument("--effort")
     add.add_argument("--method")
     add.add_argument("--review-required", action="store_true")
+    add.add_argument("--jotarium", help="Jotarium item ref this task delivers, for example Q-412.")
     add.set_defaults(func=_task_add)
 
     assign = task_sub.add_parser("assign", help="Assign a task to an owner.")
@@ -127,6 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_usage_parser(subparsers)
     _add_task_parser(subparsers)
     _add_say_parser(subparsers)
+    _add_jotarium_parser(subparsers)
     _add_checkpoint_parser(subparsers)
     boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction.")
     boundary.add_argument("agent")
@@ -230,6 +242,7 @@ def _task_add(args: argparse.Namespace) -> None:
         effort=args.effort,
         method=args.method,
         review_required=args.review_required,
+        jotarium=args.jotarium,
     )
     print(json.dumps(task, indent=2))
 

@@ -32,7 +32,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hx import context, devin, host, ledger, paths, usage
+from hx import briefs, context, devin, host, ledger, paths, usage
 
 # A process that dies between claiming and marking a record leaves the claim;
 # after this long the delivery is unknown, not unsent.
@@ -598,6 +598,12 @@ def _deliver(
         where = str(destination["address"]) or name
         policy = _policy()
         work = not _is_lead(destination, policy)
+        if work and not force and not current.get("control"):
+            try:
+                briefs.validate_message(body)
+            except briefs.BriefError as exc:
+                _write_state(path, "failed", note=f"refused: {exc}")
+                return "failed", f"refused: {exc}", (where, "failed")
         transition = (
             _obsolete_state(path, _sender_key(sender_member), current, destination, policy)
             if work else None
@@ -811,6 +817,8 @@ def say(target: str | None, message: str, *, force: bool = False,
     text = with_header(sender, message)
     key = _sender_key(sender_member)
     policy = _policy()
+    if not force and not _is_lead(destination, policy):
+        briefs.validate_message(message)
     lifetime = ttl
     if lifetime is None and not _is_lead(destination, policy):
         lifetime = _work_ttl_seconds(policy)

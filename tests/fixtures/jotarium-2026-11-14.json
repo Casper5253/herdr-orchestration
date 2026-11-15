@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-14",
+  "items": [
+    {
+      "ref": "Q-412",
+      "title": "Outfit prompt bank: every tier of every ladder is its own new outfit, one prompt each (no colour swaps)",
+      "status": "in_progress",
+      "assignee": null,
+      "blockers": {"open": null, "resolved": []},
+      "inProgressSince": "2026-11-14T08:19:14.527Z"
+    },
+    {
+      "ref": "Q-435",
+      "title": "End-to-end launch sweep",
+      "status": "in_progress",
+      "assignee": "agent:Claude",
+      "blockers": {"open": null, "resolved": []}
+    },
+    {
+      "ref": "Q-437",
+      "title": "Outfit diversity rounds",
+      "status": "in_progress",
+      "assignee": "agent:Claude",
+      "blockers": {"open": null, "resolved": []}
+    },
+    {
+      "ref": "Q-438",
+      "title": "Devin review",
+      "status": "in_progress",
+      "assignee": null,
+      "blockers": {
+        "open": {"kind": "check", "prompt": "Check the review"},
+        "resolved": []
+      }
+    },
+    {
+      "ref": "Q-439",
+      "title": "Local check",
+      "status": "in_progress",
+      "assignee": null,
+      "blockers": {"open": null, "resolved": []}
+    },
+    {
+      "ref": "Q-440",
+      "title": "Already finished",
+      "status": "done",
+      "assignee": null,
+      "blockers": {"open": null, "resolved": []}
+    }
+  ],
+  "tasks": [
+    {"id": "q435-build", "title": "Q-435 launch sweep", "owner": "dev-codex", "status": "in_progress"},
+    {"id": "feature-437", "title": "Outfit rounds", "owner": "dev-opencode", "status": "assigned", "jotarium": "Q-437"},
+    {"id": "q439-local-check", "title": "Local check", "owner": "dev-opencode", "status": "review"}
+  ],
+  "live": [
+    {"name": "dev-claude", "role": "claude", "status": "working"},
+    {"name": "dev-codex", "role": "codex", "status": "idle"},
+    {"name": "dev-opencode", "role": "opencode", "status": "working"}
+  ]
+}

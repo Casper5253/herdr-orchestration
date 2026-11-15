@@ -640,6 +640,7 @@ class Ledger:
         effort: str | None = None,
         method: str | None = None,
         review_required: bool = False,
+        jotarium: str | None = None,
     ) -> dict[str, Any]:
         with self._dual_lock():
             ledger = self._load_ledger()
@@ -671,6 +672,12 @@ class Ledger:
                 "worktree": worktree,
                 "rev": 1,
             }
+            if jotarium is not None:
+                value = jotarium.strip().upper()
+                if (len(value) < 3 or value[0] not in "PFQ"
+                        or value[1] != "-" or not value[2:].isdigit()):
+                    raise ValueError("jotarium ref must look like Q-123, P-4 or F-401")
+                task["jotarium"] = value
             ledger["tasks"][task_id] = task
             self._next_rev(ledger)
             leases = self._recompute_leases(ledger, leases)

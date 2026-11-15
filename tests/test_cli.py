@@ -319,3 +319,14 @@ def test_project_root_resolved_from_cwd(tmp_path: Path) -> None:
     assert task["id"] == "t1"
 
     assert (detached / ".hx" / "ledger.json").exists()
+
+
+def test_task_add_records_its_jotarium_item(
+    cli_repo: Path, capsys: pytest.CaptureFixture
+) -> None:
+    assert cli.main([
+        "task", "add", "t1", "--title", "T", "--owner", "w",
+        "--files", "owned.py", "--jotarium", "q-412",
+    ]) == 0
+    data = json.loads((cli_repo / ".hx" / "ledger.json").read_text(encoding="utf-8"))
+    assert data["tasks"]["t1"]["jotarium"] == "Q-412"

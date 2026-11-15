@@ -251,3 +251,65 @@ def test_current_and_legacy_outboxes_share_the_retry_order(monkeypatch, sent, tm
     ]
     assert say.retry_pending() == 0
     assert len(sent) == 2
+
+
+def _brief(tmp_path, name: str, line: str) -> Path:
+    path = tmp_path / ".hx" / "briefs" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(line + "\n", encoding="utf-8")
+    return path
+
+
+def test_say_refuses_a_brief_pointer_without_its_own_item(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    _brief(tmp_path, "prior.md", "Jotarium: Q-437")
+    path = _brief(tmp_path, "round2.md", "Jotarium: Q-437")
+    assert main(["say", "opencode", f"Read {path}"]) == 1
+    assert sent == []
+    assert "Create a child item for this round" in capsys.readouterr().err
+    assert main(["say", "--force", "opencode", f"Read {path}"]) == 0
+    assert len(sent) == 1
+
+
+def test_say_refuses_a_brief_pointer_with_no_item(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _brief(tmp_path, "missing.md", "# No Jotarium line")
+    assert main(["say", "opencode", f"Read {path}"]) == 1
+    assert sent == []
+    assert "Create a child item for this round" in capsys.readouterr().err
+
+
+def test_a_report_to_the_lead_is_not_a_worker_brief(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    monkeypatch.setattr(usage, "load_policy", lambda: {
+        "team_prefix": "dev-", "lead_role": "claude",
+    })
+    path = _brief(tmp_path, "missing.md", "# No Jotarium line")
+    assert main(["say", "claude", f"Report on {path}"]) == 0
+    assert len(sent) == 1
+
+
+def test_a_pending_brief_is_not_replayed_when_it_has_no_item(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _brief(tmp_path, "missing.md", "# No Jotarium line")
+    body = f"Read {path}"
+    say._write_outbox("dev__codex", "dev-codex", "dev-opencode", body, body)
+    assert say.retry_pending() == 1
+    assert sent == []
+
+
+def test_say_sends_a_brief_pointer_with_its_own_item(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    path = _brief(tmp_path, "unique.md", "Jotarium: Q-379")
+    assert main(["say", "opencode", f"Read {path}"]) == 0
+    assert len(sent) == 1
