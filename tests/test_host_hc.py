@@ -438,6 +438,120 @@ def test_send_never_passes_force(fake: FakeHc) -> None:
 # ---------- say on hc ----------
 
 
+@pytest.mark.parametrize("target", ["lead", "dev-lead"])
+def test_unverified_report_reaches_lead_and_logs_chain(fake, monkeypatch, tmp_path, capsys, target):
+    fake.terminals["t1"]["labels"]["role"] = "lead"
+    monkeypatch.setattr(usage, "load_policy", lambda: {"lead_role": "lead"})
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    chain = [{"pid": 900, "parent_pid": 800, "image_name": "python.exe"}]
+    monkeypatch.setattr(host, "process_chain", lambda: chain)
+
+    assert main(["say", target, "[team report from dev-codex] done"]) == 0
+    marker = "[unverified sender: claims dev-codex t7; ancestry check failed]"
+    assert fake.sent == [("t1", marker + " [team report from dev-codex] done")]
+    assert "unverified sender" in capsys.readouterr().err
+    lines = (tmp_path / ".hx" / "identity-failures.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["claimed_terminal"] == "t7"
+    assert entry["pid"] == 11
+    assert entry["parent_chain"] == chain
+    assert entry["timestamp"]
+    record = json.loads(_outbox(tmp_path)[0].read_text())
+    assert record["text"].startswith(marker)
+
+
+def test_unverified_sender_still_cannot_message_worker(fake, monkeypatch, tmp_path):
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    assert main(["say", "--force", "devin", "continue"]) == 1
+    assert fake.sent == []
+    assert not (tmp_path / ".hx" / "identity-failures.jsonl").exists()
+    assert _outbox(tmp_path) == []
+    assert main(["say", "--pending"]) == 1
+    with pytest.raises(host.IdentityError):
+        host.HcHost().own()
+
+
+def test_verified_report_has_no_identity_warning(fake, tmp_path, capsys):
+    assert main(["say", "claude", "ping"]) == 0
+    assert fake.sent == [("t1", "[team from dev-codex] ping")]
+    assert capsys.readouterr().err == ""
+    assert not (tmp_path / ".hx" / "identity-failures.jsonl").exists()
+
+
+def test_unverified_report_retry_keeps_warning(fake, monkeypatch, tmp_path):
+    monkeypatch.setattr(usage, "load_policy", lambda: {"lead_role": "claude"})
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    fake.terminals["t1"]["status"]["state"] = "blocked"
+    assert main(["say", "claude", "done"]) == 1
+    monkeypatch.setattr(host, "_process_parents", lambda: _parents_chain(fake))
+    fake.terminals["t1"]["status"]["state"] = "idle"
+    assert main(["say", "--pending"]) == 0
+    assert fake.sent[0][1].startswith("[unverified sender: claims dev-codex t7;")
+
+
+def test_unverified_long_report_pointer_keeps_warning(fake, monkeypatch, tmp_path):
+    monkeypatch.setenv("HC_TERMINAL_ID", "t9")
+    monkeypatch.setattr(usage, "load_policy", lambda: {"lead_role": "codex"})
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    assert main(["say", "codex", "x" * 1312]) == 0
+    text = fake.sent[0][1]
+    assert text.startswith("[unverified sender: claims dev-devin t9; ancestry check failed]")
+    assert len(text) <= say.POINTER_MAX_CHARS
+    record = json.loads(_outbox(tmp_path, "dev__devin")[0].read_text())
+    assert record["pointer"] is True
+    assert record["body"] == "x" * 1312
+
+
+def test_identity_failure_log_appends(fake, monkeypatch, tmp_path):
+    monkeypatch.setattr(usage, "load_policy", lambda: {"lead_role": "claude"})
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    log = tmp_path / ".hx" / "identity-failures.jsonl"
+    log.parent.mkdir()
+    log.write_text('{"previous":true}\n')
+    assert main(["say", "claude", "done"]) == 0
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert entries[0] == {"previous": True}
+    assert entries[1]["claimed_terminal"] == "t7"
+    for process in entries[1]["parent_chain"]:
+        assert set(process) == {"pid", "parent_pid", "image_name"}
+
+
+def test_parent_snapshot_failure_does_not_lose_report_or_log(fake, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(usage, "load_policy", lambda: {"lead_role": "claude"})
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    def unavailable():
+        raise OSError("snapshot unavailable")
+    monkeypatch.setattr(host, "process_chain", unavailable)
+    assert main(["say", "claude", "done"]) == 0
+    entry = json.loads((tmp_path / ".hx" / "identity-failures.jsonl").read_text())
+    assert entry["parent_chain"] == []
+    assert "could not capture parent chain" in capsys.readouterr().err
+    assert len(fake.sent) == 1
+
+
+def test_unwritable_identity_log_does_not_lose_report(fake, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(usage, "load_policy", lambda: {"lead_role": "claude"})
+    monkeypatch.setattr(host, "_process_parents", lambda: {})
+    (tmp_path / ".hx" / "identity-failures.jsonl").mkdir(parents=True)
+    assert main(["say", "claude", "done"]) == 0
+    assert "could not log identity failure" in capsys.readouterr().err
+    assert len(fake.sent) == 1
+
+
+def test_process_chain_stops_at_missing_parent_or_cycle(monkeypatch):
+    def snapshot(images):
+        images.update({101: "python.exe", 102: "bash.exe", 999: "unrelated.exe"})
+        return {101: 102, 102: 101, 999: 0}
+    monkeypatch.setattr(host.os, "getpid", lambda: 101)
+    monkeypatch.setattr(host, "_windows_process_parents", snapshot)
+    monkeypatch.setattr(host, "_procfs_process_parents", snapshot)
+    assert host.process_chain() == [
+        {"pid": 101, "parent_pid": 102, "image_name": "python.exe"},
+        {"pid": 102, "parent_pid": 101, "image_name": "bash.exe"},
+    ]
+
+
 def test_say_reaches_the_unnamed_lead_by_its_address(fake: FakeHc, tmp_path: Path) -> None:
     assert main(["say", "claude", "ping"]) == 0
     assert fake.sent == [("t1", "[team from dev-codex] ping")]

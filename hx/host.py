@@ -87,6 +87,12 @@ class IdentityError(ValueError):
     an empty answer.
     """
 
+    def __init__(self, message: str, *, claimed: Member | None = None,
+                 terminal_pid: int | None = None) -> None:
+        super().__init__(message)
+        self.claimed = claimed
+        self.terminal_pid = terminal_pid
+
 
 class SendNotAttempted(ValueError):
     """The send never ran: no hc call went out for this message.
@@ -402,7 +408,7 @@ def tool_path(name: str) -> str:
     raise HostToolMissing(f"no {name} executable found; searched PATH and {'; '.join(searched)}")
 
 
-def _windows_process_parents() -> dict[int, int]:
+def _windows_process_parents(images: dict[int, str] | None = None) -> dict[int, int]:
     """pid -> parent pid for every live process, from a Toolhelp32 snapshot."""
     import ctypes
     from ctypes import wintypes
@@ -436,6 +442,8 @@ def _windows_process_parents() -> dict[int, int]:
         if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
             while True:
                 parents[entry.th32ProcessID] = entry.th32ParentProcessID
+                if images is not None:
+                    images[entry.th32ProcessID] = entry.szExeFile
                 if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
                     break
         return parents
@@ -443,7 +451,7 @@ def _windows_process_parents() -> dict[int, int]:
         kernel32.CloseHandle(snapshot)
 
 
-def _procfs_process_parents() -> dict[int, int]:
+def _procfs_process_parents(images: dict[int, str] | None = None) -> dict[int, int]:
     """pid -> parent pid from /proc/<pid>/stat, for non-Windows hosts."""
     parents: dict[int, int] = {}
     try:
@@ -454,8 +462,11 @@ def _procfs_process_parents() -> dict[int, int]:
         if not entry.name.isdigit():
             continue
         try:
-            tail = (entry / "stat").read_text().rpartition(")")[2].split()
+            stat = (entry / "stat").read_text()
+            tail = stat.rpartition(")")[2].split()
             parents[int(entry.name)] = int(tail[1])
+            if images is not None:
+                images[int(entry.name)] = stat.partition("(")[2].rpartition(")")[0]
         except (OSError, ValueError, IndexError):
             continue
     return parents
@@ -481,6 +492,28 @@ def _is_descendant(pid: int, ancestor: int, parents: dict[int, int]) -> bool:
         seen.add(current)
         current = parents.get(current, 0)
     return False
+
+
+class ProcessEntry(TypedDict):
+    pid: int
+    parent_pid: int
+    image_name: str
+
+
+def process_chain() -> list[ProcessEntry]:
+    """The caller and its live ancestors, without arguments or environment."""
+    images: dict[int, str] = {}
+    parents = (_windows_process_parents(images) if os.name == "nt"
+               else _procfs_process_parents(images))
+    chain: list[ProcessEntry] = []
+    seen: set[int] = set()
+    current = os.getpid()
+    while current in parents and current not in seen:
+        seen.add(current)
+        chain.append(ProcessEntry(pid=current, parent_pid=parents[current],
+                                  image_name=images.get(current, "")))
+        current = parents[current]
+    return chain
 
 
 def _label(value: Any) -> str:
@@ -712,7 +745,8 @@ class HcHost:
         parents = _process_parents()
         if pid is None or not _is_descendant(os.getpid(), pid, parents):
             raise IdentityError(
-                f"terminal {self.terminal_id} pid {pid} is not this process or an ancestor")
+                f"terminal {self.terminal_id} pid {pid} is not this process or an ancestor",
+                claimed=hc_member(detail, parents=parents), terminal_pid=pid)
         found = hc_member(detail, parents=parents)
         if not found["team"] or not found["role"]:
             return None

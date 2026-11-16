@@ -284,7 +284,7 @@ def _atomic_write(path: Path, text: str) -> None:
 def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: str,
                   *, task_id: str | None = None, session_id: str | None = None,
                   expires_at: str | None = None, supersedes: str | None = None,
-                  control: bool = False) -> Path:
+                  control: bool = False, unverified_sender: str | None = None) -> Path:
     directory = _outbox_dir(sender_key)
     directory.mkdir(parents=True, exist_ok=True)
     message_id = uuid.uuid4().hex
@@ -305,6 +305,7 @@ def _write_outbox(sender_key: str, sender: str, target: str, body: str, text: st
         "expires_at": expires_at,
         "supersedes": supersedes,
         "control": bool(control),
+        "unverified_sender": unverified_sender,
     }
     path = directory / f"{message_id}.json"
     _atomic_write(path, json.dumps(record, indent=2) + "\n")
@@ -512,13 +513,14 @@ def _delivery_state(result: host.SendResult) -> tuple[str, str | None]:
     return "uncertain", str(reason or "delivery not confirmed")
 
 
-def _pointer_message(sender: str, path: Path) -> str | None:
+def _pointer_message(sender: str, path: Path, *, marker: str | None = None) -> str | None:
     """A short, sender-authenticated pointer to the full outbox record."""
     try:
         record = path.resolve()
     except OSError:
         return None
-    text = with_header(sender, f"Long report ready. Read {record}.")
+    text = (f"{marker} Read {record}." if marker
+            else with_header(sender, f"Long report ready. Read {record}."))
     return text if len(text) <= POINTER_MAX_CHARS else None
 
 
@@ -598,6 +600,10 @@ def _deliver(
         where = str(destination["address"]) or name
         policy = _policy()
         work = not _is_lead(destination, policy)
+        marker = current.get("unverified_sender")
+        if marker and work:
+            _write_state(path, "failed", note="unverified sender may only report to the lead")
+            return "failed", "unverified sender may only report to the lead", (where, "failed")
         if work and not force and not current.get("control"):
             try:
                 briefs.validate_message(body)
@@ -617,13 +623,15 @@ def _deliver(
         line = _denied_line_for(destination)
         if line:
             text += " " + line
+        if marker:
+            text = f"{marker} {text}"
         pointer = (
             isinstance(detected, host.HcHost)
             and destination["kind"] == "codex"
             and len(body) > UNCONFIRMED_LONG_CHARS
         )
         if pointer:
-            short = _pointer_message(sender, path)
+            short = _pointer_message(sender, path, marker=marker)
             if short is None:
                 _write_state(path, "pending", note="pointer too long")
                 return "pending", "pointer too long", (where, "pending")
@@ -809,12 +817,44 @@ def say(target: str | None, message: str, *, force: bool = False,
     detected = host.detect()
     if detected is None:
         raise ValueError("hx say runs only in a team host (an agent named <team>-<role>)")
-    sender_member = detected.own()
+    identity_failure = None
+    try:
+        sender_member = detected.own()
+    except host.IdentityError as exc:
+        if not isinstance(detected, host.HcHost) or exc.claimed is None:
+            raise
+        sender_member = exc.claimed
+        _, destination = resolve(sender_member, target)
+        if not _is_lead(destination, _policy()):
+            raise
+        identity_failure = exc
     if not sender_member:
         raise ValueError("hx say runs only in a team host (an agent named <team>-<role>)")
     sender = sender_member["name"]
     name, destination = resolve(sender_member, target)
     text = with_header(sender, message)
+    marker = None
+    if identity_failure is not None:
+        marker = (f"[unverified sender: claims {sender} {sender_member['address']}; "
+                  "ancestry check failed]")
+        print(f"Warning: {marker} {identity_failure}", file=sys.stderr)
+        try:
+            chain = host.process_chain()
+        except Exception as exc:
+            chain = []
+            print(f"Warning: could not capture parent chain: {exc}", file=sys.stderr)
+        try:
+            entry = {
+                "timestamp": _now(), "claimed_terminal": sender_member["address"],
+                "pid": identity_failure.terminal_pid, "parent_chain": chain,
+            }
+            log = paths.hx_dir() / "identity-failures.jsonl"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"Warning: could not log identity failure: {exc}", file=sys.stderr)
+        text = f"{marker} {text}"
     key = _sender_key(sender_member)
     policy = _policy()
     if not force and not _is_lead(destination, policy):
@@ -829,7 +869,7 @@ def say(target: str | None, message: str, *, force: bool = False,
     path = _write_outbox(key, sender, name, message, text,
                          task_id=task, session_id=destination.get("session_id"),
                          expires_at=expires_at, supersedes=supersedes,
-                         control=bool(control or force))
+                         control=bool(control or force), unverified_sender=marker)
     outcome, reason, (where, word) = _deliver(
         detected, sender_member, target, message, path, force=force, control=control)
     suffix = f" ({reason})" if reason and outcome != "delivered" else ""
