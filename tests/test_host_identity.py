@@ -145,6 +145,45 @@ def test_own_refuses_a_process_carrying_copied_terminal_env(
         host.HcHost().own()
 
 
+# ---------- Q-558: Git Bash detaches the MSYS child tree ----------
+#
+# A shared console does not establish ancestry.
+
+
+def test_a_detached_process_on_the_terminals_console_is_refused(
+    fake: FakeHc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host, "_process_parents", _detached_chain)
+    monkeypatch.setattr(
+        host, "_console_process_ids", lambda: {os.getpid(), 4242, 1944}, raising=False)
+    with pytest.raises(host.IdentityError):
+        host.HcHost().own()
+
+
+def test_a_console_holding_only_another_terminal_is_refused(
+    fake: FakeHc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host, "_process_parents", _detached_chain)
+    monkeypatch.setattr(
+        host, "_console_process_ids", lambda: {os.getpid(), 4242, 777}, raising=False)
+    with pytest.raises(host.IdentityError, match="not this process or an ancestor"):
+        host.HcHost().own()
+
+
+def test_a_detached_msys_error_says_to_use_powershell(
+    fake: FakeHc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host, "_process_parents", _detached_chain)
+    monkeypatch.setattr(host, "process_chain", lambda: [
+        {"pid": os.getpid(), "parent_pid": 4242, "image_name": "python.exe"},
+        {"pid": 4242, "parent_pid": 26064, "image_name": "sh.exe"},
+    ])
+    with pytest.raises(host.IdentityError) as exc:
+        host.HcHost().own()
+    assert "run hx say from PowerShell" in str(exc.value)
+    assert "terminal t24" in str(exc.value)
+
+
 # ---------- F16: hc-binding v2 reader ----------
 
 

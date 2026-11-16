@@ -555,6 +555,23 @@ def _process_parents() -> dict[int, int]:
         return {}
 
 
+# MSYS shells whose fork emulation detaches the Windows parent chain.
+MSYS_SHELLS = frozenset({"bash.exe", "sh.exe"})
+
+
+def _detached_shell_hint(terminal_id: str) -> str:
+    """A next step when an MSYS shell broke the ancestry walk, else ""."""
+    try:
+        chain = process_chain()
+    except Exception:
+        return ""
+    if any(str(entry.get("image_name") or "").lower() in MSYS_SHELLS
+           for entry in chain):
+        return (f" Git Bash/MSYS detached this process from the terminal; run "
+                f"hx say from PowerShell in terminal {terminal_id}.")
+    return ""
+
+
 def _is_descendant(pid: int, ancestor: int, parents: dict[int, int]) -> bool:
     """True when `ancestor` is `pid` itself or appears in its parent chain."""
     seen: set[int] = set()
@@ -818,7 +835,8 @@ class HcHost:
         parents = _process_parents()
         if pid is None or not _is_descendant(os.getpid(), pid, parents):
             raise IdentityError(
-                f"terminal {self.terminal_id} pid {pid} is not this process or an ancestor",
+                f"terminal {self.terminal_id} pid {pid} is not this process or an ancestor."
+                + _detached_shell_hint(self.terminal_id),
                 claimed=hc_member(detail, parents=parents), terminal_pid=pid)
         found = hc_member(detail, parents=parents)
         if not found["team"] or not found["role"]:

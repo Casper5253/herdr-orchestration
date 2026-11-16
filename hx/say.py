@@ -711,7 +711,80 @@ def _deliver(
             _release_claim(path)
 
 
-def retry_pending() -> int:
+def has_report_since_brief(worker: str, lead: str) -> bool:
+    """Whether the worker has reported to the lead since its last delivered brief.
+
+    Both sides are read from the project outbox: a brief must be a delivered
+    record from the lead to the worker, and a report is any record the worker
+    delivered to the lead. With no delivered brief
+    there is nothing to expect, so the answer is True.
+    """
+    worker_role = worker.rsplit("-", 1)[-1]
+    lead_role = lead.rsplit("-", 1)[-1]
+    briefs: list[datetime.datetime] = []
+    reports: list[datetime.datetime] = []
+    base = paths.hx_dir() / "outbox"
+    if not base.is_dir():
+        return True
+    for directory in base.iterdir():
+        if not directory.is_dir():
+            continue
+        for path in directory.glob("*.json"):
+            record = _read_record(path)
+            if record is None:
+                continue
+            state = _record_state(record)
+            if state != "delivered":
+                continue
+            stamp = context._timestamp(record.get("delivered_at") or record.get("updated_at"))
+            if stamp is None:
+                continue
+            sender = str(record.get("sender") or "")
+            target = str(record.get("target") or "")
+            if sender == worker and target in (lead, lead_role):
+                reports.append(stamp)
+            elif sender in (lead, lead_role) and target in (worker, worker_role):
+                briefs.append(stamp)
+    if not briefs:
+        return True
+    return bool(reports) and max(reports) >= max(briefs)
+
+
+def notify(target: str, text: str) -> tuple[str, str | None]:
+    """Send one system notice line to a teammate, without a team header.
+
+    Resolution, delivery admission and the checked send are the same ones a
+    report uses, so a notice cannot go to another team and never sits behind
+    an active compaction. It is not an outbox record: a missed notice is
+    re-derived from the pane.
+    """
+    if not text or "\n" in text:
+        raise ValueError("a notice is one line")
+    detected = host.detect()
+    if detected is None:
+        raise ValueError("hx notice runs only in a team host")
+    sender_member = detected.own()
+    if not sender_member:
+        raise ValueError("hx notice has no live sender identity")
+    name, destination = resolve(sender_member, target)
+    if destination["status"] == "blocked":
+        return "pending", "blocked"
+    holder = "notice-" + uuid.uuid4().hex
+    admitted, reason = _admit_delivery(name, holder, destination, control=True)
+    unavailable = (reason or "").startswith("admission unavailable")
+    if not admitted and not unavailable:
+        return "pending", reason or "compaction active"
+    if admitted:
+        try:
+            result = detected.send_checked(name, text)
+        finally:
+            _release_delivery(name, holder)
+    else:
+        result = detected.send_checked(name, text)
+    return _delivery_state(result)
+
+
+def retry_pending(*, list_uncertain: bool = False) -> int:
     """Retry the sender's pending records through the guarded path; never replay uncertain ones."""
     detected = host.detect()
     if detected is None:
@@ -726,6 +799,7 @@ def retry_pending() -> int:
         print(f"No pending messages for {sender}.")
         return 0
     unresolved = 0
+    kept_uncertain: list[tuple[str, str]] = []
     for path, record, state in records:
         if record is None or state == "corrupt":
             print(f"Unresolved {path.name}: corrupt record, kept for reconciliation")
@@ -749,7 +823,7 @@ def retry_pending() -> int:
             unresolved += 1
             continue
         if state == "uncertain":
-            print(f"Unresolved {message_id} -> {target}: uncertain delivery, reconcile before resend")
+            kept_uncertain.append((message_id, target))
             unresolved += 1
             continue
         print(f"Pending {message_id} -> {target} ({record.get('created_at')})")
@@ -758,6 +832,13 @@ def retry_pending() -> int:
         print(f"{message_id} -> {where}: {word}{suffix}")
         if outcome not in ("delivered", "cancelled"):
             unresolved += 1
+    if kept_uncertain:
+        if list_uncertain:
+            for message_id, target in kept_uncertain:
+                print(f"Unresolved {message_id} -> {target}: uncertain delivery, "
+                      f"reconcile before resend")
+        print(f"{len(kept_uncertain)} older uncertain records kept; "
+              f"hx say --pending --list to show them")
     return 0 if unresolved == 0 else 1
 
 

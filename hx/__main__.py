@@ -24,10 +24,12 @@ def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--force", action="store_true", help="Send despite fresh worker context pressure and compaction admission (for recovery/control messages).")
     parser.add_argument("--control", action="store_true", help="Control message: never held by compaction admission.")
     parser.add_argument("--pending", action="store_true", help="List and retry this sender's pending messages.")
+    parser.add_argument("--list", dest="list_uncertain", action="store_true",
+                        help="With --pending, show the uncertain records kept for reconciliation.")
     parser.add_argument("--task", help="Ledger task this worker brief belongs to; a closed task cancels delivery. Reports to the lead are never cancelled.")
     parser.add_argument("--ttl", type=float, help="Seconds a worker brief stays deliverable (default from policy say.work_ttl_seconds). Reports to the lead never expire.")
     parser.add_argument("--supersedes", help="Id of the outbox record this message replaces.")
-    parser.set_defaults(func=lambda args: say.retry_pending() if args.pending else say.say(
+    parser.set_defaults(func=lambda args: say.retry_pending(list_uncertain=args.list_uncertain) if args.pending or args.list_uncertain else say.say(
         args.target, " ".join(args.message), force=args.force, control=args.control,
         task=args.task, ttl=args.ttl, supersedes=args.supersedes))
 

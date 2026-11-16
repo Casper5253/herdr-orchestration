@@ -6,9 +6,9 @@ import json
 from hx import host, team_watch
 
 
-def _member(name, status="idle", address="t1", turn=7):
+def _member(name, status="idle", address="t1", turn=7, kind="codex"):
     team, role = name.rsplit("-", 1)
-    return host.Member(name=name, team=team, role=role, kind="codex",
+    return host.Member(name=name, team=team, role=role, kind=kind,
                        status=status, cwd="C:\\repo", address=address,
                        session_id=None, session_reason=None, focused=None, turn=turn)
 
@@ -16,6 +16,7 @@ def _member(name, status="idle", address="t1", turn=7):
 class FakeHost:
     def __init__(self):
         self.members = {}
+        self.screen = ""
 
     def own(self):
         return _member("dev-lead", status="working", address="t23")
@@ -25,6 +26,9 @@ class FakeHost:
 
     def info(self, name):
         return self.members[name]
+
+    def read(self, name, lines=200):
+        return self.screen
 
 
 class FakeController:
@@ -183,3 +187,89 @@ def test_main_wires_the_team_watch_command(monkeypatch, capsys):
     monkeypatch.setattr(team_watch, "watch", lambda team, **kw: seen.update(team=team) or 0)
     assert main(["team", "watch", "--team", "dev", "--timeout", "5"]) == 0
     assert seen["team"] == "dev"
+
+
+# ---------- Q-558: a Devin turn that ended on a blocked command ----------
+
+
+def test_blocked_command_is_read_from_the_last_screen_lines():
+    lines = [" ✗ cd old && false"] + [f" working {index}" for index in range(20)]
+    lines.append(" ✗ cd repo && npm test")
+    assert team_watch.blocked_command("\n".join(lines)) == "cd repo && npm test"
+
+
+def test_a_blocked_line_outside_the_tail_is_not_a_current_stop():
+    lines = [" ✗ cd old && false"] + [f" working {index}" for index in range(20)]
+    assert team_watch.blocked_command("\n".join(lines)) is None
+    assert team_watch.blocked_command(" ✓ tests pass\n ✓ reported") is None
+
+
+def test_a_devin_stop_on_a_blocked_command_notifies_the_lead(monkeypatch):
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t46", kind="devin")
+    hc.screen = " working\n\n ✗ cd repo && npm test\n\n❭ Ask Devin to build features"
+    monkeypatch.setattr(
+        team_watch.say, "has_report_since_brief", lambda worker, lead: False)
+    notices = []
+    monkeypatch.setattr(
+        team_watch.say, "notify",
+        lambda target, text: notices.append((target, text)) or ("delivered", None))
+    rc, events = _watch(hc, FakeController(), [
+        lambda: hc.members["dev-devin"].update(status="idle")])
+    assert rc == 0
+    assert events[-1]["notice"] == (
+        "[hx] dev-devin stopped on a blocked command: cd repo && npm test")
+    assert notices == [("dev-lead", events[-1]["notice"])]
+
+
+def test_a_devin_stop_with_a_report_since_the_brief_is_quiet(monkeypatch):
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t46", kind="devin")
+    hc.screen = " ✗ cd repo && npm test"
+    monkeypatch.setattr(
+        team_watch.say, "has_report_since_brief", lambda worker, lead: True)
+    notices = []
+    monkeypatch.setattr(
+        team_watch.say, "notify",
+        lambda target, text: notices.append((target, text)) or ("delivered", None))
+    _watch(hc, FakeController(), [
+        lambda: hc.members["dev-devin"].update(status="idle")])
+    assert notices == []
+
+
+def test_only_a_devin_stop_with_a_blocked_line_notifies(monkeypatch):
+    hc = FakeHost()
+    hc.members["dev-codex"] = _member("dev-codex", "working", "t24")
+    hc.screen = " ✗ cd repo && npm test"
+    monkeypatch.setattr(
+        team_watch.say, "has_report_since_brief", lambda worker, lead: False)
+    notices = []
+    monkeypatch.setattr(
+        team_watch.say, "notify",
+        lambda target, text: notices.append((target, text)) or ("delivered", None))
+    _watch(hc, FakeController(), [
+        lambda: hc.members["dev-codex"].update(status="idle")])
+    assert notices == []
+
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t46", kind="devin")
+    hc.screen = " ✓ tests pass\n ✓ report sent"
+    _watch(hc, FakeController(), [
+        lambda: hc.members["dev-devin"].update(status="idle")])
+    assert notices == []
+
+
+def test_unconfirmed_notice_is_retried_on_the_next_pass(monkeypatch):
+    hc = FakeHost()
+    hc.members["dev-devin"] = _member("dev-devin", "working", "t46", kind="devin")
+    hc.screen = " ✗ cd repo && npm test"
+    monkeypatch.setattr(team_watch.say, "has_report_since_brief", lambda worker, lead: False)
+    outcomes = iter([("pending", "blocked"), ("uncertain", "unknown"), ("delivered", None)])
+    attempts = []
+    def notify(target, text):
+        attempts.append((target, text))
+        return next(outcomes)
+    monkeypatch.setattr(team_watch.say, "notify", notify)
+    _watch(hc, FakeController(), [lambda: hc.members["dev-devin"].update(status="idle")])
+    assert len(attempts) == 3
+

@@ -313,3 +313,126 @@ def test_say_sends_a_brief_pointer_with_its_own_item(
     path = _brief(tmp_path, "unique.md", "Jotarium: Q-379")
     assert main(["say", "opencode", f"Read {path}"]) == 0
     assert len(sent) == 1
+
+
+# ---------- Q-558: stale uncertain records stay out of --pending output ----------
+
+
+def _record(tmp_path, name: str, sender: str, sender_key: str, target: str,
+            created: str, state: str = "uncertain") -> Path:
+    directory = tmp_path / ".hx" / "outbox" / sender_key
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps({
+        "id": name, "sender": sender, "sender_key": sender_key, "target": target,
+        "body": "old message", "text": f"[team from {sender}] old message",
+        "created_at": created, "updated_at": created, "state": state,
+        "delivered": state == "delivered",
+    }), encoding="utf-8")
+    return path
+
+
+def test_pending_keeps_uncertain_records_behind_one_summary(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    for index in range(3):
+        _record(tmp_path, f"uncertain-{index}", "dev-codex", "dev__codex",
+                "dev-opencode", "2026-11-13T00:00:00+00:00")
+    assert say.retry_pending() == 1
+    output = capsys.readouterr().out
+    assert "Unresolved" not in output
+    assert "3 older uncertain records kept; hx say --pending --list to show them" in output
+    assert sent == []
+
+
+def test_pending_retries_and_prints_only_the_sent_records(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    _record(tmp_path, "uncertain-1", "dev-codex", "dev__codex", "dev-opencode",
+            "2026-11-13T00:00:00+00:00")
+    _record(tmp_path, "pending-1", "dev-codex", "dev__codex", "dev-opencode",
+            "2026-11-16T00:00:00+00:00", state="pending")
+    assert say.retry_pending() == 1
+    output = capsys.readouterr().out
+    assert "pending-1 ->" in output
+    assert "submitted" in output
+    assert "uncertain-1" not in output
+    assert "1 older uncertain records kept; hx say --pending --list to show them" in output
+    assert len(sent) == 1
+
+
+def test_pending_list_shows_the_kept_uncertain_records(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    _record(tmp_path, "uncertain-1", "dev-codex", "dev__codex", "dev-opencode",
+            "2026-11-13T00:00:00+00:00")
+    assert main(["say", "--pending", "--list"]) == 1
+    output = capsys.readouterr().out
+    assert "uncertain-1 -> dev-opencode" in output
+    assert "uncertain delivery" in output
+
+
+# ---------- Q-558: no report since the last brief ----------
+
+
+def test_a_worker_brief_with_no_report_has_no_report_since_it(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    _record(tmp_path, "brief", "dev-lead", "dev__lead", "dev-devin",
+            "2026-11-16T09:00:00+00:00", state="delivered")
+    assert say.has_report_since_brief("dev-devin", "dev-lead") is False
+
+
+def test_a_report_after_the_brief_closes_the_exchange(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    _record(tmp_path, "brief", "dev-lead", "dev__lead", "dev-devin",
+            "2026-11-16T09:00:00+00:00", state="delivered")
+    _record(tmp_path, "report", "dev-devin", "dev__devin", "dev-lead",
+            "2026-11-16T09:05:00+00:00", state="delivered")
+    assert say.has_report_since_brief("dev-devin", "dev-lead") is True
+
+
+def test_a_report_before_the_latest_brief_does_not_close_it(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    _record(tmp_path, "report", "dev-devin", "dev__devin", "dev-lead",
+            "2026-11-16T08:55:00+00:00", state="delivered")
+    _record(tmp_path, "brief", "dev-lead", "dev__lead", "dev-devin",
+            "2026-11-16T09:00:00+00:00", state="delivered")
+    assert say.has_report_since_brief("dev-devin", "dev-lead") is False
+
+
+def test_no_brief_means_nothing_to_expect(
+    monkeypatch: pytest.MonkeyPatch, sent: list[list[str]], tmp_path,
+) -> None:
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    assert say.has_report_since_brief("dev-devin", "dev-lead") is True
+
+
+@pytest.mark.parametrize("state", ["pending", "uncertain"])
+def test_unconfirmed_report_does_not_suppress_blocked_warning(monkeypatch, sent, tmp_path, state):
+    _record(tmp_path, "brief", "dev-lead", "dev__lead", "dev-devin", "2026-11-16T09:00:00+00:00", state="delivered")
+    _record(tmp_path, "report", "dev-devin", "dev__devin", "dev-lead", "2026-11-16T09:05:00+00:00", state=state)
+    assert say.has_report_since_brief("dev-devin", "dev-lead") is False
+
+
+def test_delivery_time_not_creation_time_decides_latest_brief(monkeypatch, sent, tmp_path):
+    brief = _record(tmp_path, "brief", "dev-lead", "dev__lead", "dev-devin", "2026-11-16T08:00:00+00:00", state="delivered")
+    record = json.loads(brief.read_text(encoding="utf-8"))
+    record["delivered_at"] = "2026-11-16T10:00:00+00:00"
+    brief.write_text(json.dumps(record), encoding="utf-8")
+    report = _record(tmp_path, "report", "dev-devin", "dev__devin", "dev-lead", "2026-11-16T09:00:00+00:00", state="delivered")
+    record = json.loads(report.read_text(encoding="utf-8"))
+    record["delivered_at"] = "2026-11-16T09:30:00+00:00"
+    report.write_text(json.dumps(record), encoding="utf-8")
+    assert say.has_report_since_brief("dev-devin", "dev-lead") is False

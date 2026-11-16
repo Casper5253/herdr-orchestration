@@ -1,4 +1,4 @@
-"""One Jotarium item per brief, enforced at the hx say boundary."""
+﻿"""One Jotarium item per brief, enforced at the hx say boundary."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -62,3 +62,26 @@ def test_the_header_may_end_an_intro_line_and_examples_do_not_count(tmp_path: Pa
         encoding="utf-8",
     )
     assert briefs.refs_for(path) == ["Q-379", "Q-436"]
+
+
+def test_a_reused_item_names_the_exact_child_step(tmp_path: Path) -> None:
+    _brief(tmp_path, "prior.md", "Jotarium: Q-437")
+    path = _brief(tmp_path, "round2.md", "Jotarium: Q-437")
+    with pytest.raises(briefs.BriefError) as exc:
+        briefs.validate_message(f"Read {path}", path.parent)
+    message = str(exc.value)
+    assert "Create a child item for this round" in message
+    assert "subtask cannot hold children" in message
+    assert "invalidParent" in message
+    assert "subtask's parent" in message
+    assert "if Q-437 is a top-level item, create the child under Q-437" in message
+
+
+def test_a_missing_item_names_the_same_child_step(tmp_path: Path) -> None:
+    path = _brief(tmp_path, "missing.md", None)
+    with pytest.raises(briefs.BriefError) as exc:
+        briefs.validate_message(f"Read {path}", path.parent)
+    message = str(exc.value)
+    assert "Create a child item for this round" in message
+    assert "subtask cannot hold children" in message
+    assert "invalidParent" in message

@@ -22,12 +22,47 @@ import json
 import time
 from typing import Any
 
-from hx import context, host, say, usage
+from hx import context, devin, host, say, usage
 
 # A member settling into one of these counts as finished work when it was busy.
 SETTLED = frozenset({"idle", "done", "blocked", "error"})
 BUSY = frozenset({"working", "unknown"})
 COMPACT_ACTIONS = frozenset({"compact", "compact-needed"})
+# Devin shows a command it could not run with this mark on its own line.
+BLOCKED_COMMAND_MARK = "✗"
+BLOCKED_SCREEN_LINES = 8
+SCREEN_READ_LINES = 40
+
+
+def blocked_command(screen: str) -> str | None:
+    """The command on the last blocked-command line in the screen tail."""
+    lines = [line.strip() for line in (screen or "").splitlines() if line.strip()]
+    for line in reversed(lines[-BLOCKED_SCREEN_LINES:]):
+        if line.startswith(BLOCKED_COMMAND_MARK):
+            command = line[len(BLOCKED_COMMAND_MARK):].strip()
+            return command or None
+    return None
+
+
+def _blocked_notice(detected: host.Host, name: str, member: host.Member,
+                    lead: str) -> str | None:
+    """One-line lead notice when a Devin turn ended on a denied command.
+
+    The notice exists only when the worker has not reported since its last
+    delivered brief and its current screen tail still shows the blocked line.
+    """
+    if str(member.get("kind") or "") != devin.PROVIDER:
+        return None
+    if say.has_report_since_brief(name, lead):
+        return None
+    try:
+        screen = detected.read(name, SCREEN_READ_LINES)
+    except Exception:
+        return None
+    command = blocked_command(str(screen))
+    if command is None:
+        return None
+    return f"[hx] {name} stopped on a blocked command: {command}"
 
 
 def _member_turn(member: host.Member) -> int | None:
@@ -115,6 +150,8 @@ def watch(
 
     seen: dict[str, dict[str, Any]] = {}
     retried: set[str] = set()
+    notices: list[tuple[str, str]] = []
+    event_seen = False
     deadline = clock() + timeout if timeout else None
     while True:
         members = detected.team(prefix) or {}
@@ -151,6 +188,10 @@ def watch(
                     "turn": seen[name]["turn"],
                     "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                 }
+                if status in usage.READY:
+                    notice = _blocked_notice(detected, name, member, lead)
+                    if notice:
+                        event["notice"] = notice
                 if status in usage.READY and name not in retried:
                     retried.add(name)
                     decision = _decision(controller, name)
@@ -173,8 +214,12 @@ def watch(
             })
             del seen[name]
         if events:
+            event_seen = True
             for event in events:
                 emit(json.dumps(event))
+                notice = event.get("notice")
+                if notice:
+                    notices.append((event["name"], notice))
             for name, decision in pending:
                 recovery = {
                     "type": "recovery",
@@ -186,7 +231,18 @@ def watch(
                 if result.get("action") == "compacted":
                     recovery["delivery"] = _deliver_pending(detected, name)
                 emit(json.dumps(recovery))
+        for name, notice in notices[:]:
+            try:
+                outcome, reason = say.notify(lead, notice)
+            except Exception as exc:
+                outcome, reason = "pending", str(exc)
+            if outcome == "delivered":
+                notices.remove((name, notice))
+            else:
+                emit(json.dumps({"type": "notice-pending", "name": name,
+                                 "outcome": outcome, "reason": reason}))
+        if event_seen and not notices:
             return 0
         if deadline is not None and clock() >= deadline:
-            return 0
+            return 1 if notices else 0
         sleep(interval)

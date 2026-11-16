@@ -82,6 +82,17 @@ def _other_refs(directory: Path, current: Path) -> dict[str, list[str]]:
     return used
 
 
+def _child_step(name: str, ref: str | None) -> str:
+    """The exact next step after a brief fails the one-item rule."""
+    subject = ref if ref else "the intended parent item"
+    return (
+        f"Create a child item for this round: if {subject} is a top-level item, create the child under {subject}. "
+        f"A subtask cannot hold children (Jotarium "
+        f"returns invalidParent), so when {subject} is a subtask the child must go "
+        f"under that subtask's parent. Then add Jotarium: Q-<new> to {name}."
+    )
+
+
 def validate_message(message: str, directory: Path | None = None) -> None:
     """Refuse a brief pointer without a unique, unused Jotarium item."""
     pointers = pointer_paths(message, directory)
@@ -91,7 +102,7 @@ def validate_message(message: str, directory: Path | None = None) -> None:
         if not refs:
             errors.append(
                 f"Brief {path} names no Jotarium item. "
-                f"Create a child item for this round and add Jotarium: Q-<new> to {path.name}."
+                + _child_step(path.name, None)
             )
             continue
         used = _other_refs(path.parent, path)
@@ -100,7 +111,7 @@ def validate_message(message: str, directory: Path | None = None) -> None:
                 others = ", ".join(sorted(set(used[ref])))
                 errors.append(
                     f"Brief {path} reuses Jotarium {ref}, already used by {others}. "
-                    f"Create a child item for this round and name it in {path.name}."
+                    + _child_step(path.name, ref)
                 )
     if errors:
         raise BriefError(

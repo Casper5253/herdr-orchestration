@@ -188,7 +188,7 @@ def test_an_uncertain_record_is_never_auto_resent(fake, tmp_path, capsys):
     assert say.retry_pending() == 1
     assert fake.sent == []
     assert _state(path) == "uncertain"
-    assert "reconcile" in capsys.readouterr().out
+    assert "1 older uncertain records kept; hx say --pending --list to show them" in capsys.readouterr().out
 
 
 def test_an_uncertain_record_waits_for_reconcile_even_after_expiry(fake, tmp_path):
