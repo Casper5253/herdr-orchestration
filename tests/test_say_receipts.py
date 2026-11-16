@@ -16,6 +16,55 @@ def _member(name, role=None, kind="codex", status="idle", address="t1"):
         session_id=None, session_reason=None, focused=None, turn=4)
 
 
+# Live screen shapes, captured read-only with `hc read` on 16 Nov. A mid-turn
+# Codex keeps the pasted message in its composer and offers `tab to queue
+# message`; Tab moves it to the queued list and the empty composer prints the
+# `Ask Codex to do anything` placeholder. Devin's empty composer prints the
+# `Guide Devin while it works` placeholder above the footer rule.
+_CODEX_STATUS = "  gpt-5.2-codex high · 91% context left"
+_CODEX_BUSY_STAGED = (
+    "• Working (13m 15s • esc to interrupt)\n\n"
+    '› <hc from="t9">[team from dev-codex] brief ends here</hc>\n\n'
+    f"{_CODEX_STATUS}\n  tab to queue message\n")
+_CODEX_FOREIGN_PREFIX = f"› [team\n\n{_CODEX_STATUS}\n"
+_CODEX_WRAPPED_FOREIGN_TAIL = (
+    '› <hc from="t9">[team from dev-codex] brief ends here</hc>\n'
+    "  plus the creator's own addition\n\n"
+    f"{_CODEX_STATUS}\n")
+_CODEX_BLANK_PROMPT_STAGED = (
+    "› \n"
+    '  <hc from="t9">[team from dev-codex] brief ends here</hc>\n\n'
+    f"{_CODEX_STATUS}\n")
+_CODEX_IDLE_STAGED_QUOTED = (
+    "Earlier output quoting tab to queue message while explaining keys\n\n"
+    '› <hc from="t9">[team from dev-codex] brief ends here</hc>\n\n'
+    f"{_CODEX_STATUS}\n")
+_CODEX_STAGED_WITH_EDIT = (
+    '› <hc from="t9">[team from dev-codex] brief ends here</hc> more\n\n'
+    f"{_CODEX_STATUS}\n")
+_DEVIN_STAGED_WRAP = (
+    '❭ <hc from="t9">[team from dev-codex] brief ends\n'
+    "  here</hc>\n" + "─" * 20 + "\nSWE-2 High · accept edits")
+_OPENCODE_STAGED_WRAP = (
+    '┃ <hc from="t9">[team from dev-codex] brief\n'
+    "┃ ends here</hc>\n"
+    "┃ \n"
+    "Build · opencode")
+_CODEX_BUSY_QUEUED = (
+    "• Working (13m 15s • esc to interrupt)\n\n"
+    "• Queued follow-up inputs\n"
+    '  ↳ <hc from="t9">[team from dev-codex] brief ends here</hc>\n'
+    "    shift+← edit last queued message\n\n"
+    f"› Ask Codex to do anything\n\n{_CODEX_STATUS}\n")
+_CODEX_IDLE_STAGED = (
+    '› <hc from="t9">[team from dev-codex] brief ends here</hc>\n\n'
+    f"{_CODEX_STATUS}\n")
+_CODEX_IDLE_EMPTY = f"› \n\n{_CODEX_STATUS}\n"
+_CODEX_FOREIGN_DRAFT = f"› remind me to buy milk\n\n{_CODEX_STATUS}\n"
+_DEVIN_EMPTY = "❭ Guide Devin while it works\n" + "─" * 20 + "\nSWE-2 High · accept edits"
+_OPENCODE_EMPTY = "┃  \nBuild · opencode"
+
+
 class FakeHc:
     """An hc-shaped host: roster lookup, a send queue, a screen, recorded keys."""
 
@@ -24,6 +73,7 @@ class FakeHc:
             "dev-codex": _member("dev-codex", address="t9"),
             "dev-lead": _member("dev-lead", role="lead", kind="claude", address="t24"),
             "dev-opencode": _member("dev-opencode", kind="opencode", address="t13"),
+            "dev-devin": _member("dev-devin", kind="devin", address="t46"),
         }
         self.sent = []
         self.keys = []
@@ -62,7 +112,9 @@ class FakeHc:
         return True
 
     def read(self, name, lines=200):
-        return self.views.get(name, "some output\n>")
+        empty = {"codex": _CODEX_IDLE_EMPTY, "devin": _DEVIN_EMPTY,
+                 "opencode": _OPENCODE_EMPTY}
+        return self.views.get(name, empty.get(self.members[name]["kind"], "some output\n>"))
 
     def press(self, member, *keys):
         self.keys.append(["keys", member["address"], *keys])
@@ -74,14 +126,12 @@ class FakeHc:
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(say, "SUBMIT_POLL_SECONDS", 0.3)
-    monkeypatch.setattr(say, "ENTER_SETTLE_SECONDS", 0.01)
+    monkeypatch.setattr(say, "KEY_SETTLE_SECONDS", 0.01)
     hc = FakeHc()
     monkeypatch.setenv("HC_TERMINAL_ID", "t9")
     monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(host, "detect", lambda: hc)
     monkeypatch.setattr(say, "_under_pressure", lambda name: False)
-    monkeypatch.setattr(say, "SUBMIT_POLL_SECONDS", 0.3)
-    monkeypatch.setattr(say, "ENTER_SETTLE_SECONDS", 0.01)
     return hc
 
 
@@ -97,26 +147,6 @@ def test_a_busy_receiver_is_reported_queued(fake, capsys):
     fake.members["dev-lead"]["status"] = "working"
     assert say.say("lead", "queued note") == 0
     assert capsys.readouterr().out.splitlines()[-1].endswith(" -> t24: queued")
-
-
-def test_a_stuck_paste_gets_one_enter_press(fake, capsys):
-    fake.advance = False  # send accepted but the turn never advanced
-    text = "[team from dev-codex] brief ends here"
-    fake.views["dev-lead"] = f"prompt\n<hc from=t9>{text}</hc>\n>"
-    assert say.say("lead", "brief ends here") == 0
-    (line,) = [ln for ln in capsys.readouterr().out.splitlines() if "-> t24:" in ln]
-    assert line.endswith("submitted")
-    assert fake.keys == [["keys", "t24", "enter"]]  # exactly one Enter
-
-
-def test_a_stuck_paste_that_never_submits_is_uncertain(fake, capsys):
-    fake.advance = False
-    fake.views["dev-lead"] = "prompt\n<hc from=t9>[team from dev-codex] brief</hc>\n>"
-    fake.press = lambda member, *keys: (fake.keys.append(["keys", member["address"], *keys]) or True)
-    assert say.say("lead", "brief") == 1
-    out = capsys.readouterr().out
-    assert "uncertain" in out
-    assert fake.keys == [["keys", "t24", "enter"]]  # pressed once, never twice
 
 
 def test_no_visible_paste_means_no_enter_press(fake, capsys):
@@ -170,3 +200,131 @@ def test_a_dead_role_record_resolves_once_with_a_reason(fake, capsys, tmp_path):
     capsys.readouterr()
     assert say.retry_pending() == 0
     assert "No pending messages for dev-codex." in capsys.readouterr().out
+
+
+
+
+@pytest.mark.parametrize("draft", [
+    _CODEX_FOREIGN_DRAFT, _CODEX_FOREIGN_PREFIX,
+    _CODEX_WRAPPED_FOREIGN_TAIL, _CODEX_BLANK_PROMPT_STAGED,
+    _CODEX_IDLE_STAGED.replace('from="t9"', 'from="other"'),
+    _CODEX_IDLE_STAGED.replace("brief ends here", "briefendshere"),
+])
+def test_existing_draft_is_pending_without_typing(fake, capsys, tmp_path, draft):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = draft
+    assert say.say("lead", "brief ends here") == 1
+    assert "pending (composer not empty)" in capsys.readouterr().out
+    assert fake.sent == []
+    assert fake.keys == []
+    record = next((tmp_path / ".hx" / "outbox").rglob("*.json"))
+    assert json.loads(record.read_text())["state"] == "pending"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    assert say.retry_pending() == 0
+    assert len(fake.sent) == 1
+
+
+@pytest.mark.parametrize("kind,empty", [
+    ("codex", _CODEX_IDLE_EMPTY),
+    ("codex", _CODEX_BUSY_QUEUED),
+    ("devin", _DEVIN_EMPTY),
+    ("devin", _DEVIN_EMPTY.replace("Guide Devin while it works",
+        "Ask Devin to build features, fix bugs, or work on your code")),
+    ("opencode", _OPENCODE_EMPTY),
+])
+def test_empty_composers_and_placeholders_allow_delivery(fake, capsys, kind, empty):
+    fake.members["dev-lead"]["kind"] = kind
+    fake.views["dev-lead"] = empty
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert len(fake.sent) == 1
+    assert fake.keys == []
+
+
+@pytest.mark.parametrize("kind,staged,empty,key,word", [
+    ("codex", _CODEX_BUSY_STAGED, _CODEX_BUSY_QUEUED, "tab", "queued"),
+    ("codex", _CODEX_IDLE_STAGED, _CODEX_IDLE_EMPTY, "enter", "submitted"),
+    ("codex", _CODEX_IDLE_STAGED_QUOTED, _CODEX_IDLE_EMPTY, "enter", "submitted"),
+    ("codex", _CODEX_BLANK_PROMPT_STAGED, _CODEX_IDLE_EMPTY, "enter", "submitted"),
+    ("devin", _DEVIN_STAGED_WRAP, _DEVIN_EMPTY, "enter", "submitted"),
+    ("opencode", _OPENCODE_STAGED_WRAP, _OPENCODE_EMPTY, "enter", "submitted"),
+])
+def test_newly_staged_paste_gets_provider_key(fake, capsys, kind, staged, empty, key, word):
+    fake.members["dev-lead"]["kind"] = kind
+    fake.views["dev-lead"] = empty
+    fake.on_send = lambda name: fake.views.update({name: staged})
+    def press(member, *keys):
+        fake.keys.append(list(keys))
+        fake.views["dev-lead"] = empty
+        return True
+    fake.press = press
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith(word + "\n")
+    assert fake.keys == [[key]]
+
+
+@pytest.mark.parametrize("after", [_CODEX_IDLE_STAGED, _CODEX_STAGED_WITH_EDIT,
+    _CODEX_IDLE_STAGED.replace("brief ends here", "EDITED brief ends here")])
+def test_still_nonempty_after_key_is_pending(fake, capsys, after):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    fake.on_send = lambda name: fake.views.update({name: _CODEX_IDLE_STAGED})
+    def press(member, *keys):
+        fake.keys.append(list(keys))
+        fake.views["dev-lead"] = after
+        return True
+    fake.press = press
+    assert say.say("lead", "brief ends here") == 1
+    assert "pending (paste still staged after enter)" in capsys.readouterr().out
+    assert fake.keys == [["enter"]]
+
+
+def test_unidentified_composer_does_not_type(fake, capsys):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = "no composer visible"
+    assert say.say("lead", "hi") == 1
+    assert "uncertain (no composer identified)" in capsys.readouterr().out
+    assert fake.sent == []
+    assert fake.keys == []
+
+
+@pytest.mark.parametrize("phase", ["before", "after", "recheck"])
+def test_incomplete_composer_evidence_never_earns_success(fake, capsys, phase):
+    fake.members["dev-lead"]["kind"] = "codex"
+    incomplete = host.ReadText(_CODEX_IDLE_EMPTY, complete=False)
+    fake.views["dev-lead"] = incomplete if phase == "before" else _CODEX_IDLE_EMPTY
+    fake.on_send = lambda name: fake.views.update({name:
+        incomplete if phase == "after" else _CODEX_IDLE_STAGED})
+    def press(member, *keys):
+        fake.keys.append(list(keys))
+        fake.views["dev-lead"] = incomplete
+        return True
+    fake.press = press
+    assert say.say("lead", "brief ends here") == 1
+    assert "uncertain" in capsys.readouterr().out
+    assert len(fake.sent) == (0 if phase == "before" else 1)
+    assert fake.keys == ([["enter"]] if phase == "recheck" else [])
+
+
+def test_failed_submit_key_keeps_message_pending(fake, capsys):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    fake.on_send = lambda name: fake.views.update({name: _CODEX_IDLE_STAGED})
+    fake.press = lambda member, *keys: False
+    assert say.say("lead", "brief ends here") == 1
+    assert "pending (paste staged; enter press failed)" in capsys.readouterr().out
+
+
+def test_cli_pending_retry_keeps_foreign_draft_untouched(fake, capsys):
+    from hx.__main__ import main
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_FOREIGN_DRAFT
+    assert main(["say", "lead", "brief ends here"]) == 1
+    assert "pending (composer not empty)" in capsys.readouterr().out
+    assert main(["say", "--pending"]) == 1
+    assert fake.sent == []
+    assert fake.keys == []
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    assert main(["say", "--pending"]) == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert len(fake.sent) == 1

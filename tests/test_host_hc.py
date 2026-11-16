@@ -22,6 +22,15 @@ def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(["hc"], returncode, stdout, "")
 
 
+# A live provider pane always renders its composer; the default read answers
+# each app kind's empty form so `hx say` can prove a send left the composer.
+_EMPTY_COMPOSER = {
+    "codex": "› \n\n  gpt-5.2-codex high · 91% context left",
+    "devin": "❭ \n" + "─" * 20 + "\nSWE-2 High · accept edits",
+    "opencode": "┃  \nBuild · opencode",
+}
+
+
 def _terminal(
     address: str,
     *,
@@ -124,14 +133,17 @@ class FakeHc:
                     self.terminals[address]["turn"] = (reply.get("turn") or 0) + 1
             return _completed(json.dumps(reply))
         if command == "read":
-            if self._lookup(argv[2]) is None:
+            address = self._lookup(argv[2])
+            if address is None:
                 return _completed(json.dumps({"error": {"kind": "not_found"}}), 1)
             if self.read_fail:
                 return _completed(json.dumps({"error": {"kind": "unavailable"}}), 1)
             if self.read_raw is not None:
                 return _completed(self.read_raw)
+            app = ((self.terminals[address].get("status") or {}).get("app") or "")
             payload = self.read_payload or {
-                "how": "screen", "complete": True, "text": "pane text"}
+                "how": "screen", "complete": True,
+                "text": _EMPTY_COMPOSER.get(app, "pane text")}
             if "--json" in argv:
                 return _completed(json.dumps(payload))
             return _completed(str(payload["text"]))
@@ -334,7 +346,7 @@ def test_info_and_read_use_the_label_selected_address(fake: FakeHc) -> None:
     fake.add(_terminal("t23", name="dev-codex", team="other", role="codex",
                        app="codex", state="idle"))
     assert host.HcHost().info("dev-codex")["address"] == "t7"
-    assert host.HcHost().read("dev-codex", 40) == "pane text"
+    assert host.HcHost().read("dev-codex", 40) == _EMPTY_COMPOSER["codex"]
     assert fake.runs[-1] == ["hc", "read", "t7", "--json", "--lines", "40"]
 
 

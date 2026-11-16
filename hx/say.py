@@ -47,10 +47,11 @@ DELIVERY_WAIT_SECONDS = 2.0
 UNCONFIRMED_LONG_CHARS = 1000
 # The pointer must stay inside the transport bound that the probe showed works.
 POINTER_MAX_CHARS = 280
-# How long `hx say` watches an idle receiver for a turn to start before it
-# checks for unsubmitted text, and how long the Enter press gets to settle.
+# How long `hx say` watches a receiver for a turn to start before it checks
+# the composer for unsubmitted text, and how long the submit-key press gets
+# to settle before the one recheck.
 SUBMIT_POLL_SECONDS = 10.0  # a busy receiver's turn advances at its next provider turn
-ENTER_SETTLE_SECONDS = 0.75
+KEY_SETTLE_SECONDS = 0.75
 # The host explicitly refused or never accepted the text; a retry is safe.
 UNSENT_REASONS = frozenset({
     "blocked", "finished", "unavailable", "status_mismatch", "not_found",
@@ -169,63 +170,51 @@ def _await_advance(detected: host.Host, name: str, sent_turn: int | None, second
         time.sleep(0.25)
 
 
-def _sits_unsubmitted(detected: host.Host, name: str, text: str) -> bool:
-    """The pasted text is still in the receiver's composer.
-
-    `hc send` wraps the body in <hc from=...> tags; a stuck paste shows the
-    whole blob above the prompt line, ending in </hc>. Enter is pressed only
-    when that shape is visible, and never twice for one delivery.
-    """
+def _read_composer(detected: host.Host, name: str, kind: str) -> tuple[str, str | None]:
     try:
-        view = str(detected.read(name, 60))
+        screen = detected.read(name, 60)
     except Exception:
-        return False
-    tail = text[-20:]
-    return bool(tail) and tail in view[-400:] and "</hc>" in view[-200:]
+        return "", None
+    if getattr(screen, "complete", None) is False:
+        return str(screen), None
+    return str(screen), host._composer_text(str(screen), kind)
 
 
 def _submission_evidence(
     detected: host.Host,
     name: str,
-    text: str,
     result: host.SendResult,
-) -> str:
-    """What an accepted hc send actually did: submitted, queued, or uncertain.
-
-    hc's exit code says nothing about submission: a paste can sit in the
-    receiver's composer while hc reports started. A receiver already working
-    got the text queued to its turn; an idle one is watched briefly, then the
-    unsubmitted-paste check decides whether one Enter press is owed.
-    """
-    if result["status"] == "working":
-        if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
-            return "queued"
-        return "uncertain"
-    if _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
-        return "submitted"
+) -> tuple[str, str | None]:
+    """Verify a send admitted with an empty composer, retry its submit key once."""
     member = _host_member(detected, name)
-    if member is None or member["status"] not in ("idle", "done"):
-        return "uncertain"
-    # Settled with no visible paste and no turn advance proves nothing: an
-    # incomplete read, an unavailable composer, or a vanished paste would all
-    # look identical — the outcome stays uncertain, never delivered.
-    if not _sits_unsubmitted(detected, name, text):
-        return "uncertain"
-    if member["status"] != "idle":
-        return "uncertain"
+    if member is None:
+        return "uncertain", "no composer identified"
+    kind = str(member["kind"])
+    if kind not in host._COMPOSER_KINDS:
+        if not _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
+            return "uncertain", "no submission evidence"
+        return ("queued" if result["status"] == "working" else "submitted"), None
+    screen, staged = _read_composer(detected, name, kind)
+    if staged is None:
+        return "uncertain", "no composer identified"
+    key, word = host._submit_key(screen, kind)
+    if host._composer_empty(staged, kind):
+        return ("queued" if result["status"] == "working" else "submitted"), None
+    if member["status"] not in ("idle", "done", "working"):
+        return "pending", f"paste staged; receiver {member['status']}"
     try:
-        pressed = detected.press(member, "enter")
+        pressed = detected.press(member, key)
     except Exception:
         pressed = False
     if not pressed:
-        return "uncertain"
-    time.sleep(ENTER_SETTLE_SECONDS)
-    fresh = _host_member(detected, name)
-    if (fresh is not None and isinstance(fresh.get("turn"), int)
-            and isinstance(result["turn"], int) and not isinstance(result["turn"], bool)
-            and fresh["turn"] > result["turn"]):
-        return "submitted"
-    return "uncertain"
+        return "pending", f"paste staged; {key} press failed"
+    time.sleep(KEY_SETTLE_SECONDS)
+    _, staged = _read_composer(detected, name, kind)
+    if staged is None:
+        return "uncertain", f"no composer identified after {key}"
+    if not host._composer_empty(staged, kind):
+        return "pending", f"paste still staged after {key}"
+    return word, None
 
 
 _OUTCOME_WORDS = {
@@ -658,6 +647,15 @@ def _deliver(
             return "pending", reason or "compaction active", (where, "pending")
         if admitted:
             delivery_agent, delivery_holder = name, holder
+        if (not isinstance(detected, host.HerdrHost)
+                and destination["kind"] in host._COMPOSER_KINDS):
+            _, staged = _read_composer(detected, name, str(destination["kind"]))
+            if staged is None:
+                _write_state(path, "uncertain", note="no composer identified")
+                return "uncertain", "no composer identified", (where, "uncertain")
+            if not host._composer_empty(staged, str(destination["kind"])):
+                _write_state(path, "pending", note="composer not empty")
+                return "pending", "composer not empty", (where, "pending")
         try:
             result = detected.send_checked(name, text)
         except host.SendNotAttempted as exc:
@@ -680,14 +678,15 @@ def _deliver(
         state, reason = _delivery_state(result)
         outcome = _OUTCOME_WORDS.get(state, "uncertain")
         if state == "delivered":
-            # Turn/paste evidence applies to every host except the standalone
-            # herdr CLI, which reports the provider response inline and can
-            # press no keys.
+            # The standalone CLI reports the provider response inline.
             if not isinstance(detected, host.HerdrHost):
-                outcome = _submission_evidence(detected, name, text, result)
-            if outcome == "uncertain":
-                state = "uncertain"
-                reason = "sent; no submission evidence"
+                outcome, receipt_reason = _submission_evidence(detected, name, result)
+                if outcome == "pending":
+                    state = "pending"
+                    reason = receipt_reason or "paste still staged"
+                elif outcome == "uncertain":
+                    state = "uncertain"
+                    reason = receipt_reason or "sent; no submission evidence"
         # Keep the claim until the outcome is durable: releasing it first lets a
         # second sender claim the same still-pending record and send twice.
         try:

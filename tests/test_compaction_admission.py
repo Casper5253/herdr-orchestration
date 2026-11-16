@@ -38,6 +38,13 @@ def _member(name: str, role: str | None = None, kind: str = "opencode",
         focused=None, turn=turn)
 
 
+_EMPTY_COMPOSER = {
+    "codex": "› \n\n  gpt-5.2-codex high · 91% context left",
+    "devin": "❭ \n" + "─" * 20 + "\nSWE-2 High · accept edits",
+    "opencode": "┃  \nBuild · opencode",
+}
+
+
 class FakeHc:
     def __init__(self) -> None:
         self.members = {
@@ -72,7 +79,8 @@ class FakeHc:
         return True
 
     def read(self, name: str, lines: int = 200) -> str:
-        return "some output\n>"
+        # A live provider pane always renders its composer; each kind's empty form.
+        return _EMPTY_COMPOSER.get(self.members[name]["kind"], "some output\n>")
 
     def press(self, member: host.Member, *keys: str) -> bool:
         return True

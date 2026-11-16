@@ -26,46 +26,119 @@ WAIT_DEFAULT_MS = 300000
 # A typed slash command's Enter press gets a beat before the composer check.
 SLASH_ENTER_SETTLE_SECONDS = 0.75
 # The composer sits at a fixed position per provider: Devin's `❭` input line
-# directly above the footer rule, OpenCode's `┃` input-box line directly above
-# the `Build` status line, Codex's `›` input line directly above its model
-# status line. A prompt-shaped line anywhere else is output, never the
+# directly above the footer rule, OpenCode's `┃` input-box lines directly
+# above the `Build` status line, Codex's `›` input line above its model
+# status line — a blank row and a wrapped paste's indented continuation rows
+# sit between them. A prompt-shaped line anywhere else is output, never the
 # composer — Markdown `> /compact` and scrollback echoes earn nothing.
 _DEVIN_FOOTER_RULE = re.compile(r"[─—\-=\s]*[─—\-=][─—\-=\s]*")
 _CODEX_STATUS_LINE = re.compile(r"context left|^\s*gpt-", re.IGNORECASE)
 
 
+# Provider kinds whose composer region `_composer_text` can read; for the rest
+# a caller has no composer evidence to check at all.
+_COMPOSER_KINDS = frozenset({"codex", "devin", "opencode"})
+
+
 def _composer_text(text: str, kind: str) -> str | None:
     """The text staged in the provider's composer at its fixed position.
 
-    An empty string means the composer rendered with nothing staged — the
-    typed command provably left. None means no composer was identified: an
-    unknown provider kind or a screen without the position anchors.
+    The region is the prompt row plus its continuation rows: a paste wider
+    than the pane wraps onto indented rows, and a blank prompt row can sit
+    above pasted text. Every row counts; a creator's edit on a continuation
+    row is part of the staged text, never invisible. An empty string means
+    the composer rendered with nothing staged — the typed command provably
+    left. None means no composer was identified: an unknown provider kind or
+    a screen without the position anchors.
     """
     lines = (text or "").rstrip().splitlines()
     if kind == "devin":
-        for index in range(len(lines) - 2, -1, -1):
-            if (lines[index].lstrip().startswith("❭")
-                    and _DEVIN_FOOTER_RULE.fullmatch(lines[index + 1].strip())):
-                return lines[index].lstrip()[1:].strip()
+        rule = next((index for index in range(len(lines) - 1, -1, -1)
+                     if _DEVIN_FOOTER_RULE.fullmatch(lines[index].strip())), None)
+        if rule is None:
+            return None
+        for index in range(rule - 1, -1, -1):
+            line = lines[index]
+            if line.lstrip().startswith("❭"):
+                rows = [line.lstrip()[1:]]
+                rows.extend(row for row in lines[index + 1:rule] if row.strip())
+                return "".join(row.strip() for row in rows)
+            if line.strip() and not line.startswith((" ", "\t")):
+                break
         return None
     if kind == "opencode":
         status = next((index for index in range(len(lines) - 1, -1, -1)
-                       if lines[index].strip().startswith("Build")), None)
+                       if lines[index].strip().lstrip("┃").strip().startswith("Build")),
+                      None)
         if status is None:
             return None
+        rows = []
         box = status - 1
         while box >= 0 and lines[box].lstrip().startswith("┃"):
-            inner = lines[box].strip().strip("┃").strip()
-            if inner:
-                return inner
+            rows.append(lines[box].strip().strip("┃").strip())
             box -= 1
-        return "" if box < status - 1 else None
+        if not rows:
+            return None
+        return "".join(reversed(rows))
     if kind == "codex":
-        for index in range(len(lines) - 2, -1, -1):
-            if (lines[index].lstrip().startswith("›")
-                    and _CODEX_STATUS_LINE.search(lines[index + 1])):
-                return lines[index].lstrip()[1:].strip()
+        status = next((index for index in range(len(lines) - 1, -1, -1)
+                       if _CODEX_STATUS_LINE.search(lines[index])), None)
+        if status is None:
+            return None
+        for index in range(status - 1, -1, -1):
+            line = lines[index]
+            if line.lstrip().startswith("›"):
+                rows = [line.lstrip()[1:]]
+                rows.extend(row for row in lines[index + 1:status] if row.strip())
+                return "".join(row.strip() for row in rows)
+            if line.strip() and not line.startswith((" ", "\t")):
+                break
     return None
+
+
+# Placeholder copy an empty composer prints on its input line, observed on
+# live screens 16 Nov (`hc read`): it is the composer holding nothing, never
+# staged text. Providers without one leave the line blank.
+_COMPOSER_PLACEHOLDERS = {
+    "codex": {"Ask Codex to do anything"},
+    "devin": {"Ask Devin to build features, fix bugs, or work on your code",
+              "Guide Devin while it works"},
+}
+
+
+def _composer_empty(staged: str, kind: str) -> bool:
+    """The composer is provably free of staged text: blank or placeholder copy."""
+    return staged == "" or staged in _COMPOSER_PLACEHOLDERS.get(kind, ())
+
+
+# The key a staged paste still needs, by (provider kind, screen evidence), and
+# the receipt its press earns. A mid-turn Codex dead-drops Enter and says so
+# in its footer; Tab files the paste into its queue. Every other provider and
+# state submits on Enter.
+_SUBMIT_KEYS = {
+    ("codex", "tab to queue message"): ("tab", "queued"),
+}
+_SUBMIT_KEY_FALLBACK = ("enter", "submitted")
+
+
+def _submit_key(screen: str, kind: str) -> tuple[str, str]:
+    """The (key, receipt) a staged paste needs for this provider and screen state.
+
+    Busy evidence counts only in the provider's footer, its status row and
+    below. An idle screen that quotes `tab to queue message` in output earns
+    the Enter fallback, never Tab.
+    """
+    lines = (screen or "").splitlines()
+    low = ""
+    if kind == "codex":
+        status = next((index for index in range(len(lines) - 1, -1, -1)
+                       if _CODEX_STATUS_LINE.search(lines[index])), None)
+        if status is not None:
+            low = "\n".join(lines[status:]).lower()
+    for (row_kind, evidence), outcome in _SUBMIT_KEYS.items():
+        if row_kind == kind and evidence in low:
+            return outcome
+    return _SUBMIT_KEY_FALLBACK
 
 
 # The 7501 `app` word, the only evidence of which provider runs in a terminal.

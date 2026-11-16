@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from hx import host
-from test_host_hc import FakeHc, _completed
+from test_host_hc import FakeHc, _completed, _EMPTY_COMPOSER
 
 
 @pytest.fixture
@@ -112,7 +112,7 @@ def test_read_returns_text_with_completeness(fake: FakeHc) -> None:
 
 def test_a_complete_read_is_marked_complete(fake: FakeHc) -> None:
     pane = host.HcHost().read("dev-codex", 40)
-    assert pane == "pane text"
+    assert pane == _EMPTY_COMPOSER["codex"]
     assert pane.complete is True
     assert pane.why is None
 

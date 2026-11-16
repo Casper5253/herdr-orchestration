@@ -49,6 +49,13 @@ def _stub_prompt(monkeypatch, stdout: str, returncode: int = 0) -> None:
     monkeypatch.setattr(host.subprocess, "run", run)
 
 
+_EMPTY_COMPOSER = {
+    "codex": "› \n\n  gpt-5.2-codex high · 91% context left",
+    "devin": "❭ \n" + "─" * 20 + "\nSWE-2 High · accept edits",
+    "opencode": "┃  \nBuild · opencode",
+}
+
+
 class MinimalHost:
     """Exactly the declared Host methods, no private ones."""
 
@@ -87,7 +94,8 @@ class MinimalHost:
             started=True, status="working", turn=1, ended=wait, reason=None)
 
     def read(self, name: str, lines: int) -> str:
-        return "pane text"
+        # A live provider pane always renders its composer; each kind's empty form.
+        return _EMPTY_COMPOSER.get(self.info(name)["kind"], "pane text")
 
 
 @pytest.fixture

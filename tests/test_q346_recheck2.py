@@ -74,7 +74,10 @@ class FakeHc:
         return True
 
     def read(self, name: str, lines: int = 200) -> str:
-        return "some output\n>"
+        return {
+            "opencode": "\u2503  \nBuild opencode",
+            "codex": "\u203a \n\ngpt-5.2-codex high 91% context left",
+        }[self.members[name]["kind"]]
 
     def press(self, member: host.Member, *keys: str) -> bool:
         return True
@@ -103,7 +106,7 @@ def fake(monkeypatch: pytest.MonkeyPatch, led: ledger.Ledger) -> FakeHc:
     monkeypatch.setattr(host, "detect", lambda: hc)
     monkeypatch.setattr(say, "_under_pressure", lambda name: False)
     monkeypatch.setattr(say, "_denied_line_for", lambda destination: "")
-    monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: "submitted")
+    monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: ("submitted", None))
     monkeypatch.setattr(usage, "load_policy", lambda: POLICY)
     return hc
 
@@ -300,7 +303,7 @@ def test_control_releases_delivery_reservation_on_send_failure(
 
     monkeypatch.setattr(fake, "send_checked", send)
     if outcome == "uncertain":
-        monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: "uncertain")
+        monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: ("uncertain", None))
     if outcome == "raised":
         with pytest.raises(RuntimeError, match="unknown send outcome"):
             say.say("lead", "report")
@@ -387,7 +390,7 @@ def test_lead_quick_compact_waits_for_an_in_flight_control_send(
     monkeypatch.setattr(host, "detect", lambda: hc)
     monkeypatch.setattr(say, "_under_pressure", lambda name: False)
     monkeypatch.setattr(say, "_denied_line_for", lambda destination: "")
-    monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: "submitted")
+    monkeypatch.setattr(say, "_submission_evidence", lambda *a, **k: ("submitted", None))
     monkeypatch.setattr(usage, "load_policy", lambda: POLICY)
 
     sender = threading.Thread(target=lambda: say.say("lead", "status report"))
