@@ -175,7 +175,10 @@ def _read_composer(detected: host.Host, name: str, kind: str) -> tuple[str, str 
         screen = detected.read(name, 60)
     except Exception:
         return "", None
-    if getattr(screen, "complete", None) is False:
+    # hc marks a live screen read incomplete (no full history), but the
+    # composer sits on that screen, so a screen read is composer evidence.
+    if (getattr(screen, "complete", None) is False
+            and getattr(screen, "how", None) != "screen"):
         return str(screen), None
     return str(screen), host._composer_text(str(screen), kind)
 

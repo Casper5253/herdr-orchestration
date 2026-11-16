@@ -306,6 +306,18 @@ def test_incomplete_composer_evidence_never_earns_success(fake, capsys, phase):
     assert fake.keys == ([["enter"]] if phase == "recheck" else [])
 
 
+def test_live_screen_read_of_a_working_codex_is_composer_evidence(fake, capsys):
+    """hc answers complete=False, how=screen, why=working for a live Codex pane (16 Nov)."""
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = host.ReadText(
+        _CODEX_IDLE_EMPTY, complete=False, why="working", how="screen")
+    fake.on_send = lambda name: fake.views.update({name: host.ReadText(
+        _CODEX_IDLE_EMPTY, complete=False, why="working", how="screen")})
+    assert say.say("lead", "brief ends here") == 0
+    assert "submitted" in capsys.readouterr().out
+    assert len(fake.sent) == 1
+
+
 def test_failed_submit_key_keeps_message_pending(fake, capsys):
     fake.members["dev-lead"]["kind"] = "codex"
     fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
