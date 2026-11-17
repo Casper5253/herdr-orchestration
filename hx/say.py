@@ -793,6 +793,8 @@ def notify(target: str, text: str) -> tuple[str, str | None]:
 
 def retry_pending(*, list_uncertain: bool = False) -> int:
     """Retry the sender's pending records through the guarded path; never replay uncertain ones."""
+    if os.environ.get("HX_OCRUN_SENDER"):
+        raise ValueError("one-off workers report through their final message; hx say cannot use the caller identity")
     detected = host.detect()
     if detected is None:
         raise ValueError("hx say runs only in a team host (an agent named <team>-<role>)")
@@ -900,6 +902,8 @@ def retry_pending_for(detected: host.Host, worker: str) -> dict[str, int]:
 def say(target: str | None, message: str, *, force: bool = False,
         control: bool = False, task: str | None = None, ttl: float | None = None,
         supersedes: str | None = None) -> int:
+    if os.environ.get("HX_OCRUN_SENDER"):
+        raise ValueError("one-off workers report through their final message; hx say cannot use the caller identity")
     if not target:
         raise ValueError("hx say needs a teammate role or name, or --pending")
     if ttl is not None and not (math.isfinite(ttl) and ttl > 0):

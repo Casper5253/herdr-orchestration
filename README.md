@@ -26,6 +26,16 @@ Windows, Python 3.11+, Herdr 0.9, and the three agent CLIs.
 
 `install.ps1` backs up every file it replaces as `*.bak-<timestamp>`. Paths in `team/claude-settings.json` point at this repo's location on the author's machine; adjust them for yours.
 
+One-off `hx ocrun` briefs report through the final message. Use this report step:
+
+    End with a final message listing changed files, test results, and unfinished work.
+
+Ocrun refuses a Report step that requires `hx say`. Each run gets its own
+`ocrun-<worker>-<task>` sender label and loses the caller terminal identity.
+The JSON result includes `sender`, a final-message preview, and `final_message_file`
+pointing to the full `final.md` in the run directory. Failed runs print their
+classified failure reason to stderr. Persistent teammate panes still use `hx say`.
+
 ## Context boundaries
 
 `hx task done <id>` validates the completion checkpoint, runs the owning agent's context decision, and returns it in `boundary`. For pane work without a ledger task, run `hx boundary <agent>`. Both append a disposition to the project's `.hx/context-boundaries.jsonl`: `keep`, `defer`, `unknown`, `refused`, or `recovery-needed`, with session telemetry and `readiness` (`ready` or `held`). These operations recommend recovery; they do not execute compaction.

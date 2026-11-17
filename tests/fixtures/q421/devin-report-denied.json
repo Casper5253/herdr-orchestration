@@ -1,0 +1,11 @@
+{
+  "source": ".hx/runs/hx-20261114-015817/prompt.md and .hx/routing.jsonl in todo-rpg",
+  "captured_at": "2026-11-14T02:03:47.236631+00:00",
+  "report_lines": [
+    "When done or blocked, run `hx say lead '[team report from dev-<you>] STATUS: done|blocked. WHY: ... CHANGED: ... TESTS: ... NOTES: ...'` as your last action. No apostrophes inside the quotes."
+  ],
+  "failure": {
+    "kind": "tool",
+    "reason": "permission denied: exec {\"command\": \"hx say lead '[team report from dev-devin2] STATUS: done. WHY: Q-411 pilgrim sprite prepped for F-401 unlockables; edge-flood background removal plus nearest-neighbour downscale, proven by"
+  }
+}

@@ -129,7 +129,7 @@ def test_devin_headless_ok(devin_run: tuple[dict, list], tmp_path: Path) -> None
     assert result["effort"] == "high"
     assert result["models_seen"] == [MODEL]
     assert result["session_id"] == "ses_devin_1"
-    assert result["final_message"] == "done: wrote the tests"
+    assert result["final_message"] == "[team report from ocrun-devin-dv-ok]\ndone: wrote the tests"
     assert result["exit_code"] == 0
     assert result["tokens"]["input"] == 120
     assert result["tokens"]["cache_read"] == 40
@@ -195,6 +195,8 @@ def test_devin_scrubs_inherited_env(
     policy, calls = devin_run
     monkeypatch.setenv("DEVIN_MODEL", "swe-2-max")
     monkeypatch.setenv("DEVIN_PERMISSION_MODE", "yolo")
+    monkeypatch.setenv("HC_TERMINAL_ID", "t2x")
+    monkeypatch.setenv("HERDR_PANE_ID", "lead-pane")
     result = ocrun.run_devin(
         "say hi",
         MODEL,
@@ -210,6 +212,9 @@ def test_devin_scrubs_inherited_env(
     assert env is not None
     for key in devin_mod.SCRUBBED_ENV:
         assert key not in env
+    assert "HC_TERMINAL_ID" not in env
+    assert "HERDR_PANE_ID" not in env
+    assert env["HX_OCRUN_SENDER"] == result["sender"]
     assert result["model"] == MODEL
 
 
@@ -412,7 +417,7 @@ def test_devin_final_message_file_holds_full_text(
     assert len(result["final_message"]) == 4000
     final_file = Path(result["final_message_file"])
     assert final_file.exists()
-    assert final_file.read_text(encoding="utf-8") == message.strip()
+    assert final_file.read_text(encoding="utf-8") == "[team report from ocrun-devin-dv-final]\n" + message.strip()
 
 
 def test_devin_same_title_gets_distinct_run_dirs(devin_run: tuple[dict, list], tmp_path: Path) -> None:

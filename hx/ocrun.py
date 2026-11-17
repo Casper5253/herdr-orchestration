@@ -65,6 +65,47 @@ PROCESS_TREE_KILL_TIMEOUT = 10.0
 PROCESS_TREE_DRAIN_TIMEOUT = 10.0
 PROCESS_TREE_POLL_TIMEOUT = 2.0
 
+ONE_OFF_IDENTITY_ENV = ("HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HC_SCOPE", "HERDR_PANE_ID", "HERDR_ENV")
+
+
+def _sender(worker: str, title: str | None) -> str:
+    slug = _sanitize_title(title or "") or _utcnow().strftime("%Y%m%d-%H%M%S-%f")
+    return f"ocrun-{worker}-{slug}"
+
+
+def _one_off_env(sender: str, base: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    for key in ONE_OFF_IDENTITY_ENV:
+        env.pop(key, None)
+    env["HX_OCRUN_SENDER"] = sender
+    return env
+
+
+def _identity_script(sender: str) -> list[str]:
+    return [*(f"Remove-Item 'Env:{key}' -ErrorAction SilentlyContinue" for key in ONE_OFF_IDENTITY_ENV),
+            f"$env:HX_OCRUN_SENDER = '{sender}'"]
+
+
+def _report_prompt(prompt: str, sender: str) -> str:
+    return (f"You are {sender}, a one-off worker. You do not hold the lead seat. "
+            f"Report through your final message with [team report from {sender}]. "
+            "Do not run hx say or send messages through the live team. "
+            "The caller receives your final message in the ocrun result.\n\n" + prompt)
+
+
+def _report_text(text: str, sender: str) -> str:
+    text = re.sub(r"^\s*\[team(?: report)? from [^\]\r\n]+\]\s*", "", text).strip()
+    return f"[team report from {sender}]\n{text}" if text else ""
+
+
+def _save_report(result: dict[str, Any], text: str, sender: str, run_dir: Path) -> None:
+    report = _report_text(text, sender)
+    result["sender"] = sender
+    result["final_message"] = report[:4000]
+    path = run_dir / "final.md"
+    path.write_text(report, encoding="utf-8")
+    result["final_message_file"] = str(path)
+
 QUOTA_MARKERS = (
     "rate limit",
     "rate_limit",
@@ -160,6 +201,7 @@ def parse_events(stream: str) -> dict[str, Any]:
         "finish_tokens_output": None,
         "terminal_finish_reason": None,
         "has_unresolved_tool_error": False,
+        "final_message": "",
     }
 
     def accumulate(part: dict[str, Any]) -> None:
@@ -201,6 +243,10 @@ def parse_events(stream: str) -> dict[str, Any]:
         part = evt.get("part")
         if not isinstance(part, dict):
             part = {}
+        if kind == "text" and isinstance(part.get("text"), str):
+            aggregated["final_message"] += part["text"]
+        if kind == "step_start":
+            aggregated["final_message"] = ""
 
         if evt.get("sessionID"):
             aggregated["session_id"] = evt["sessionID"]
@@ -416,6 +462,7 @@ def write_run_script(
         [
             "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
             "clear-host",
+            *_identity_script(_sender("opencode", title)),
             *("$env:%s = %s" % (name, _ps(value)) for name, value in (env_vars or {}).items()),
             "& %s" % " ".join(cmd_parts),
             "$code = $LASTEXITCODE",
@@ -495,6 +542,7 @@ def write_codex_run_script(
         [
             "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
             "clear-host",
+            *_identity_script(_sender("codex", title)),
             *(["$env:PATH = %s + ';' + $env:PATH" % _ps(str(pinned))] if pinned else []),
             "& %s" % " ".join(cmd_parts),
             "$code = $LASTEXITCODE",
@@ -585,6 +633,9 @@ def _export_stream(payload: str) -> str:
         if not isinstance(message, dict):
             continue
         for part in message.get("parts") or []:
+            if (isinstance(part, dict) and part.get("type") == "text"
+                    and isinstance(message.get("info"), dict) and message["info"].get("role") == "user"):
+                continue
             if isinstance(part, dict):
                 kind = part.get("type")
                 if kind == "step-finish":
@@ -926,7 +977,7 @@ def _unique_run_dir(cwd: Path, title: str | None) -> Path:
         cwd = Path(cwd).resolve()
     base = _repo_root(cwd)
     timestamp = _utcnow().strftime("%Y%m%d-%H%M%S")
-    slug = title if title is not None else f"hx-{timestamp}"
+    slug = _sanitize_title(title) if title is not None else f"hx-{timestamp}"
     if title is not None and _sanitize_title(title) is None:
         raise ValueError(f"invalid title: {title}")
     candidate = base / ".hx" / "runs" / slug
@@ -952,6 +1003,8 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     run_dir = _unique_run_dir(cwd, title)
     run_title = run_dir.name
+    sender = _sender(worker, run_title)
+    prompt = _report_prompt(prompt, sender)
     profile_name = args_kw.get("profile")
     policy = args_kw.get("policy")
     permission_config: dict[str, Any] | None = None
@@ -990,6 +1043,7 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
             run_dir,
         )
         result["worker"] = worker
+        result["sender"] = sender
         result["effort"] = effort
         result["permission_config"] = permission_config
         _append_outcome_entry(
@@ -1031,6 +1085,8 @@ def run_visible(args_kw: dict[str, Any]) -> dict[str, Any]:
             files, run_dir, cwd, exit_code, timed_out, latency, worker, run_title
         )
     result["worker"] = worker
+    result["sender"] = sender
+    _save_report(result, result.get("final_message", ""), sender, run_dir)
     result["effort"] = effort
     result["permission_config"] = permission_config
     _append_outcome_entry(
@@ -1059,10 +1115,10 @@ def _finish_codex_visible(
     rollout_path, meta = find_codex_rollout(cwd, started_utc)
     parsed = parse_codex_rollout(rollout_path) if rollout_path else None
     error_texts = (parsed or {}).get("error_texts") or []
+    last_text = ""
     if timed_out:
         failure = {"kind": "tool", "reason": "termination-unconfirmed"}
     else:
-        last_text = ""
         last_file = files.get("last")
         if last_file and last_file.exists():
             last_text = last_file.read_text(encoding="utf-8", errors="replace")
@@ -1083,6 +1139,7 @@ def _finish_codex_visible(
         run_dir,
     )
     result["worker"] = worker
+    result["final_message"] = last_text
     return result
 
 
@@ -1121,6 +1178,7 @@ def _finish_opencode_visible(    files: dict[str, Path],
         run_dir,
     )
     result["worker"] = worker
+    result["final_message"] = (parsed or {}).get("final_message", "")
     return result
 
 
@@ -1140,6 +1198,7 @@ def _append_outcome_entry(
 ) -> None:
     entry = {
         "kind": "outcome",
+        "sender": result.get("sender"),
         "decision_id": decision_id,
         "task_id": task_id,
         "ts": _utcnow().isoformat(),
@@ -1199,6 +1258,7 @@ def write_devin_run_script(
         [
             "$host.ui.RawUI.WindowTitle = %s" % _ps(title),
             "clear-host",
+            *_identity_script(_sender("devin", title)),
             "$PID | Set-Content -Encoding ascii %s" % _ps(str(files["pid"])),
             "try { Set-Location -LiteralPath %s -ErrorAction Stop } catch {" % _ps(str(cwd)),
             "  @{ exit_code = -1; error = 'cannot enter the run directory' } | ConvertTo-Json | Set-Content -Encoding utf8 %s" % done,
@@ -1313,6 +1373,8 @@ def run_devin(
     started = time.monotonic()
     run_dir = _claim_run_dir(cwd, title)
     run_title = run_dir.name
+    sender = _sender("devin", run_title)
+    prompt = _report_prompt(prompt, sender)
     effort = model.rsplit("-", 1)[-1]
 
     def _finish(failure, parsed=None, exit_code=None, timed_out=False, terminated=True, extra=None):
@@ -1336,6 +1398,7 @@ def run_devin(
         result.update(
             {
                 "worker": "devin",
+                "sender": sender,
                 "provider": devin_mod.PROVIDER,
                 "model": model,
                 "effort": effort,
@@ -1390,7 +1453,9 @@ def run_devin(
                 )
                 return _finish({"kind": "cancelled" if _read_pid(files["pid"]) else "tool", "reason": reason})
         else:
-            exit_code, out, err, timed_out, terminated = execute(cmd, cwd, timeout, env=devin_mod.run_env())
+            exit_code, out, err, timed_out, terminated = execute(
+                cmd, cwd, timeout, env=_one_off_env(sender, devin_mod.run_env())
+            )
             output = (out or "") + "\n" + (err or "")
     except Exception as exc:
         return _finish({"kind": "tool", "reason": f"devin run failed: {exc}"})
@@ -1412,7 +1477,7 @@ def run_devin(
         expected_mode=permission_mode,
     )
     devin_mod.record_error(failure or {}, model)
-    final_message = (parsed or {}).get("final_message") or ""
+    final_message = _report_text((parsed or {}).get("final_message") or "", sender)
     final_path = run_dir / "final.md"
     try:
         final_path.write_text(final_message, encoding="utf-8")
@@ -1534,7 +1599,7 @@ def run(
         elif (error := profile_mod.validate(named)) is not None:
             findings.append({"kind": "profile", "command": profile, "rule": error, "line": 0})
     if not findings and not allow_preflight_risk:
-        findings = capability.prompt_findings(worker, prompt, Path(cwd), policy, profile_name=profile)
+        findings = capability.prompt_findings(worker, prompt, Path(cwd), policy, profile_name=profile, one_off=True)
     if findings:
         reason = capability.format_refusal(worker, findings)
         result = _outcome_result(
@@ -1590,9 +1655,12 @@ def run(
     if worker != "opencode":
         raise ValueError(f"worker {worker} supports visible mode only")
     started = time.monotonic()
+    run_dir = _claim_run_dir(Path(cwd), title)
+    sender = _sender(worker, run_dir.name)
+    prompt = _report_prompt(prompt, sender)
     cmd = build_command(prompt, model, variant, cwd, title)
     env, permission_config = _permission_env(worker, profile, cwd, policy)
-    execute_result = execute(cmd, cwd, timeout, env=env) if env is not None else execute(cmd, cwd, timeout)
+    execute_result = execute(cmd, cwd, timeout, env=_one_off_env(sender, env))
     if len(execute_result) == 4:
         exit_code, out, _err, timed_out = execute_result
         terminated = True
@@ -1614,14 +1682,18 @@ def run(
         "latency_s": round(latency, 3),
         "mode": "headless",
         "worker": "opencode",
+        "sender": sender,
         "permission_config": permission_config,
+        "run_dir": str(run_dir),
     }
+    _save_report(result, parsed.get("final_message", ""), sender, run_dir)
 
     if timed_out and not terminated:
         result["retry_safe"] = False
 
     entry = {
         "kind": "outcome",
+        "sender": sender,
         "decision_id": decision_id,
         "task_id": task_id,
         "ts": _utcnow().isoformat(),
@@ -1716,8 +1788,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(result, indent=2))
     failure = result.get("failure") or {}
+    if not result["ok"]:
+        print(f"ocrun failed ({failure.get('kind', 'unknown')}): {failure.get('reason') or 'no failure reason recorded'}",
+              file=sys.stderr)
     if failure.get("kind") == "admission":
-        print(failure.get("reason", ""), file=sys.stderr)
         return 2
     return 0 if result["ok"] else 1
 
