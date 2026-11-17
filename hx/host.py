@@ -67,6 +67,10 @@ def _composer_text(text: str, kind: str) -> str | None:
                 break
         return None
     if kind == "opencode":
+        border = next((match for line in reversed(lines)
+                       if (match := re.match(r"\s*╹▀+", line))), None)
+        if border is not None:
+            lines = [line[:border.end()] for line in lines]
         status = next((index for index in range(len(lines) - 1, -1, -1)
                        if lines[index].strip().lstrip("┃").strip().startswith("Build")),
                       None)
@@ -103,6 +107,7 @@ _COMPOSER_PLACEHOLDERS = {
     "codex": {"Ask Codex to do anything"},
     "devin": {"Ask Devin to build features, fix bugs, or work on your code",
               "Guide Devin while it works"},
+    "opencode": {'Ask anything… "What is the tech stack of this project?"'},
 }
 
 

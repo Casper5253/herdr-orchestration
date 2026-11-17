@@ -197,12 +197,19 @@ def _submission_evidence(
         if not _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
             return "uncertain", "no submission evidence"
         return ("queued" if result["status"] == "working" else "submitted"), None
-    screen, staged = _read_composer(detected, name, kind)
-    if staged is None:
-        return "uncertain", "no composer identified"
+    deadline = time.monotonic() + SUBMIT_POLL_SECONDS
+    while True:
+        screen, staged = _read_composer(detected, name, kind)
+        if staged is None:
+            return "uncertain", "no composer identified"
+        if not host._composer_empty(staged, kind):
+            break
+        if _await_advance(detected, name, result["turn"], 0):
+            return ("queued" if result["status"] == "working" else "submitted"), None
+        if time.monotonic() >= deadline:
+            return "uncertain", "empty composer without submission evidence"
+        time.sleep(0.25)
     key, word = host._submit_key(screen, kind)
-    if host._composer_empty(staged, kind):
-        return ("queued" if result["status"] == "working" else "submitted"), None
     if member["status"] not in ("idle", "done", "working"):
         return "pending", f"paste staged; receiver {member['status']}"
     try:
