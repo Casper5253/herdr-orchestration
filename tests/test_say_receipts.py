@@ -25,7 +25,20 @@ def test_captured_opencode_home_allows_delivery(fake, capsys, sidebar):
     assert len(fake.sent) == 1
 
 
-def test_delayed_wrapped_codex_paste_is_not_receipted_before_tab(fake, capsys, monkeypatch):
+def test_opencode_sidebar_does_not_hide_an_existing_draft(fake, capsys):
+    screen = (_Q572 / "opencode-home.txt").read_text(encoding="utf-8")
+    screen = screen.replace('Ask anything… "What is the tech stack of this project?"', "my existing draft")
+    rows = screen.splitlines()
+    width = max(len(row) for row in rows)
+    fake.views["dev-opencode"] = "\n".join(
+        row.ljust(width + 2) + "│ Todo: finish report" for row in rows)
+    assert say.say("opencode", "brief ends here") == 1
+    assert "pending (composer not empty)" in capsys.readouterr().out
+    assert fake.sent == []
+    assert fake.keys == []
+
+
+def test_delayed_wrapped_codex_paste_is_not_receipted_before_tab(fake, capsys):
     fake.members["dev-lead"].update(kind="codex", status="working")
     fake.advance = False
     wrapped = (_Q572 / "codex-wrapped.txt").read_text(encoding="utf-8")

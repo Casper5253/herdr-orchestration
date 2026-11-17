@@ -355,7 +355,7 @@ def test_pending_retries_and_prints_only_the_sent_records(
     _record(tmp_path, "uncertain-1", "dev-codex", "dev__codex", "dev-opencode",
             "2026-11-13T00:00:00+00:00")
     _record(tmp_path, "pending-1", "dev-codex", "dev__codex", "dev-opencode",
-            "2026-11-16T00:00:00+00:00", state="pending")
+            datetime.datetime.now(datetime.timezone.utc).isoformat(), state="pending")
     assert say.retry_pending() == 1
     output = capsys.readouterr().out
     assert "pending-1 ->" in output
