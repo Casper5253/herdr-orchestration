@@ -66,5 +66,6 @@ def test_codex_run_script_puts_pinned_codex_first(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(ocrun, "codex_bin_dir", lambda: pinned)
     files = ocrun.write_codex_run_script(tmp_path / "run", "brief", "gpt-6-luna", "low", "t", tmp_path)
     lines = files["script"].read_text(encoding="utf-8").splitlines()
-    assert lines[2] == "$env:PATH = '%s' + ';' + $env:PATH" % pinned
-    assert lines[3].startswith("& codex exec")
+    path_line = lines.index("$env:PATH = '%s' + ';' + $env:PATH" % pinned)
+    command_line = next(i for i, line in enumerate(lines) if line.startswith("& codex exec"))
+    assert path_line < command_line

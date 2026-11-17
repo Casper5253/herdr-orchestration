@@ -347,6 +347,8 @@ def denied_exec(profile: dict[str, Any], command: str) -> str | None:
         if not segment:
             continue
         tokens = _tokens(segment)
+        if profile.get("one_off") and len(tokens) >= 2 and tokens[:2] == ["hx", "say"]:
+            return "Exec(hx say)"
         allowed = False
         for words in profile.get("allow_seq_rules") or []:
             if (
@@ -495,6 +497,9 @@ def _command_candidates(lines: list[str]) -> list[tuple[int, str]]:
         if _INDENTED_CODE_RE.match(line):
             candidates.append((lineno, line))
             continue
+        report_command = re.match(r"(?i)^\s*(?:report\s*:\s*)?(hx\s+say\b.*)", line)
+        if report_command:
+            candidates.append((lineno, report_command.group(1)))
         for match in _CODE_SPAN_RE.finditer(line):
             if _exec_position(line[: match.start()]):
                 candidates.append((lineno, match.group(1)))
@@ -535,7 +540,7 @@ def _eval_candidate(
 ) -> None:
     rule = denied_exec(profile, candidate)
     if rule is not None:
-        label = rule if profile["worker"] != "opencode" else f"permission.bash {rule}"
+        label = rule if profile["worker"] != "opencode" or rule == "Exec(hx say)" else f"permission.bash {rule}"
         findings.append(
             {
                 "kind": "denied-command",
@@ -596,6 +601,7 @@ def prompt_findings(
     cwd: Path,
     policy: dict[str, Any] | None = None,
     profile_name: str | None = None,
+    one_off: bool = False,
 ) -> list[dict[str, Any]]:
     """Every denied command or out-of-scope write path the brief asks to run.
 
@@ -608,6 +614,8 @@ def prompt_findings(
     profile = worker_profile(worker, policy, profile_name)
     if profile is None:
         return []
+    if one_off:
+        profile = dict(profile, one_off=True, seq_rules=[*(profile.get("seq_rules") or []), ["hx", "say"]])
     if profile.get("profile_error"):
         return [{"kind": "profile", "command": profile_name, "rule": profile["profile_error"], "line": 0}]
     if profile.get("lead_only"):
@@ -674,6 +682,8 @@ def format_refusal(worker: str, findings: list[dict[str, Any]]) -> str:
                 f"- `{finding['command']}` is denied for {worker} by {finding['rule']} "
                 f"(line {finding['line']})."
             )
+    if any(f["rule"] == "Exec(hx say)" for f in findings):
+        lines.append("Fix: one-off runs report through their final message, not hx say. Remove the hx say Report step.")
     lines.append(
         "Fix: run each denied step before dispatch and put the result in the brief, "
         "or route to a worker that may. Override: --allow-preflight-risk."

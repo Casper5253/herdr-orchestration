@@ -104,7 +104,8 @@ def test_visible_run_writes_and_launches_script(
     assert "{ exit_code = $code } | ConvertTo-Json" in script
 
     prompt = (script_path.parent / ocrun.VISIBLE_PROMPT_FILE).read_text(encoding="utf-8")
-    assert prompt == "count README lines please, 'quote' kept"
+    assert prompt.endswith("count README lines please, 'quote' kept")
+    assert "[team report from ocrun-opencode-vis-ok]" in prompt
 
     # opencode was only ever called with argv lists, never through a shell.
     assert ack["argv"][0][:4] == ["opencode", "session", "list", "--format"]
