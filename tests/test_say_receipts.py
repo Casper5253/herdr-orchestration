@@ -2,10 +2,34 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from hx import host, say
+
+
+_Q572 = Path(__file__).parent / "fixtures" / "q572"
+
+
+def test_captured_opencode_home_allows_delivery(fake, capsys):
+    fake.views["dev-opencode"] = (_Q572 / "opencode-home.txt").read_text(encoding="utf-8")
+    assert say.say("opencode", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert len(fake.sent) == 1
+
+
+def test_delayed_wrapped_codex_paste_is_not_receipted_before_tab(fake, capsys, monkeypatch):
+    fake.members["dev-lead"].update(kind="codex", status="working")
+    fake.advance = False
+    wrapped = (_Q572 / "codex-wrapped.txt").read_text(encoding="utf-8")
+    wrapped = wrapped.rsplit("\n", 2)[0] + "\n  tab to queue message\n"
+    views = iter([_CODEX_IDLE_EMPTY, _CODEX_IDLE_EMPTY, wrapped, _CODEX_BUSY_QUEUED])
+    fake.read = lambda *args: next(views)
+    fake.press = lambda member, *keys: fake.keys.append(list(keys)) or True
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("queued\n")
+    assert fake.keys == [["tab"]]
 
 
 def _member(name, role=None, kind="codex", status="idle", address="t1"):
