@@ -12,8 +12,14 @@ from hx import host, say
 _Q572 = Path(__file__).parent / "fixtures" / "q572"
 
 
-def test_captured_opencode_home_allows_delivery(fake, capsys):
-    fake.views["dev-opencode"] = (_Q572 / "opencode-home.txt").read_text(encoding="utf-8")
+@pytest.mark.parametrize("sidebar", [False, True])
+def test_captured_opencode_home_allows_delivery(fake, capsys, sidebar):
+    screen = (_Q572 / "opencode-home.txt").read_text(encoding="utf-8")
+    if sidebar:
+        rows = screen.splitlines()
+        width = max(len(row) for row in rows)
+        screen = "\n".join(row.ljust(width + 2) + "│ Todo: finish report" for row in rows)
+    fake.views["dev-opencode"] = screen
     assert say.say("opencode", "brief ends here") == 0
     assert capsys.readouterr().out.endswith("submitted\n")
     assert len(fake.sent) == 1
@@ -30,6 +36,14 @@ def test_delayed_wrapped_codex_paste_is_not_receipted_before_tab(fake, capsys, m
     assert say.say("lead", "brief ends here") == 0
     assert capsys.readouterr().out.endswith("queued\n")
     assert fake.keys == [["tab"]]
+
+
+def test_empty_codex_without_turn_advance_is_uncertain(fake, capsys):
+    fake.members["dev-lead"].update(kind="codex", status="working")
+    fake.advance = False
+    assert say.say("lead", "brief ends here") == 1
+    assert "uncertain (empty composer without submission evidence)" in capsys.readouterr().out
+    assert fake.keys == []
 
 
 def _member(name, role=None, kind="codex", status="idle", address="t1"):
