@@ -146,6 +146,46 @@ def _submit_key(screen: str, kind: str) -> tuple[str, str]:
     return _SUBMIT_KEY_FALLBACK
 
 
+# Devin holds sends in a client-side queue while the agent works: a
+# `── N queued ──` banner lists them as `○` rows, and Enter on the empty
+# composer sends them. No other provider renders the banner.
+_DEVIN_QUEUE_BANNER = re.compile(r"[─—\s]*\d+\s+queued\b")
+
+
+def _queued_text(text: str, kind: str) -> str | None:
+    """The provider's queued-send region as text, or None when none shows.
+
+    The region is the rows under the banner down to the next rule, prompt or
+    blank row; matching never reaches the composer or the scrollback above it.
+    """
+    if kind != "devin":
+        return None
+    lines = (text or "").splitlines()
+    banner = next((index for index in range(len(lines) - 1, -1, -1)
+                   if _DEVIN_QUEUE_BANNER.match(lines[index].strip())), None)
+    if banner is None:
+        return None
+    rows = []
+    for line in lines[banner + 1:]:
+        if not line.strip() or line.lstrip().startswith(("─", "❭")):
+            break
+        rows.append(line)
+    return "\n".join(rows)
+
+
+def _queue_holds(screen: str, kind: str, sent: str) -> bool:
+    """Whether `sent` visibly sits in the provider's unsent queue.
+
+    Pane wraps drop whitespace a comparison would see, so both sides compare
+    without any of it; a display that truncates the send never matches and
+    never earns a key press.
+    """
+    region = _queued_text(screen, kind)
+    if region is None or not sent:
+        return False
+    return re.sub(r"\s+", "", sent) in re.sub(r"\s+", "", region)
+
+
 # The 7501 `app` word, the only evidence of which provider runs in a terminal.
 HC_APP_KINDS = {
     "claude-code": "claude",

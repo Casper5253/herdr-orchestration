@@ -1,0 +1,11 @@
+ ● ~\Documents\Projects\todo-rpg
+── 1 queued ─────────────────────────────────────────────── ↑ edit · ↵ send now ──
+○ <hc from="t2x">[team from dev-lead] New brief: read .hx/briefs/q632-e2e-
+  repair.md and do exactly that.</hc>
+─────────────────────────────────────── Review and follow the stranger audit br… ─
+❭ Ask Devin to build features, fix bugs, or work on your code
+──────────────────────────────────────────────────────────────────────────────────
+SWE-2 High · bypass
+Type while the agent works to queue messages; press Enter on an empty input to
+send them now
+Update v3000.14.30821 available!

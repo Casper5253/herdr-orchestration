@@ -1,0 +1,14 @@
+﻿   Use /help to see all available slash commands
+
+❭ /compact
+
+ ✱ Context compacted
+
+ ● ~\Documents\Projects\todo-rpg
+─────────────────────────────────────── Review and follow the stranger audit br… ─
+❭ Ask Devin to build features, fix bugs, or work on your code
+──────────────────────────────────────────────────────────────────────────────────
+SWE-2 High · bypass
+Type while the agent works to queue messages; press Enter on an empty input to sen
+
+Update v3000.14.30821 available!

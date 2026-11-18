@@ -339,6 +339,95 @@ def test_unidentified_composer_does_not_type(fake, capsys):
     assert fake.keys == []
 
 
+_DEVIN_COMPOSER = Path(__file__).parent / "fixtures" / "devin-composer"
+_DEVIN_IDLE_234 = (_DEVIN_COMPOSER / "idle-v3000.11.234.txt").read_text(encoding="utf-8")
+_DEVIN_QUEUED_234 = (_DEVIN_COMPOSER / "queued-v3000.11.234.txt").read_text(encoding="utf-8")
+_DEVIN_QUEUED_TEXT = "[team from dev-lead] New brief: read .hx/briefs/q632-e2e-repair.md and do exactly that."
+
+
+@pytest.mark.parametrize("fixture", [_DEVIN_IDLE_234, _DEVIN_QUEUED_234])
+def test_devin_v3000_composer_is_identified_and_empty(fixture):
+    """Q-616: Devin v3000.11.234 keeps `❭` above the footer rule; the
+    placeholder means nothing is staged."""
+    staged = host._composer_text(fixture, "devin")
+    assert staged == "Ask Devin to build features, fix bugs, or work on your code"
+    assert host._composer_empty(staged, "devin")
+    assert host._submit_key(fixture, "devin") == ("enter", "submitted")
+
+
+def test_devin_queue_holds_only_the_sent_text():
+    """The `── 1 queued ──` banner's `○` rows hold sends waiting for Enter."""
+    assert host._queue_holds(_DEVIN_QUEUED_234, "devin", _DEVIN_QUEUED_TEXT)
+    assert not host._queue_holds(_DEVIN_QUEUED_234, "devin", "a different message")
+    assert not host._queue_holds(_DEVIN_IDLE_234, "devin", _DEVIN_QUEUED_TEXT)
+
+
+@pytest.mark.parametrize("fixture", [_DEVIN_IDLE_234, _DEVIN_QUEUED_234])
+def test_devin_history_read_is_composer_evidence(fake, capsys, fixture):
+    """Q-616, 18 Nov: an idle Devin pane reads how=history, complete=False
+    (scrollback outgrew the buffer); that was refused as no composer and the
+    send never ran. A history read ends at the same live screen, so its
+    composer anchors count."""
+    fake.members["dev-lead"]["kind"] = "devin"
+    fake.views["dev-lead"] = host.ReadText(
+        fixture, complete=False, why="printed", how="history")
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert len(fake.sent) == 1
+
+
+def test_devin_queued_send_is_flushed_by_one_enter(fake, capsys):
+    """Q-616, second shape: the send lands in Devin's `1 queued` list and the
+    composer shows the placeholder. One Enter on the empty input sends it."""
+    fake.members["dev-lead"]["kind"] = "devin"
+    fake.views["dev-lead"] = _DEVIN_IDLE_234
+    fake.advance = False  # a client-side queue never advances the turn
+
+    def queue_our_send(name):
+        fake.views["dev-lead"] = _DEVIN_QUEUED_234.replace(
+            "[team from dev-lead] New brief: read .hx/briefs/q632-e2e-\n"
+            "  repair.md and do exactly that.",
+            fake.sent[-1][1])
+    fake.on_send = queue_our_send
+
+    def flush(member, *keys):
+        fake.keys.append(list(keys))
+        fake.views["dev-lead"] = _DEVIN_IDLE_234  # Enter sent the queue
+        return True
+    fake.press = flush
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert fake.keys == [["enter"]]
+    assert len(fake.sent) == 1
+
+
+def test_devin_foreign_queue_never_earns_enter(fake, capsys):
+    """A queued message that is not ours gets no key and no receipt."""
+    fake.members["dev-lead"]["kind"] = "devin"
+    fake.views["dev-lead"] = _DEVIN_QUEUED_234
+    fake.advance = False
+    assert say.say("lead", "brief ends here") == 1
+    assert "uncertain" in capsys.readouterr().out
+    assert fake.keys == []
+
+
+def test_devin_send_still_queued_after_enter_is_pending(fake, capsys):
+    fake.members["dev-lead"]["kind"] = "devin"
+    fake.views["dev-lead"] = _DEVIN_IDLE_234
+    fake.advance = False
+
+    def queue_our_send(name):
+        fake.views["dev-lead"] = _DEVIN_QUEUED_234.replace(
+            "[team from dev-lead] New brief: read .hx/briefs/q632-e2e-\n"
+            "  repair.md and do exactly that.",
+            fake.sent[-1][1])
+    fake.on_send = queue_our_send
+    fake.press = lambda member, *keys: fake.keys.append(list(keys)) or True
+    assert say.say("lead", "brief ends here") == 1
+    assert "pending (send still queued after enter)" in capsys.readouterr().out
+    assert fake.keys == [["enter"]]
+
+
 @pytest.mark.parametrize("phase", ["before", "after", "recheck"])
 def test_incomplete_composer_evidence_never_earns_success(fake, capsys, phase):
     fake.members["dev-lead"]["kind"] = "codex"

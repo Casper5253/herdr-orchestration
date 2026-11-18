@@ -177,16 +177,57 @@ def _read_composer(detected: host.Host, name: str, kind: str) -> tuple[str, str 
         return "", None
     # hc marks a live screen read incomplete (no full history), but the
     # composer sits on that screen, so a screen read is composer evidence.
+    # A history read ends at the same live screen, and the composer anchors
+    # sit in its tail; any other incomplete read is no evidence at all.
     if (getattr(screen, "complete", None) is False
-            and getattr(screen, "how", None) != "screen"):
+            and getattr(screen, "how", None) not in ("screen", "history")):
         return str(screen), None
     return str(screen), host._composer_text(str(screen), kind)
+
+
+def _flush_queued_send(
+    detected: host.Host,
+    member: host.Member,
+    name: str,
+    kind: str,
+    text: str,
+    screen: str,
+) -> tuple[str, str | None]:
+    """Our send sits in the provider's visible queue: press its submit key once.
+
+    Devin holds sends in a `N queued` list while the agent works and Enter on
+    the empty composer sends them. `submitted` needs the queue to let go of
+    the text; anything less stays retryable, never receipted.
+    """
+    # A working receiver drains its own queue when the turn ends; pressing
+    # the key would force our text into the middle of that turn.
+    if member["status"] == "working":
+        return "queued", None
+    if member["status"] not in ("idle", "done"):
+        return "pending", f"send queued; receiver {member['status']}"
+    key, _ = host._submit_key(screen, kind)
+    try:
+        pressed = detected.press(member, key)
+    except Exception:
+        pressed = False
+    if not pressed:
+        return "pending", f"send queued; {key} press failed"
+    time.sleep(KEY_SETTLE_SECONDS)
+    screen, staged = _read_composer(detected, name, kind)
+    if staged is None:
+        return "uncertain", f"send queued; no composer identified after {key}"
+    if host._queue_holds(screen, kind, text):
+        return "pending", f"send still queued after {key}"
+    if not host._composer_empty(staged, kind):
+        return "pending", f"send staged in composer after {key}"
+    return "submitted", None
 
 
 def _submission_evidence(
     detected: host.Host,
     name: str,
     result: host.SendResult,
+    text: str,
 ) -> tuple[str, str | None]:
     """Verify a send admitted with an empty composer, retry its submit key once."""
     member = _host_member(detected, name)
@@ -206,6 +247,8 @@ def _submission_evidence(
             break
         if _await_advance(detected, name, result["turn"], 0):
             return ("queued" if result["status"] == "working" else "submitted"), None
+        if host._queue_holds(screen, kind, text):
+            return _flush_queued_send(detected, member, name, kind, text, screen)
         if time.monotonic() >= deadline:
             return "uncertain", "empty composer without submission evidence"
         time.sleep(0.25)
@@ -690,7 +733,7 @@ def _deliver(
         if state == "delivered":
             # The standalone CLI reports the provider response inline.
             if not isinstance(detected, host.HerdrHost):
-                outcome, receipt_reason = _submission_evidence(detected, name, result)
+                outcome, receipt_reason = _submission_evidence(detected, name, result, text)
                 if outcome == "pending":
                     state = "pending"
                     reason = receipt_reason or "paste still staged"
