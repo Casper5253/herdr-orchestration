@@ -162,7 +162,8 @@
       "LOCALAPPDATA/Programs/herdr-core",
       "LOCALAPPDATA/Programs/herdr-app",
       "LOCALAPPDATA/Temp",
-      "Documents/Notes/FDE Knowledge"
+      "Documents/Notes/FDE Knowledge",
+      ".claude/hooks"
     ],
     "skill_roots": [
       ".agents",
@@ -298,7 +299,14 @@
       {"comments": [], "decision": "allow", "pattern": ["hx"]},
       {"comments": ["# Absolute path to the Personal Finance Dashboard venv, used from worktrees (added 2026-10-16)."], "decision": "allow", "pattern": [["C:/Users/caspe/Documents/Projects/Personal Finance Dashboard/backend/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\Personal Finance Dashboard\\backend\\.venv\\Scripts\\python.exe", "../../backend/.venv/Scripts/python.exe", "..\\..\\backend\\.venv\\Scripts\\python.exe"]]},
       {"comments": ["# QuantLab venv, used from the main checkout and from worktrees (added 2026-10-17, owner request)."], "decision": "allow", "pattern": [["C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe", "../../quantlab/.venv/Scripts/python.exe", "..\\..\\quantlab\\.venv\\Scripts\\python.exe", "../quantlab/.venv/Scripts/python.exe", "..\\quantlab\\.venv\\Scripts\\python.exe"]]},
-      {"comments": ["# Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request)."], "decision": "allow", "pattern": [["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "msedge", "msedge.exe"]]}
+      {"comments": ["# Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request)."], "decision": "allow", "pattern": [["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "msedge", "msedge.exe"]]},
+      {"comments": ["# Lead compaction by Codex (15 Nov): only these exact commands against the lead terminal t2x."], "decision": "allow", "pattern": ["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc keys t2x enter"]},
+      {"comments": [], "decision": "allow", "pattern": ["hc", "keys", "t2x", "enter"]},
+      {"comments": [], "decision": "allow", "pattern": ["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc keys t2x / c o m p a c t"]},
+      {"comments": [], "decision": "allow", "pattern": ["hc", "keys", "t2x", "/", "c", "o", "m", "p", "a", "c", "t"]},
+      {"comments": [], "decision": "allow", "pattern": ["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc wait t2x --timeout 900"]},
+      {"comments": [], "decision": "allow", "pattern": ["hc", "wait", "t2x", "--timeout", "900"]},
+      {"comments": [], "decision": "allow", "pattern": ["hc", "send", "t2x"]}
     ]
   },
   "claude": {

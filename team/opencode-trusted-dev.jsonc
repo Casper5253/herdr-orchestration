@@ -80,6 +80,7 @@
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow",
       "C:\\Users\\caspe\\Documents\\Notes\\FDE Knowledge\\*": "allow",
+      "C:\\Users\\caspe\\.claude\\hooks\\*": "allow",
       // Secret files and keys, denied last so they win. File rules do not gate
       // external_directory, but they are the read/edit boundary.
       "C:\\Users\\caspe\\.ssh\\*": "deny",

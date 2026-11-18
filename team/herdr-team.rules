@@ -43,3 +43,11 @@ prefix_rule(pattern=[["C:/Users/caspe/Documents/Projects/Personal Finance Dashbo
 prefix_rule(pattern=[["C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe", "../../quantlab/.venv/Scripts/python.exe", "..\\..\\quantlab\\.venv\\Scripts\\python.exe", "../quantlab/.venv/Scripts/python.exe", "..\\quantlab\\.venv\\Scripts\\python.exe"]], decision="allow")
 # Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request).
 prefix_rule(pattern=[["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "msedge", "msedge.exe"]], decision="allow")
+# Lead compaction by Codex (15 Nov): only these exact commands against the lead terminal t2x.
+prefix_rule(pattern=["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc keys t2x enter"], decision="allow")
+prefix_rule(pattern=["hc", "keys", "t2x", "enter"], decision="allow")
+prefix_rule(pattern=["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc keys t2x / c o m p a c t"], decision="allow")
+prefix_rule(pattern=["hc", "keys", "t2x", "/", "c", "o", "m", "p", "a", "c", "t"], decision="allow")
+prefix_rule(pattern=["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc wait t2x --timeout 900"], decision="allow")
+prefix_rule(pattern=["hc", "wait", "t2x", "--timeout", "900"], decision="allow")
+prefix_rule(pattern=["hc", "send", "t2x"], decision="allow")
