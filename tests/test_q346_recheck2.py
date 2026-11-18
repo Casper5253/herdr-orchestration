@@ -174,10 +174,7 @@ def _record(tmp_path: Path) -> dict:
     return json.loads(paths[0].read_text(encoding="utf-8"))
 
 
-# Finding 1 root: a forced message that goes pending for any reason (here a
-# blocked destination, not the probe's SendNotAttempted) must stay control and
-# bypass compaction on the --pending retry.
-def test_forced_pending_after_blocked_destination_retries_as_control(
+def test_forced_pending_after_blocked_destination_retains_control_flag(
     fake: FakeHc, led: ledger.Ledger, tmp_path: Path
 ) -> None:
     fake.members["dev-opencode"]["status"] = "blocked"
@@ -185,11 +182,10 @@ def test_forced_pending_after_blocked_destination_retries_as_control(
     record = _record(tmp_path)
     assert record["state"] == "pending"
     assert record["control"] is True
-    _seed_operation(led)
     fake.members["dev-opencode"]["status"] = "idle"
     assert say.retry_pending() == 0
-    assert len(fake.sent) == 1, (
-        "a forced pending message lost its control flag on a blocked-destination retry")
+    assert len(fake.sent) == 1
+    assert _record(tmp_path)["control"] is True
 
 
 def test_ordinary_pending_message_is_still_held_by_compaction(
@@ -263,7 +259,7 @@ def test_reset_recovery_requires_replacement_or_idle_proof(
 
 
 @pytest.mark.parametrize("mode", ["lead", "control", "force"])
-def test_control_waits_for_delivery_then_retries_through_compaction(
+def test_control_retry_waits_for_delivery_and_compaction(
     fake: FakeHc, led: ledger.Ledger, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, mode: str,
 ) -> None:
@@ -279,11 +275,13 @@ def test_control_waits_for_delivery_then_retries_through_compaction(
     assert _record(tmp_path)["state"] == "pending"
     assert led._load_leases()["deliveries"][target]["holder"] == "other-send"
     assert led.release_delivery(target, "other-send")
+    assert say.retry_pending() == 1
+    assert fake.sent == []
+    led.mutate_leases(lambda leases: leases["sessions"].pop(sid))
     assert say.retry_pending() == 0
     assert len(fake.sent) == 1
     leases = led._load_leases()
     assert target not in leases.get("deliveries", {})
-    assert sid in leases["sessions"]
 
 
 @pytest.mark.parametrize("outcome", ["not-attempted", "raised", "uncertain"])

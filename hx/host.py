@@ -32,6 +32,8 @@ SLASH_ENTER_SETTLE_SECONDS = 0.75
 # sit between them. A prompt-shaped line anywhere else is output, never the
 # composer — Markdown `> /compact` and scrollback echoes earn nothing.
 _DEVIN_FOOTER_RULE = re.compile(r"[─—\-=\s]*[─—\-=][─—\-=\s]*")
+_DEVIN_COMPOSER_TOP = re.compile(r"─{3,}(?: \S.* ─+)?")
+_DEVIN_STATUS_LINE = re.compile(r"\S.* · \S.*")
 _CODEX_STATUS_LINE = re.compile(r"context left|^\s*gpt-", re.IGNORECASE)
 
 
@@ -40,7 +42,7 @@ _CODEX_STATUS_LINE = re.compile(r"context left|^\s*gpt-", re.IGNORECASE)
 _COMPOSER_KINDS = frozenset({"codex", "devin", "opencode"})
 
 
-def _composer_text(text: str, kind: str) -> str | None:
+def _composer_text(text: str, kind: str, *, allow_full_devin: bool = False) -> str | None:
     """The text staged in the provider's composer at its fixed position.
 
     The region is the prompt row plus its continuation rows: a paste wider
@@ -65,6 +67,14 @@ def _composer_text(text: str, kind: str) -> str | None:
                 return "".join(row.strip() for row in rows)
             if line.strip() and not line.startswith((" ", "\t")):
                 break
+        bottom = lines[rule].strip()
+        if (allow_full_devin and len(bottom) >= 3 and bottom.strip("─") == ""
+                and rule + 1 < len(lines)
+                and _DEVIN_STATUS_LINE.fullmatch(lines[rule + 1].strip())):
+            for top in range(rule - 1, -1, -1):
+                line = lines[top].strip()
+                if len(line) == len(bottom) and _DEVIN_COMPOSER_TOP.fullmatch(line):
+                    return "".join(row.strip() for row in lines[top + 1:rule]) or None
         return None
     if kind == "opencode":
         border = next((match for line in reversed(lines)

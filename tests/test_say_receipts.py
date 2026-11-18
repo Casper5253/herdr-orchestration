@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hx import host, say
+from hx import devin, host, ledger, say
 
 
 _Q572 = Path(__file__).parent / "fixtures" / "q572"
@@ -342,7 +342,66 @@ def test_unidentified_composer_does_not_type(fake, capsys):
 _DEVIN_COMPOSER = Path(__file__).parent / "fixtures" / "devin-composer"
 _DEVIN_IDLE_234 = (_DEVIN_COMPOSER / "idle-v3000.11.234.txt").read_text(encoding="utf-8")
 _DEVIN_QUEUED_234 = (_DEVIN_COMPOSER / "queued-v3000.11.234.txt").read_text(encoding="utf-8")
+_DEVIN_FULL_234 = (_DEVIN_COMPOSER / "full-v3000.11.234.txt").read_text(encoding="utf-8")
 _DEVIN_QUEUED_TEXT = "[team from dev-lead] New brief: read .hx/briefs/q632-e2e-repair.md and do exactly that."
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_devin_full_composer_retries_only_the_sent_text(fake, capsys, monkeypatch, edited):
+    from hx.__main__ import main
+
+    fake.members["dev-lead"]["kind"] = "devin"
+    fake.views["dev-lead"] = _DEVIN_IDLE_234
+    fake.advance = False
+    body = ("Please use the synthetic worktree to review the requested fix, run the "
+            "existing local checks, and report the exact outcome with the path to the "
+            "saved evidence. Keep this fixture local.")
+    denied = ("Denied for you (a denied call cancels your turn): sample-deploy, "
+              "sample-push, sample-upload, sample-publish, sample-admin, "
+              "sample-install, sample-release, sample-reset, sample-remove")
+    monkeypatch.setattr(devin, "pane_denied_line", lambda name: denied)
+    staged = _DEVIN_FULL_234.replace("sample-remove", "edited") if edited else _DEVIN_FULL_234
+    fake.on_send = lambda name: fake.views.update({name: staged})
+
+    def press(member, *keys):
+        fake.keys.append(list(keys))
+        fake.views["dev-lead"] = _DEVIN_IDLE_234
+        return True
+
+    fake.press = press
+    assert main(["say", "lead", body]) == int(edited)
+    assert fake.sent == [("dev-lead", f"[team from dev-codex] {body} {denied}")]
+    if edited:
+        assert fake.keys == []
+        assert "uncertain (staged Devin text differs from send)" in capsys.readouterr().out
+    else:
+        assert fake.keys == [["enter"]]
+        assert capsys.readouterr().out.endswith("submitted\n")
+
+
+def test_cli_pending_retry_keeps_send_away_from_compacting_devin(fake, capsys):
+    from hx.__main__ import main
+
+    fake.members["dev-lead"].update(kind="devin", session_id="ses-devin")
+    fake.views["dev-lead"] = _DEVIN_IDLE_234.replace(
+        "Ask Devin to build features, fix bugs, or work on your code", "existing draft")
+    assert main(["say", "lead", "brief ends here"]) == 1
+    assert "pending (composer not empty)" in capsys.readouterr().out
+    fake.views["dev-lead"] = _DEVIN_IDLE_234
+    led = ledger.default_ledger()
+    led.mutate_leases(lambda leases: leases["sessions"].update({
+        "ses-devin": {"agent": "dev-lead", "session_id": "ses-devin",
+                      "token": "fixture", "state": "compacting"},
+    }))
+
+    assert main(["say", "--pending"]) == 1
+    assert "pending (compaction compacting)" in capsys.readouterr().out
+    assert fake.sent == []
+    assert fake.keys == []
+
+    led.mutate_leases(lambda leases: leases["sessions"].pop("ses-devin"))
+    assert main(["say", "--pending"]) == 0
+    assert len(fake.sent) == 1
 
 
 @pytest.mark.parametrize("fixture", [_DEVIN_IDLE_234, _DEVIN_QUEUED_234])

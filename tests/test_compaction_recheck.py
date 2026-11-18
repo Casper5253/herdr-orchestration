@@ -166,14 +166,15 @@ def test_forced_message_is_stored_as_control(fake: FakeHc, led: ledger.Ledger,
         "a forced control message must stay control in the outbox")
 
 
-def test_forced_pending_retry_bypasses_compaction(fake: FakeHc, led: ledger.Ledger,
-                                                  tmp_path: Path) -> None:
+def test_forced_pending_retry_waits_for_compaction(fake: FakeHc, led: ledger.Ledger) -> None:
     fake.fail_once = True
     assert say.say("opencode", "recovery instructions", force=True) == 1
     _seed_operation(led)
+    assert say.retry_pending() == 1
+    assert fake.sent == []
+    led.mutate_leases(lambda leases: leases["sessions"].pop("ses-target"))
     assert say.retry_pending() == 0
-    assert len(fake.sent) == 1, (
-        "the forced pending message was held by compaction admission on retry")
+    assert len(fake.sent) == 1
 
 
 def test_recover_keeps_live_held_session_when_live_sid_unknown(

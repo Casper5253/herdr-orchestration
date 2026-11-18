@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hx import devin, host, say, usage
+from hx import boundary, devin, host, say, usage
 from hx.__main__ import main
 
 AGENTS = {"result": {"agents": [
@@ -90,6 +90,7 @@ def test_both_configs_unreadable_sends_the_message_unchanged(
 ) -> None:
     _pane_config(tmp_path, "{ not json")
     monkeypatch.setattr(devin, "pane_config_template", lambda: tmp_path / "missing.json")
+    monkeypatch.setattr(boundary, "devin_deny_lists", lambda *a, **k: ([], []))
     assert main(["say", "devin", "hi"]) == 0
     assert sent == [["herdr", "agent", "prompt", "dev-devin", "[team from dev-codex] hi"]]
 

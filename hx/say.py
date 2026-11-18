@@ -26,6 +26,7 @@ import datetime
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -182,7 +183,7 @@ def _read_composer(detected: host.Host, name: str, kind: str) -> tuple[str, str 
     if (getattr(screen, "complete", None) is False
             and getattr(screen, "how", None) not in ("screen", "history")):
         return str(screen), None
-    return str(screen), host._composer_text(str(screen), kind)
+    return str(screen), host._composer_text(str(screen), kind, allow_full_devin=True)
 
 
 def _flush_queued_send(
@@ -244,6 +245,11 @@ def _submission_evidence(
         if staged is None:
             return "uncertain", "no composer identified"
         if not host._composer_empty(staged, kind):
+            if kind == "devin" and host._composer_text(screen, kind) is None:
+                wrapped = re.fullmatch(r'<hc from="[^"]+">(.*)</hc>', staged)
+                body = wrapped[1] if wrapped else staged
+                if "".join(body.split()) != "".join(text.split()):
+                    return "uncertain", "staged Devin text differs from send"
             break
         if _await_advance(detected, name, result["turn"], 0):
             return ("queued" if result["status"] == "working" else "submitted"), None
@@ -599,6 +605,7 @@ def _deliver(
     *,
     force: bool = False,
     control: bool | None = None,
+    retry: bool = False,
 ) -> tuple[str, str | None, tuple[str, str]]:
     """The one guarded delivery path, shared by a first send and a retry.
 
@@ -689,7 +696,7 @@ def _deliver(
                 state, note = transition
                 _write_state(path, state, note=note)
                 return state, note, (where, _OUTCOME_WORDS.get(state, "uncertain"))
-        message_control = bool(
+        message_control = not retry and bool(
             force or (current.get("control") if control is None else control) or not work)
         holder = str(current.get("id") or path.stem)
         admitted, reason = _admit_delivery(name, holder, destination, control=message_control)
@@ -879,7 +886,8 @@ def retry_pending(*, list_uncertain: bool = False) -> int:
             unresolved += 1
             continue
         print(f"Pending {message_id} -> {target} ({record.get('created_at')})")
-        outcome, reason, (where, word) = _deliver(detected, sender_member, target, body, path)
+        outcome, reason, (where, word) = _deliver(
+            detected, sender_member, target, body, path, retry=True)
         suffix = f" ({reason})" if reason and outcome != "delivered" else ""
         print(f"{message_id} -> {where}: {word}{suffix}")
         if outcome not in ("delivered", "cancelled"):
@@ -934,7 +942,7 @@ def retry_pending_for(detected: host.Host, worker: str) -> dict[str, int]:
         if state == "uncertain":
             counts["unresolved"] += 1
             continue
-        outcome, _, _ = _deliver(detected, sender_member, target, body, path)
+        outcome, _, _ = _deliver(detected, sender_member, target, body, path, retry=True)
         if outcome in counts:
             counts[outcome] += 1
         else:
