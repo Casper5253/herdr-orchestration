@@ -1,13 +1,17 @@
 """Boundary decisions are durable, including refused and unknown recovery."""
 
 import datetime as dt
+import io
 import json
+import shutil
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from hx import __main__ as cli
-from hx import checkpoint, context, host, ledger
+from hx import boundary as boundary_mod
+from hx import checkpoint, context, devin as devin_mod, host, ledger, paths
 
 
 @pytest.fixture
@@ -131,3 +135,66 @@ def test_lead_guard_is_per_work_item(boundary_controller, monkeypatch):
     assert another['action'] == 'self-compact'
     assert another['work_item'] == 'next-release'
     assert '--work-item' in another['steps'][-1]
+
+
+# --- worker boundary manifest (team/boundary.json) ---------------------------
+
+_MANIFEST_FILES = [
+    boundary_mod.MANIFEST_NAME,
+    "policy.json",
+    boundary_mod._OPENCODE_OVERLAY,
+    "team/devin-worker.config.json",
+    "team/devin-pane.config.json",
+    "team/herdr-team.rules",
+    "team/claude-settings.json",
+]
+
+
+def _copy_boundary_tree(root: Path, tmp_path: Path) -> Path:
+    """A scratch copy of every config the manifest generates, plus the manifest."""
+    clone = tmp_path / "tree"
+    for rel in _MANIFEST_FILES:
+        target = clone / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / rel, target)
+    return clone
+
+
+def test_manifest_check_report(capsys):
+    """hx boundary check on this tree: prints the divergence report, passes on no drift."""
+    out = io.StringIO()
+    rc = boundary_mod.check(out=out)
+    print("\n" + out.getvalue())
+    assert rc == 0, out.getvalue()
+
+
+def test_manifest_check_names_a_planted_deny(tmp_path):
+    """One extra Exec rule in a copied config fails the check and names the file."""
+    clone = _copy_boundary_tree(paths.package_root(), tmp_path)
+    worker = clone / "team/devin-worker.config.json"
+    config = json.loads(devin_mod._strip_json_comments(worker.read_text(encoding="utf-8")))
+    config["permissions"]["deny"].insert(3, "Exec(planted drift)")
+    worker.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    out = io.StringIO()
+    rc = boundary_mod.check(root=clone, out=out)
+    report = out.getvalue()
+    print("\n" + report)
+    assert rc == 1
+    assert "team/devin-worker.config.json" in report
+    assert "planted drift" in report
+
+
+def test_manifest_check_names_a_planted_path_rule(tmp_path):
+    """An extra Write() deny in a copied config is reported the same way."""
+    clone = _copy_boundary_tree(paths.package_root(), tmp_path)
+    pane = clone / "team/devin-pane.config.json"
+    config = json.loads(devin_mod._strip_json_comments(pane.read_text(encoding="utf-8")))
+    config["permissions"]["deny"].append("Write(**/secrets/**)")
+    pane.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    out = io.StringIO()
+    assert boundary_mod.check(root=clone, out=out) == 1
+    report = out.getvalue()
+    assert "team/devin-pane.config.json" in report
+    assert "secrets" in report

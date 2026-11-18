@@ -318,29 +318,44 @@ def pane_config_template() -> Path:
     return paths.package_root() / "team" / "devin-pane.config.json"
 
 
+def _pane_deny_line(commands: str, other: str) -> str:
+    line = "Denied for you (a denied call cancels your turn): " + (commands or "no Exec prefixes")
+    if other:
+        line += ". Also denied: " + other
+    return line + "."
+
+
 def pane_denied_line(name: str) -> str:
     """The deny list ``hx say`` appends to a message for a Devin pane, as one line.
 
     A pane gets no run preamble, and a denied call cancels its turn, so the
     deny list travels on the message instead. It comes from the pane's live
     config (``<state>/<name>/config.json``, written by the launcher); the
-    shipped pane template is the fallback. ``""`` means send unchanged: a
-    message must never fail because the deny list could not be read.
+    boundary manifest is the fallback, since every pane config is generated
+    from it. ``""`` means send unchanged: a message must never fail because
+    the deny list could not be read.
     """
-    for path in (state_dir() / name / "config.json", pane_config_template()):
-        try:
-            commands, other = _denied_lists(
-                json.loads(_strip_json_comments(path.read_text(encoding="utf-8")))
-            )
-        except Exception:
-            continue
+    try:
+        commands, other = _denied_lists(
+            json.loads(_strip_json_comments((state_dir() / name / "config.json").read_text(encoding="utf-8")))
+        )
         if not commands and not other:
             return ""
-        line = "Denied for you (a denied call cancels your turn): " + (commands or "no Exec prefixes")
-        if other:
-            line += ". Also denied: " + other
-        return line + "."
-    return ""
+        return _pane_deny_line(commands, other)
+    except Exception:
+        pass
+    try:
+        from hx import boundary
+
+        commands, other = boundary.devin_deny_lists("pane")
+    except Exception:
+        return ""
+    if not commands and not other:
+        return ""
+    return _pane_deny_line(
+        ", ".join(f"`{cmd}`" for cmd in commands),
+        ", ".join(f"`{rule}`" for rule in other),
+    )
 
 
 def prepare_run(

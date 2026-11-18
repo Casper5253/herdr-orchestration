@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_watch, usage
+from hx import boundary, checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -142,7 +142,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_say_parser(subparsers)
     _add_jotarium_parser(subparsers)
     _add_checkpoint_parser(subparsers)
-    boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction.")
+    boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction. `hx boundary check|gen` handles the worker boundary manifest.")
     boundary.add_argument("agent")
     boundary.add_argument("--task")
     boundary.add_argument("--work-item", help="Stable lead work-item key for its compaction guard.")
@@ -357,6 +357,14 @@ def _checkpoint_validate(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:]) if argv is None else list(argv)
+    if len(args_list) > 1 and args_list[0] == "boundary" and args_list[1] in {"check", "gen"}:
+        try:
+            return int(boundary.main(args_list[1:]) or 0)
+        except SystemExit as exc:
+            return int(exc.code) if exc.code else 0
+        except Exception as exc:
+            print(f"hx: {exc}", file=sys.stderr)
+            return 1
     if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile"}:
         handler = {
             "route": route.main,

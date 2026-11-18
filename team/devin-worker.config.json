@@ -1,6 +1,7 @@
 // Devin CLI config template for hx worker runs. `hx ocrun --worker devin` copies it into the run
 // directory and passes the copy with --config: --config replaces %APPDATA%\devin\config.json and
 // Devin writes setup state back into it. Interactive Devin sessions keep the user config.
+// Generated from team/boundary.json by 'hx boundary gen'; edit the manifest, not this file.
 {
   "agent": {
     // ocrun always passes --model too; this pin only guards a run that forgets it.

@@ -4,6 +4,7 @@
   "model": "opencode-go/deepseek-v4.1-flash",
   // Herdr trusted dev team overlay, loaded only via OPENCODE_CONFIG by Start-HerdrTeam.ps1.
   // OpenCode 1.18 applies the LAST matching rule, so the narrow allows come after the herdr ask.
+  // Generated from team/boundary.json by 'hx boundary gen'; edit the manifest, not this file.
   "permission": {
     "bash": {
       "*": "allow",
@@ -77,9 +78,7 @@
       "C:\\Users\\caspe\\AppData\\Roaming\\herdr\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-core\\*": "allow",
       "C:\\Users\\caspe\\AppData\\Local\\Programs\\herdr-app\\*": "allow",
-      // Scratch space for long command output and temp files.
       "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": "allow",
-      // The agentmem vault.
       "C:\\Users\\caspe\\Documents\\Notes\\FDE Knowledge\\*": "allow",
       // Secret files and keys, denied last so they win. File rules do not gate
       // external_directory, but they are the read/edit boundary.

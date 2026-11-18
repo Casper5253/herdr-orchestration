@@ -3,6 +3,7 @@
 // %APPDATA%\devin\config.json and Devin writes setup state back into it, so this template stays
 // clean (no org id or setup state). Same as team/devin-worker.config.json except the hx deny is
 // narrowed: a pane is a teammate, not a one-off worker, so it may run `hx say` and `hx checkpoint`.
+// Generated from team/boundary.json by 'hx boundary gen'; edit the manifest, not this file.
 {
   "agent": {
     // The launcher always passes --model too; this pin only guards a run that forgets it.
