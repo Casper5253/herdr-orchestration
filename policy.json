@@ -67,7 +67,7 @@
   },
   "codex": {
     "economy_model": "gpt-6-luna",
-    "strong_model": "gpt-6.1-sol"
+    "strong_model": "gpt-6.2-sol"
   },
   "effort_by_kind": {
     "trivial": "low",
@@ -176,6 +176,7 @@
     "qwen3.7-plus": 200000,
     "kimi-k2.7-code": 200000,
     "gpt-6-luna": 200000,
+    "gpt-6.2-sol": 200000,
     "gpt-6.1-sol": 200000,
     "swe-2-medium": 200000,
     "swe-2-high": 200000,
