@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-18",
+  "items": [
+    {
+      "ref": "Q-396",
+      "sharedNum": 396,
+      "kind": "task",
+      "title": "Hidden features inventory and proposal",
+      "status": "in_progress",
+      "assignee": null,
+      "acceptance": {
+        "status": "rejected",
+        "decidedBy": "human",
+        "decidedAt": "2026-11-18T02:31:00.000Z",
+        "localDay": "2026-11-18",
+        "request": {
+          "kind": "decide",
+          "question": "Which hidden-features bundle should ship?",
+          "options": [
+            {"key": "a", "label": "Proposal page only"},
+            {"key": "b", "label": "Proposal page and the four fixes"}
+          ],
+          "recommended": "b"
+        },
+        "revision": 3
+      },
+      "blockers": {"open": null, "resolved": []},
+      "followUp": null,
+      "children": {"open": 2, "done": 0},
+      "createdAt": "2026-11-16T20:00:00.000Z",
+      "updatedAt": "2026-11-18T02:31:00.000Z"
+    },
+    {
+      "ref": "Q-397",
+      "sharedNum": 397,
+      "kind": "task",
+      "title": "Hidden features notes",
+      "status": "in_progress",
+      "assignee": "agent:dev-claude",
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "followUp": null,
+      "children": {"open": 0, "done": 0},
+      "createdAt": "2026-11-16T20:05:00.000Z",
+      "updatedAt": "2026-11-17T10:00:00.000Z"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "q396-proposal",
+      "title": "Q-396 hidden features proposal",
+      "owner": "dev-claude",
+      "status": "in_progress",
+      "jotarium": "Q-396"
+    }
+  ],
+  "live": [
+    {"name": "dev-claude", "role": "claude", "status": "working"},
+    {"name": "dev-codex", "role": "codex", "status": "idle"},
+    {"name": "dev-opencode", "role": "opencode", "status": "idle"}
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "date": "2026-11-18",
+  "items": [
+    {
+      "ref": "Q-630",
+      "sharedNum": 630,
+      "kind": "task",
+      "title": "Release notes and publish wiring",
+      "status": "in_progress",
+      "assignee": null,
+      "acceptance": {
+        "status": "rejected",
+        "decidedBy": "human",
+        "decidedAt": "2026-11-18T03:59:00.000Z",
+        "localDay": "2026-11-18",
+        "request": {
+          "kind": "check",
+          "where": "docs/RELEASE_NOTES.md",
+          "steps": ["Open the release notes"],
+          "expect": "The notes list what shipped and how to upgrade"
+        },
+        "revision": 2
+      },
+      "blockers": {"open": null, "resolved": []},
+      "followUp": null,
+      "children": {"open": 0, "done": 0},
+      "createdAt": "2026-11-17T21:00:00.000Z",
+      "updatedAt": "2026-11-18T03:59:00.000Z"
+    },
+    {
+      "ref": "Q-631",
+      "sharedNum": 631,
+      "kind": "task",
+      "title": "Release page polish",
+      "status": "todo",
+      "assignee": "agent:dev-opencode",
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "followUp": null,
+      "children": {"open": 0, "done": 0},
+      "createdAt": "2026-11-17T21:05:00.000Z",
+      "updatedAt": "2026-11-17T21:05:00.000Z"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "q630-notes",
+      "title": "Q-630 release notes",
+      "owner": "dev-claude",
+      "status": "in_progress",
+      "jotarium": "Q-630"
+    }
+  ],
+  "live": [
+    {"name": "dev-claude", "role": "claude", "status": "working"},
+    {"name": "dev-codex", "role": "codex", "status": "idle"},
+    {"name": "dev-opencode", "role": "opencode", "status": "working"}
+  ]
+}

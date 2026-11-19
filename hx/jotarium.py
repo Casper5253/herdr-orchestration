@@ -1,4 +1,8 @@
-"""Read-only Jotarium audit for in-progress work nobody holds."""
+"""Read-only Jotarium audit for work nobody holds.
+
+Covers in-progress items with no owner and creator send-backs that no follow-up
+item, child item, fresh Needs-you card or live worker answers.
+"""
 from __future__ import annotations
 
 import json
@@ -6,6 +10,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from hx import ledger, usage
@@ -19,7 +24,9 @@ TOKEN_ENVS = (
     "QUESTLOG_TOKEN_DEVIN",
 )
 TIMEOUT_SECONDS = 10.0
-MAX_PAGES = 20
+MAX_PAGES = 100
+SEND_BACK_ACTION = "Create a follow-up item for the creator's send-back, or open a new card."
+ACCEPT_ACTIONS = frozenset({"accept", "choose", "confirm"})
 _REF_TEXT = re.compile(r"\b([PFQ])[-\s]?(\d+)\b", re.IGNORECASE)
 
 
@@ -107,23 +114,173 @@ def _pages(
     raise JotariumError(f"Jotarium query {name} exceeded {MAX_PAGES} pages")
 
 
+def _item_detail(
+    query: Callable[[str, dict[str, Any]], dict[str, Any]],
+    ref: str,
+) -> dict[str, Any]:
+    data = query("getItem", {"ref": ref})
+    item = data.get("item")
+    if not isinstance(item, dict):
+        raise JotariumError(f"Jotarium getItem {ref} returned no item")
+    return item
+
+
+def _item_ref(item: dict[str, Any]) -> str:
+    ref = item.get("ref")
+    if not isinstance(ref, str) or not ref:
+        raise JotariumError("Jotarium returned an item without a ref")
+    return ref
+
+
 def in_progress_items(query: Callable[[str, dict[str, Any]], dict[str, Any]]) -> list[dict[str, Any]]:
     summaries = _pages(query, "listItems", {"status": ["in_progress"]}, "items")
     details: list[dict[str, Any]] = []
     for summary in summaries:
-        ref = summary.get("ref")
-        if not isinstance(ref, str) or not ref:
-            raise JotariumError("Jotarium listItems returned an item without a ref")
-        data = query("getItem", {"ref": ref})
-        item = data.get("item")
-        if not isinstance(item, dict):
-            raise JotariumError(f"Jotarium getItem {ref} returned no item")
+        ref = _item_ref(summary)
+        item = _item_detail(query, ref)
         children = summary.get("children")
         if isinstance(children, dict):
             item["children"] = children
         if item.get("status") == "in_progress":
             details.append(item)
     return details
+
+
+def _instant(value: object) -> datetime | None:
+    """An ISO timestamp as an aware UTC instant, or None when unreadable.
+
+    Payloads may carry offsets or different fractional-second precision, so the
+    text is parsed once here and every comparison works on the instant.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _revision(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _review_event(value: object, revision: object) -> dict[str, Any] | None:
+    if not isinstance(value, str) or not value:
+        return None
+    instant = _instant(value)
+    if instant is None:
+        return None
+    return {"at": value, "instant": instant, "revision": _revision(revision)}
+
+
+def latest_send_back(item: dict[str, Any]) -> dict[str, Any] | None:
+    """The newest outstanding creator send-back, or None.
+
+    A rejection stays live until a new acceptance replaces it, so a later card
+    answer cannot clear it. A card counts only while it is the newest card the
+    creator resolved; an agent withdrawing or superseding a later card does not
+    answer an earlier send-back.
+    """
+    events: list[dict[str, Any]] = []
+    acceptance = item.get("acceptance")
+    if isinstance(acceptance, dict) and acceptance.get("status") == "rejected":
+        event = _review_event(acceptance.get("decidedAt"), acceptance.get("revision"))
+        if event is not None:
+            events.append(event)
+    blockers = item.get("blockers")
+    resolved = blockers.get("resolved") if isinstance(blockers, dict) else None
+    cards: list[tuple[datetime, dict[str, Any]]] = []
+    for card in resolved if isinstance(resolved, list) else []:
+        if not isinstance(card, dict) or card.get("action") not in ACCEPT_ACTIONS:
+            continue
+        instant = _instant(card.get("resolvedAt"))
+        if instant is not None:
+            cards.append((instant, card))
+    if cards:
+        _, newest = max(cards, key=lambda pair: pair[0])
+        comment = newest.get("comment")
+        if isinstance(comment, str) and comment.strip():
+            event = _review_event(newest.get("resolvedAt"), newest.get("revision"))
+            if event is not None:
+                events.append(event)
+    if not events:
+        return None
+    return max(events, key=lambda event: event["instant"])
+
+
+def _follow_up_after(
+    item: dict[str, Any],
+    review: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> str | None:
+    keys = {canonical_ref(item.get("ref")), _item_key(item)} - {None}
+    revision = review.get("revision")
+    for other in items:
+        link = other.get("followUp")
+        if not isinstance(link, dict) or canonical_ref(link.get("of")) not in keys:
+            continue
+        if other.get("status") == "cancelled":
+            continue
+        if revision is not None and link.get("revision") != revision:
+            continue
+        created = _instant(other.get("createdAt"))
+        if created is None or created < review["instant"]:
+            continue
+        ref = other.get("ref")
+        if isinstance(ref, str) and ref:
+            return f"follow-up item {ref} after the send-back"
+        return "a follow-up item after the send-back"
+    return None
+
+
+def _child_after(item: dict[str, Any], at: datetime) -> str | None:
+    children = item.get("childItems")
+    for child in children if isinstance(children, list) else []:
+        if not isinstance(child, dict) or child.get("status") == "cancelled":
+            continue
+        created = _instant(child.get("createdAt"))
+        if created is None or created < at:
+            continue
+        ref = child.get("ref")
+        if isinstance(ref, str) and ref:
+            return f"child {ref} after the send-back"
+        return "a child item after the send-back"
+    return None
+
+
+def _new_card_after(item: dict[str, Any], at: datetime) -> str | None:
+    blockers = item.get("blockers")
+    open_card = blockers.get("open") if isinstance(blockers, dict) else None
+    if not isinstance(open_card, dict):
+        return None
+    opened = _instant(open_card.get("openedAt"))
+    if opened is None or opened < at:
+        return None
+    return "Needs-you card opened after the send-back"
+
+
+def send_back_coverage(
+    item: dict[str, Any],
+    review: dict[str, Any],
+    items: list[dict[str, Any]],
+    live: list[dict[str, Any]],
+) -> str | None:
+    """Why a creator send-back needs no flag, or None when it does."""
+    at = review["instant"]
+    follow_up = _follow_up_after(item, review, items)
+    if follow_up is not None:
+        return follow_up
+    child = _child_after(item, at)
+    if child is not None:
+        return child
+    card = _new_card_after(item, at)
+    if card is not None:
+        return card
+    worker = live_worker(item.get("assignee"), live)
+    return f"live worker {worker}" if worker is not None else None
 
 
 def canonical_ref(value: object) -> str | None:
@@ -133,6 +290,13 @@ def canonical_ref(value: object) -> str | None:
     if match is None:
         return None
     return f"{match.group(1).upper()}-{int(match.group(2))}"
+
+
+def _item_key(item: dict[str, Any]) -> str | None:
+    shared = item.get("sharedNum")
+    if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
+        return f"Q-{shared}"
+    return canonical_ref(item.get("ref"))
 
 
 def refs_for_task(task: dict[str, Any]) -> set[str]:
@@ -182,10 +346,24 @@ def find_unattended(
     flagged: list[dict[str, Any]] = []
     covered: list[dict[str, Any]] = []
     for item in items:
-        if item.get("status") != "in_progress":
+        ref = _item_ref(item)
+        review = latest_send_back(item)
+        if review is not None:
+            answer = send_back_coverage(item, review, items, live)
+            if answer is not None:
+                covered.append({"ref": ref, "by": answer})
+            else:
+                flagged.append(
+                    {
+                        "ref": ref,
+                        "title": str(item.get("title") or ""),
+                        "assignee": item.get("assignee"),
+                        "action": SEND_BACK_ACTION,
+                        "sendBackAt": review["at"],
+                    }
+                )
             continue
-        ref = item.get("ref")
-        if not isinstance(ref, str) or not ref:
+        if item.get("status") != "in_progress":
             continue
         if open_tasks.get(ref):
             covered.append({"ref": ref, "by": "hx task " + ", ".join(open_tasks[ref])})
@@ -216,10 +394,77 @@ def find_unattended(
     return flagged, covered
 
 
+def _newest_child(
+    query: Callable[[str, dict[str, Any]], dict[str, Any]],
+    ref: str,
+    cache: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The parent's newest live child, which alone decides whether a child answers it.
+
+    Child refs come off the shared queue, so list order is creation order and
+    the last live item of the last page is the newest, whatever the parent size.
+    getItem caps children at 25, so a parent with more would hide a new child.
+    """
+    children = [
+        child
+        for child in _pages(query, "listItems", {"parent": ref, "order": "oldest"}, "items")
+        if child.get("status") != "cancelled"
+    ]
+    if not children:
+        return []
+    child_ref = children[-1].get("ref")
+    if not isinstance(child_ref, str) or not child_ref:
+        raise JotariumError(f"Jotarium listItems {ref} returned a child without a ref")
+    detail = cache.get(child_ref)
+    if detail is None:
+        detail = _item_detail(query, child_ref)
+        cache[child_ref] = detail
+    return [detail]
+
+
+def send_back_scope(
+    query: Callable[[str, dict[str, Any]], dict[str, Any]],
+    skip: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Every item that can hold a send-back, as getItem details.
+
+    Blocker history and creation times exist only in the detail, so each item
+    needs one call. A closed item is included too: it can still carry a card the
+    creator answered with a comment that nothing followed up.
+    """
+    skip = skip or set()
+    items: dict[str, dict[str, Any]] = {}
+    for summary in _pages(query, "listItems", {}, "items"):
+        ref = _item_ref(summary)
+        if ref in skip:
+            continue
+        item = _item_detail(query, ref)
+        children = summary.get("children")
+        if isinstance(children, dict):
+            item["children"] = children
+        items[ref] = item
+    return list(items.values())
+
+
+def audited_items(query: Callable[[str, dict[str, Any]], dict[str, Any]]) -> list[dict[str, Any]]:
+    items: dict[str, dict[str, Any]] = {}
+    for item in in_progress_items(query):
+        items[_item_ref(item)] = item
+    for item in send_back_scope(query, skip=set(items)):
+        items[_item_ref(item)] = item
+    cache = dict(items)
+    for item in items.values():
+        ref = _item_ref(item)
+        if "childItems" in item or latest_send_back(item) is None:
+            continue
+        item["childItems"] = _newest_child(query, ref, cache)
+    return list(items.values())
+
+
 def audit(client: JotariumClient | None = None) -> dict[str, Any]:
     client = client or JotariumClient()
     token_env = next((name for name in TOKEN_ENVS if os.environ.get(name)), None)
-    details = in_progress_items(client.query)
+    details = audited_items(client.query)
     policy = usage.load_policy()
     prefix = usage.team_prefix(policy)
     live = list(usage.team_agents(prefix).values())
