@@ -5,6 +5,8 @@ Q-686: it must also flag creator send-backs that no follow-up answers.
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -388,6 +390,125 @@ def test_a_cancelled_newest_child_does_not_hide_an_older_live_one(
     _patch_team(monkeypatch, data["live"], data["tasks"])
     result = jotarium.audit(FakeClient())
     assert result["ok"] is True
+
+
+def _item(ref: str, status: str = "todo") -> dict[str, Any]:
+    return {
+        "ref": ref, "sharedNum": int(ref.split("-")[1]),
+        "kind": {"P": "project", "F": "feature"}.get(ref[0], "task"),
+        "title": f"{ref} work", "status": status, "assignee": None,
+        "acceptance": {"status": "none"},
+        "blockers": {"open": None, "resolved": []},
+        "followUp": None, "children": {"open": 0, "done": 0},
+        "createdAt": "2026-11-17T09:00:00.000Z", "updatedAt": "2026-11-17T09:00:00.000Z",
+    }
+
+
+class _ItemClient:
+    url = "http://127.0.0.1:4180"
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.by_ref = {row["ref"]: row for row in rows}
+
+    def query(self, name: str, payload: dict) -> dict:
+        if name != "listItems":
+            return {"item": self.by_ref[payload["ref"]]}
+        if payload.get("parent"):
+            return {"items": [], "nextCursor": None}
+        return {"items": self.rows, "nextCursor": None}
+
+
+def _git(repo: Path, *args: str) -> None:
+    completed = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+
+
+def _fixture_repo(tmp_path: Path, *messages: str) -> Path:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    for message in messages:
+        _git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
+             "commit", "--allow-empty", "-m", message)
+    return repo
+
+
+def test_commit_subject_refs_match_whole_refs_only() -> None:
+    assert jotarium.refs_in("Q-642/Q-656/Q-654: fixes") == {"Q-642", "Q-656", "Q-654"}
+    assert jotarium.refs_in("Q-642: fixes") == {"Q-642"}
+    assert jotarium.refs_in("Q-64 and Q-6") == {"Q-64", "Q-6"}
+
+
+def test_commit_subject_refs_must_be_written_exactly() -> None:
+    assert jotarium.refs_in("Outfit studio: ... f3 download at 1000 px") == set()
+    assert jotarium.refs_in("Merge rc-snags: ... Codex P1 fix") == set()
+    assert jotarium.refs_in("q-642 and Q642 and Q 642") == set()
+    assert jotarium.refs_in("... (Q-165 review fix)") == {"Q-165"}
+
+
+def test_landed_flags_only_task_and_subtask_items() -> None:
+    landed = [{"sha": "abc1234", "subject": "P-1/F-1/Q-1: work",
+               "refs": {"P-1", "F-1", "Q-1"}}]
+    items = [_item("P-1"), _item("F-1"), _item("Q-1")]
+    flagged, _ = jotarium.find_unattended(items, [], [], landed)
+    assert [row["ref"] for row in flagged] == ["Q-1"]
+
+
+def test_landed_flags_only_todo_in_progress_and_blocked_items() -> None:
+    landed = [{"sha": "abc1234", "subject": "Q-1/Q-2/Q-3/Q-4/Q-5: work",
+               "refs": {"Q-1", "Q-2", "Q-3", "Q-4", "Q-5"}}]
+    items = [_item("Q-1", "todo"), _item("Q-2", "in_progress"), _item("Q-3", "blocked"),
+             _item("Q-4", "backlog"), _item("Q-5", "done")]
+    flagged, _ = jotarium.find_unattended(items, [], [], landed)
+    assert [row["ref"] for row in flagged] == ["Q-1", "Q-2", "Q-3"]
+    assert flagged[0]["commit"] == {"sha": "abc1234", "subject": "Q-1/Q-2/Q-3/Q-4/Q-5: work"}
+    assert flagged[0]["action"] == jotarium.LANDED_ACTION
+
+
+def test_a_landed_commit_flags_its_open_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _fixture_repo(tmp_path, "Q-642/Q-656/Q-654: fixes")
+    rows = [_item("Q-642"), _item("Q-64"), _item("Q-654", "blocked"), _item("Q-656", "done")]
+    _patch_team(monkeypatch, [], [])
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.chdir(repo)
+    result = jotarium.audit(_ItemClient(rows))
+    assert [row["ref"] for row in result["flagged"]] == ["Q-642", "Q-654"]
+    for row in result["flagged"]:
+        assert row["action"] == jotarium.LANDED_ACTION
+        assert row["commit"]["subject"] == "Q-642/Q-656/Q-654: fixes"
+        assert re.fullmatch(r"[0-9a-f]{7,}", row["commit"]["sha"])
+
+
+def test_the_landed_check_is_skipped_outside_a_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_team(monkeypatch, [], [])
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = jotarium.audit(_ItemClient([_item("Q-642")]))
+    assert result["ok"] is True
+    assert result["flagged"] == []
+
+
+def test_the_two_real_false_positive_subjects_flag_only_the_task_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _fixture_repo(
+        tmp_path,
+        "Outfit studio: paint the new sprites and ship an f3 download at 1000 px",
+        "Merge rc-snags: fix the download page and the Codex P1 fix",
+        "Publish the release page (Q-165 review fix)",
+    )
+    rows = [_item("F-3"), _item("P-1"), _item("Q-165")]
+    _patch_team(monkeypatch, [], [])
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.chdir(repo)
+    result = jotarium.audit(_ItemClient(rows))
+    assert [row["ref"] for row in result["flagged"]] == ["Q-165"]
+    assert result["flagged"][0]["commit"]["subject"] == "Publish the release page (Q-165 review fix)"
 
 
 class _Response:

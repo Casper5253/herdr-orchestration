@@ -1,13 +1,15 @@
 """Read-only Jotarium audit for work nobody holds.
 
-Covers in-progress items with no owner and creator send-backs that no follow-up
-item, child item, fresh Needs-you card or live worker answers.
+Covers in-progress items with no owner, creator send-backs that no follow-up
+item, child item, fresh Needs-you card or live worker answers, and open items
+whose ref landed in a commit on main in the last 14 days.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -26,8 +28,13 @@ TOKEN_ENVS = (
 TIMEOUT_SECONDS = 10.0
 MAX_PAGES = 100
 SEND_BACK_ACTION = "Create a follow-up item for the creator's send-back, or open a new card."
+LANDED_ACTION = "Work for this item landed; close it or say what is left"
+LANDED_STATUSES = frozenset({"todo", "in_progress", "blocked"})
+LANDED_KINDS = frozenset({"task", "subtask"})
 ACCEPT_ACTIONS = frozenset({"accept", "choose", "confirm"})
 _REF_TEXT = re.compile(r"\b([PFQ])[-\s]?(\d+)\b", re.IGNORECASE)
+# A commit subject names a ref only as written: uppercase, hyphen, digits.
+_COMMIT_REF = re.compile(r"\b([PFQ])-(\d+)\b")
 
 
 class JotariumError(RuntimeError):
@@ -292,6 +299,18 @@ def canonical_ref(value: object) -> str | None:
     return f"{match.group(1).upper()}-{int(match.group(2))}"
 
 
+def refs_in(text: str) -> set[str]:
+    """Refs exactly as a commit writes them: uppercase letter, hyphen, digits.
+
+    Case, a missing hyphen or a space is not a ref, so `f3`, `P1`, `q-642` and
+    `Q642` never match.
+    """
+    return {
+        f"{match.group(1)}-{int(match.group(2))}"
+        for match in _COMMIT_REF.finditer(text)
+    }
+
+
 def _item_key(item: dict[str, Any]) -> str | None:
     shared = item.get("sharedNum")
     if isinstance(shared, int) and not isinstance(shared, bool) and shared > 0:
@@ -334,6 +353,7 @@ def find_unattended(
     items: list[dict[str, Any]],
     tasks: list[dict[str, Any]],
     live: list[dict[str, Any]],
+    landed: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     open_tasks: dict[str, list[str]] = {}
     for task in tasks:
@@ -342,6 +362,15 @@ def find_unattended(
         task_id = str(task.get("id") or "unknown")
         for ref in refs_for_task(task):
             open_tasks.setdefault(ref, []).append(task_id)
+
+    landed_by_ref: dict[str, dict[str, Any]] = {}
+    for commit in landed or []:
+        refs = commit.get("refs")
+        if not isinstance(refs, (set, frozenset, list, tuple)):
+            continue
+        for ref in refs:
+            if isinstance(ref, str):
+                landed_by_ref.setdefault(ref, commit)
 
     flagged: list[dict[str, Any]] = []
     covered: list[dict[str, Any]] = []
@@ -362,6 +391,19 @@ def find_unattended(
                         "sendBackAt": review["at"],
                     }
                 )
+            continue
+        if (item.get("kind") in LANDED_KINDS
+                and item.get("status") in LANDED_STATUSES and ref in landed_by_ref):
+            commit = landed_by_ref[ref]
+            flagged.append(
+                {
+                    "ref": ref,
+                    "title": str(item.get("title") or ""),
+                    "assignee": item.get("assignee"),
+                    "action": LANDED_ACTION,
+                    "commit": {"sha": commit.get("sha"), "subject": commit.get("subject")},
+                }
+            )
             continue
         if item.get("status") != "in_progress":
             continue
@@ -461,6 +503,33 @@ def audited_items(query: Callable[[str, dict[str, Any]], dict[str, Any]]) -> lis
     return list(items.values())
 
 
+def landed_commits(cwd: str | None = None) -> list[dict[str, Any]]:
+    """Commits on main in the last 14 days that name item refs, newest first.
+
+    The project repo is the checkout the audit runs in. Outside one, or without
+    a main branch, git fails and the check has nothing to say.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "-C", cwd or os.getcwd(), "log", "main", "--since=14.days", "--format=%h%x09%s"],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    commits: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        sha, _, subject = line.partition("\t")
+        if not sha or not subject:
+            continue
+        commits.append({"sha": sha, "subject": subject, "refs": refs_in(subject)})
+    return commits
+
+
 def audit(client: JotariumClient | None = None) -> dict[str, Any]:
     client = client or JotariumClient()
     token_env = next((name for name in TOKEN_ENVS if os.environ.get(name)), None)
@@ -469,7 +538,8 @@ def audit(client: JotariumClient | None = None) -> dict[str, Any]:
     prefix = usage.team_prefix(policy)
     live = list(usage.team_agents(prefix).values())
     tasks = ledger.default_ledger().list_tasks()
-    flagged, covered = find_unattended(details, tasks, live)
+    landed = landed_commits()
+    flagged, covered = find_unattended(details, tasks, live, landed)
     return {
         "ok": not flagged,
         "url": client.url,
