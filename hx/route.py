@@ -604,6 +604,13 @@ def _balanced_decision(
 
     workers = list(plan["workers"])
     previous_worker = (task.get("prev") or {}).get("worker")
+    # Creator, 19 Nov: "we use deepseek. If u want kimi, use devin max". A capability
+    # failure on OpenCode climbs to SWE-2 at max effort, not to a stronger OpenCode model.
+    if capability_failure and previous_worker == "opencode" and "devin" in workers:
+        climb = _dispatch_worker("devin", task, usage, policy, "max", stages, capability_failure)
+        if climb is not None:
+            climb["reason"] = f"capability failure on opencode -> devin {climb.get('model')}; {climb['reason']}"
+            return climb
     if capability_failure and previous_worker in workers:
         retry = _dispatch_worker(
             previous_worker, task, usage, policy, effort, stages, capability_failure

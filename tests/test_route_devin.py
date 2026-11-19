@@ -487,16 +487,16 @@ def test_balance_log_ignores_invalid_result_shape(tmp_path, result) -> None:
     assert route_pkg.recent_route_counts(log, 86400) == {"devin": 0, "opencode": 0}
 
 
-def test_balance_keeps_opencode_capability_retry(policy: dict) -> None:
+def test_balance_opencode_capability_failure_climbs_to_devin_max(policy: dict) -> None:
+    # Creator, 19 Nov: "we use deepseek. If u want kimi, use devin max".
     prev = {"worker": "opencode", "model": "deepseek-v4.1-flash", "effort": "low"}
     result = route(
         _task(kind="test", attempt=1, last_failure="capability", prev=prev),
-        _with_counts(_make_usage(), devin=0, opencode=9),
+        _with_counts(_make_usage(), devin=9, opencode=0),
         _with_balance(policy),
     )
-    assert (result["worker"], result["model"], result["effort"]) == (
-        "opencode", "minimax-m3", "medium",
-    )
+    assert (result["worker"], result["model"]) == ("devin", "swe-2-max")
+    assert "capability failure on opencode" in result["reason"]
 
 
 def test_balance_end_keeps_max_capability_escalation(policy: dict) -> None:

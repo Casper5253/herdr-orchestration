@@ -107,7 +107,7 @@
       "glm-5.3-flash"
     ],
     "strong": [
-      "kimi-k2.7-code"
+      "deepseek-v4.1-flash"
     ]
   },
   "thresholds": {
@@ -163,6 +163,7 @@
   },
   "opencode_variants_note": "Declared --variant choices per model from opencode models --verbose (2026-10-16). glm-5.3-flash ignores an effort that is not one of these; route/ocrun must not send it.",
   "excluded_models": {
+    "kimi-k2.7-code": "Creator, 19 Nov 2026: 'kimi? nono. we use deepseek. If u want kimi, use devin max'. Strong work climbs to Devin swe-2-max (hx route), never to another OpenCode model.",
     "deepseek-v4-pro": "untested; Global regions are now enabled (2026-11-06), benchmark before use",
     "minimax-m3": "Exhausts its fixed 32K reasoning budget with ~no output on multi-file edits after ~35K context: 4 of 6 real tasks on 2026-10-16 (docs/FINDINGS.md 7, 9). No variants to lower it."
   },
