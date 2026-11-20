@@ -75,6 +75,26 @@ def test_time_lost_gap():
     assert lost[0]["gap_minutes"] == 30.0
 
 
+def test_brief_report_stats_per_worker():
+    stats = mod.brief_report_stats(
+        [FIX / "outbox"], [FIX / "briefs"], [FIX / "reports"], SINCE, UNTIL
+    )
+    assert stats["distinct_briefs"] == 3
+    assert stats["matched_key"] == 2
+    assert stats["workers"]["dev-opencode"]["answered"] == 1
+    assert stats["workers"]["dev-codex"]["distinct"] == 2
+    assert stats["workers"]["dev-codex"]["lost"] == 1
+
+
+def test_lead_report_receipts():
+    stats = mod.lead_report_receipts([FIX / "outbox"], SINCE, UNTIL)
+    assert stats["total"] == 3
+    assert stats["confirmed"] == 1
+    assert stats["uncertain"] == 2
+    assert stats["timeout"] == 0
+    assert stats["other"] == 0
+
+
 def test_cli_json():
     command = [
         sys.executable,

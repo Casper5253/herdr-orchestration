@@ -1,0 +1,14 @@
+{
+  "id": "r2",
+  "sender": "dev-devin",
+  "sender_key": "dev__devin",
+  "target": "dev-lead",
+  "body": "[team report from dev-devin] Q-2 done.",
+  "created_at": "2026-11-15T00:50:00Z",
+  "updated_at": "2026-11-15T00:50:00Z",
+  "state": "uncertain",
+  "delivered": false,
+  "delivered_at": null,
+  "receipt": "uncertain",
+  "note": "no submission evidence"
+}

@@ -1,0 +1,2 @@
+{"action": "compact-needed", "agent": "dev-devin", "task_id": "q5", "telemetry": {"utilisation": 0.9, "session_id": "synthetic"}, "recorded_at": "2026-11-15T00:00:00+00:00"}
+{"action": "keep", "agent": "dev-devin", "task_id": "q6", "telemetry": {"utilisation": 0.3, "session_id": "synthetic"}, "recorded_at": "2026-11-15T00:30:00+00:00"}

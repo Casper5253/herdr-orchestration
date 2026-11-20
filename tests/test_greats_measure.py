@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "greats"
+FIXN = FIXTURES / "team-now"
 SPEC = importlib.util.spec_from_file_location("greats_measure", ROOT / "research" / "greats" / "measure.py")
 measure = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = measure
@@ -13,6 +14,8 @@ SPEC.loader.exec_module(measure)
 
 SINCE = measure.parse_day("2026-10-25")
 UNTIL = measure.parse_day("2026-11-08")
+SINCE_N = measure.parse_day("2026-11-15")
+UNTIL_N = measure.parse_day("2026-11-16")
 
 
 def test_failed_run_rate_counts_outcomes_in_window():
@@ -54,6 +57,67 @@ def test_skill_use_counts_skill_tool_use():
     assert result.detail["files_with_skill"] == 1
 
 
+def _team_options():
+    return measure.Options(
+        since=SINCE_N,
+        until=UNTIL_N,
+        routing=[FIXTURES / "routing.jsonl"],
+        ledger=FIXTURES / "ledger.json",
+        todo_repo=FIXTURES,
+        lead_sessions=[FIXTURES / "sessions" / "lead.jsonl"],
+        session_paths=sorted((FIXTURES / "sessions").glob("*.jsonl")),
+        commit_counter=lambda repo, start, end: 0,
+        outbox=[FIXN / "outbox"],
+        briefs=[FIXN / "briefs"],
+        reports=[FIXN / "reports"],
+        afk=[FIXN / "afk"],
+        boundaries=[FIXN / "context-boundaries.jsonl"],
+    )
+
+
+def _team_rows():
+    return {row.name: row for row in measure.measure_team_now(_team_options())}
+
+
+def test_team_now_briefs_per_worker():
+    row = _team_rows()["briefs_per_worker"]
+    assert row.denominator == 4
+    assert row.numerator == 3
+    workers = row.detail["workers"]
+    assert workers["dev-codex"]["distinct"] == 2
+    assert workers["dev-codex"]["answered"] == 1
+    assert workers["dev-devin"]["answered"] == 1
+    assert workers["dev-opencode"]["answered"] == 1
+    assert "lower bound on answered briefs" in row.value
+
+
+def test_team_now_lead_reports():
+    row = _team_rows()["lead_reports"]
+    assert row.detail["total"] == 3
+    assert row.detail["confirmed"] == 1
+    assert row.detail["uncertain"] == 1
+    assert row.detail["timeout"] == 1
+    assert row.detail["other"] == 0
+
+
+def test_team_now_worker_compactions():
+    row = _team_rows()["worker_compactions"]
+    assert row.denominator == 5
+    assert row.numerator == 2
+    assert row.detail["afk_keyed"] == 4
+    assert row.detail["afk_drop"] == 1
+    assert row.detail["afk_no_drop"] == 1
+    assert row.detail["afk_unknown"] == 2
+    assert row.detail["context_keyed"] == 1
+    assert row.detail["context_drop"] == 1
+
+
+def test_team_now_cross_family_reviews():
+    row = _team_rows()["cross_family_reviews"]
+    assert row.detail["total"] == 3
+    assert row.detail["families"] == {"codex": 2, "devin": 1}
+
+
 def test_cli_prints_json_for_each_measure():
     command = [
         sys.executable,
@@ -76,9 +140,26 @@ def test_cli_prints_json_for_each_measure():
         str(FIXTURES / "sessions" / "lead.jsonl"),
         "--commits",
         "4",
+        "--outbox",
+        str(FIXN / "outbox"),
+        "--briefs",
+        str(FIXN / "briefs"),
+        "--reports",
+        str(FIXN / "reports"),
+        "--afk",
+        str(FIXN / "afk"),
+        "--boundaries",
+        str(FIXN / "context-boundaries.jsonl"),
     ]
     completed = subprocess.run(command, capture_output=True, text=True, check=True)
     payload = json.loads(completed.stdout)
     names = [item["name"] for item in payload["measures"]]
     assert names == ["failed_run_rate", "compaction", "review_coverage", "skill_use"]
+    team_names = [item["name"] for item in payload["team_now"]]
+    assert team_names == [
+        "briefs_per_worker",
+        "lead_reports",
+        "worker_compactions",
+        "cross_family_reviews",
+    ]
     assert payload["window"]["untilExclusive"] is True

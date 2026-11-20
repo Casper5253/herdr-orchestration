@@ -25,6 +25,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -33,6 +34,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PROJECTS = ROOT.parent
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+
+DURABLE_DIR = Path(__file__).resolve().parents[1] / "durable-steps"
+if str(DURABLE_DIR) not in sys.path:
+    sys.path.insert(0, str(DURABLE_DIR))
+import baseline as durable  # noqa: E402
+
+TEAM_OUTBOX = durable.DEFAULT_OUTBOX
+TEAM_BRIEFS = durable.DEFAULT_BRIEFS
+TEAM_REPORTS = durable.DEFAULT_REPORTS
+TEAM_AFK = durable.DEFAULT_AFK
+TEAM_BOUNDARIES = durable.DEFAULT_BOUNDARIES
 
 # The four lead transcripts the baseline inventory used. They are main
 # sessions, not subagents, and they cover Jotarium and herdr work.
@@ -74,6 +86,11 @@ class Options:
     lead_sessions: list
     session_paths: list
     commit_counter: object = None
+    outbox: list = field(default_factory=list)
+    briefs: list = field(default_factory=list)
+    reports: list = field(default_factory=list)
+    afk: list = field(default_factory=list)
+    boundaries: list = field(default_factory=list)
 
 
 def parse_day(value: str) -> datetime:
@@ -421,6 +438,230 @@ def measure_all(options: Options) -> list:
     ]
 
 
+COMPACT_RE = re.compile(
+    r"\bcompacted\b|\bcompacting\b|\bafter compact\b|\bcompact did\b|"
+    r"\bneeded .*? compaction\b|\bcompaction failed\b|\bcompaction via\b|"
+    r"\bafter compaction\b",
+    re.IGNORECASE,
+)
+KEY_RE = re.compile(r"\bQ-\d+[A-Za-z0-9._-]*\b", re.IGNORECASE)
+PAIR_K_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*K\s*(?:to|->)\s*(\d+(?:\.\d+)?)\s*K",
+    re.IGNORECASE,
+)
+PAIR_PCT_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*%\s*(?:to|->)\s*(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+WORKER_RE = re.compile(
+    r"\b(opencode|codex|devin|deepseek|claude)\b", re.IGNORECASE)
+WORKER_FAMILY = {
+    "opencode": "opencode",
+    "deepseek": "opencode",
+    "codex": "codex",
+    "devin": "devin",
+    "claude": "claude",
+}
+
+
+def _worker_family(text: str):
+    match = WORKER_RE.search(text)
+    return WORKER_FAMILY[match.group(1).lower()] if match else None
+
+
+def _compaction_drop(text: str):
+    lowered = text.lower()
+    if "did not drop" in lowered:
+        return False
+    for pattern in (PAIR_K_RE, PAIR_PCT_RE):
+        match = pattern.search(text)
+        if match:
+            before, after = float(match.group(1)), float(match.group(2))
+            return after < before
+    return None
+
+
+def measure_briefs_per_worker(options: Options) -> Measure:
+    stats = durable.brief_report_stats(
+        options.outbox, options.briefs, options.reports,
+        options.since, options.until)
+    total = stats["distinct_briefs"]
+    answered = stats["matched_key"] + stats["matched_timing"]
+    share = answered / total if total else 0.0
+    sends = sum(data["sends"] for data in stats["workers"].values())
+    per_worker = ", ".join(
+        f"{name} {data['sends']}"
+        for name, data in sorted(stats["workers"].items()))
+    value = f"{sends} briefs sent"
+    if per_worker:
+        value += f" ({per_worker})"
+    value += f"; {answered}/{total} distinct matched ({share:.1%})"
+    value += " (lower bound on answered briefs)"
+    return Measure(
+        "briefs_per_worker",
+        value,
+        answered,
+        total,
+        "hx outbox + .hx/briefs + .hx/reports",
+        {
+            "workers": stats["workers"],
+            "matched_key": stats["matched_key"],
+            "matched_timing": stats["matched_timing"],
+            "label": "lower bound on answered briefs",
+        },
+    )
+
+
+def measure_lead_reports(options: Options) -> Measure:
+    stats = durable.lead_report_receipts(
+        options.outbox, options.since, options.until)
+    value = (f"{stats['confirmed']} confirmed, {stats['uncertain']} uncertain, "
+             f"{stats['timeout']} timeout / {stats['total']}")
+    return Measure(
+        "lead_reports",
+        value,
+        stats["confirmed"],
+        stats["total"],
+        "hx outbox reports to the lead",
+        stats,
+    )
+
+
+def measure_worker_compactions(options: Options) -> Measure:
+    afk_events = []
+    for row in durable.afk_rows(options.afk, options.since, options.until):
+        text = " ".join(str(cell) for cell in row["cells"])
+        lowered = text.lower()
+        if not COMPACT_RE.search(text):
+            continue
+        if "lead context" in lowered or "lead compaction" in lowered:
+            continue
+        key = KEY_RE.search(text)
+        worker = _worker_family(text)
+        if not key or not worker:
+            continue
+        afk_events.append({
+            "source": "afk",
+            "file": row["file"],
+            "key": key.group(0),
+            "worker": worker,
+            "drop": _compaction_drop(text),
+        })
+    context_events = []
+    for path in map(Path, options.boundaries):
+        records = list(durable.read_jsonl(path))
+        for record in records:
+            if not durable.in_window(
+                    record.get("recorded_at"), options.since, options.until):
+                continue
+            if record.get("action") != "compact-needed":
+                continue
+            key = record.get("task_id")
+            agent = record.get("agent")
+            if not key or not agent:
+                continue
+            record_ts = durable.parse_ts(record.get("recorded_at"))
+            before = (record.get("telemetry") or {}).get("utilisation")
+            after = None
+            for later in records:
+                if later is record or later.get("agent") != agent:
+                    continue
+                later_ts = durable.parse_ts(later.get("recorded_at"))
+                if later_ts is None or record_ts is None or later_ts <= record_ts:
+                    continue
+                if not durable.in_window(
+                        later.get("recorded_at"), options.since, options.until):
+                    continue
+                value = (later.get("telemetry") or {}).get("utilisation")
+                if value is not None:
+                    after = value
+                    break
+            drop = None
+            if before is not None and after is not None:
+                drop = after < before
+            context_events.append({
+                "source": "context",
+                "file": str(path),
+                "key": str(key),
+                "worker": str(agent),
+                "drop": drop,
+            })
+    events = afk_events + context_events
+    keyed = len(events)
+    drop = sum(1 for event in events if event["drop"] is True)
+    no_drop = sum(1 for event in events if event["drop"] is False)
+    unknown = sum(1 for event in events if event["drop"] is None)
+    value = f"{drop}/{keyed} keyed show a context drop"
+    if no_drop:
+        value += f" ({no_drop} no drop)"
+    if unknown:
+        value += f" ({unknown} unknown)"
+    return Measure(
+        "worker_compactions",
+        value,
+        drop,
+        keyed,
+        "afk-*.tsv + context-boundaries.jsonl",
+        {
+            "afk_keyed": len(afk_events),
+            "afk_drop": sum(1 for e in afk_events if e["drop"] is True),
+            "afk_no_drop": sum(1 for e in afk_events if e["drop"] is False),
+            "afk_unknown": sum(1 for e in afk_events if e["drop"] is None),
+            "context_keyed": len(context_events),
+            "context_drop": sum(
+                1 for e in context_events if e["drop"] is True),
+            "context_unknown": sum(
+                1 for e in context_events if e["drop"] is None),
+            "events": events,
+        },
+    )
+
+
+def measure_cross_family_reviews(options: Options) -> Measure:
+    records = durable.load_outbox(options.outbox)
+    briefs = durable.lead_briefs(
+        records, options.briefs, options.since, options.until)
+    grouped = {}
+    for brief in briefs:
+        grouped.setdefault((brief["key"], brief["target"]), brief)
+    families = Counter()
+    for (key, _target), brief in grouped.items():
+        title = ""
+        if brief.get("file"):
+            text = durable.read_text(brief["file"])
+            title = next(
+                (line.strip("# ").strip() for line in text.splitlines()
+                 if line.strip().startswith("#")), "")
+        label = f"{key} {title}".lower()
+        if not any(word in label for word in
+                   ("review", "re-review", "audit", "interrogate")):
+            continue
+        families[durable.destination_kind(brief["target"])] += 1
+    total = sum(families.values())
+    breakdown = ", ".join(
+        f"{name} {count}" for name, count in sorted(families.items()))
+    value = f"{total} cross-family review briefs"
+    if breakdown:
+        value += f": {breakdown}"
+    return Measure(
+        "cross_family_reviews",
+        value,
+        total,
+        total,
+        "hx outbox + .hx/briefs (lead-sent)",
+        {"families": dict(families), "total": total},
+    )
+
+
+def measure_team_now(options: Options) -> list:
+    return [
+        measure_briefs_per_worker(options),
+        measure_lead_reports(options),
+        measure_worker_compactions(options),
+        measure_cross_family_reviews(options),
+    ]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", required=True, help="first day, inclusive (YYYY-MM-DD)")
@@ -432,6 +673,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--todo-repo", help="todo-rpg checkout for the commit count")
     parser.add_argument("--lead-session", action="append", help="lead session JSONL (repeatable)")
     parser.add_argument("--commits", type=int, help="override the git commit count (tests and offline)")
+    parser.add_argument("--outbox", action="append", help="hx outbox root (repeatable)")
+    parser.add_argument("--briefs", action="append", help="brief directory (repeatable)")
+    parser.add_argument("--reports", action="append", help="report directory (repeatable)")
+    parser.add_argument("--afk", action="append", help="afk log directory (repeatable)")
+    parser.add_argument("--boundaries", action="append", help="context-boundaries JSONL (repeatable)")
     return parser
 
 
@@ -447,6 +693,11 @@ def options_from_args(args) -> Options:
     lead_sessions = [Path(item) for item in args.lead_session] if args.lead_session else default_leads
     session_paths = sorted(Path(args.sessions_root).rglob("*.jsonl"))
     commit_counter = (lambda repo, start, end: args.commits) if args.commits is not None else None
+    outbox = [Path(item) for item in args.outbox] if args.outbox else list(TEAM_OUTBOX)
+    briefs = [Path(item) for item in args.briefs] if args.briefs else list(TEAM_BRIEFS)
+    reports = [Path(item) for item in args.reports] if args.reports else list(TEAM_REPORTS)
+    afk = [Path(item) for item in args.afk] if args.afk else list(TEAM_AFK)
+    boundaries = [Path(item) for item in args.boundaries] if args.boundaries else list(TEAM_BOUNDARIES)
     return Options(
         since,
         until,
@@ -456,6 +707,11 @@ def options_from_args(args) -> Options:
         lead_sessions,
         session_paths,
         commit_counter,
+        outbox,
+        briefs,
+        reports,
+        afk,
+        boundaries,
     )
 
 
@@ -480,10 +736,34 @@ def render_text(measures, since: datetime, until: datetime) -> str:
     return "\n".join(lines)
 
 
+def render_team_now_text(rows, since: datetime, until: datetime) -> str:
+    days = (until - since).days
+    lines = [
+        "",
+        f"team now (persistent panes + hx say), window "
+        f"{since:%Y-%m-%d} -> {until:%Y-%m-%d} ({days} days, until exclusive)",
+        "",
+        f"{'measure':<22} {'value':<54} {'numerator':>9} "
+        f"{'denominator':>11}  source",
+    ]
+    for row in rows:
+        lines.append(
+            f"{row.name:<22} {row.value:<54} {row.numerator:>9g} "
+            f"{row.denominator:>11g}  {row.source}")
+    for row in rows:
+        if row.detail:
+            lines.append("")
+            lines.append(
+                f"{row.name} detail: "
+                f"{json.dumps(row.detail, ensure_ascii=False, sort_keys=True)}")
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     options = options_from_args(args)
     measures = measure_all(options)
+    team_now = measure_team_now(options)
     if args.json:
         print(
             json.dumps(
@@ -494,6 +774,7 @@ def main(argv=None) -> int:
                         "untilExclusive": True,
                     },
                     "measures": [item.as_json() for item in measures],
+                    "team_now": [item.as_json() for item in team_now],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -501,6 +782,7 @@ def main(argv=None) -> int:
         )
     else:
         print(render_text(measures, options.since, options.until))
+        print(render_team_now_text(team_now, options.since, options.until))
     return 0
 
 

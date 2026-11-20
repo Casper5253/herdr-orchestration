@@ -307,7 +307,10 @@ def worker_reports(records, report_dirs, since: datetime, until: datetime) -> li
             if not in_window(created, since, until):
                 continue
             text = read_text(path)
-            qids = {f"q-{number}" for number in QID_RE.findall(text)}
+            # A report file answers the brief it is named after, never every Q-ref its text
+            # mentions: the Q-732 baseline report lists "lost" briefs by Q-ref and would
+            # otherwise mark all of them answered.
+            qids = set()
             stem_match = re.match(r"(q\d+[A-Za-z0-9._-]*)", path.stem, re.IGNORECASE)
             stems = {stem_match.group(1).lower()} if stem_match else set()
             reports.append(
@@ -325,6 +328,17 @@ def worker_reports(records, report_dirs, since: datetime, until: datetime) -> li
     return reports
 
 
+# A reply counts only if it arrives within this long after the brief's last send. Without a
+# limit, a report written days later (for example a summary that names old briefs) "answers"
+# them, and the result depends on where the window ends (20 Nov: 121 lost to 14 by moving
+# --until one day).
+ANSWER_WINDOW = timedelta(hours=24)
+
+
+def answers_in_time(brief: dict, report: dict) -> bool:
+    return brief["created"] <= report["created"] <= brief["last_created"] + ANSWER_WINDOW
+
+
 def report_matches(brief: dict, report: dict) -> bool:
     if brief["qid"] and brief["qid"] in report["qids"]:
         return True
@@ -333,7 +347,7 @@ def report_matches(brief: dict, report: dict) -> bool:
     return brief["key"] in report["stems"]
 
 
-def measure_reports(outbox_roots, brief_dirs, report_dirs, since: datetime, until: datetime) -> Measure:
+def brief_report_stats(outbox_roots, brief_dirs, report_dirs, since: datetime, until: datetime) -> dict:
     records = load_outbox(outbox_roots)
     raw_briefs = lead_briefs(records, brief_dirs, since, until)
     reports = worker_reports(records, report_dirs, since, until)
@@ -349,32 +363,55 @@ def measure_reports(outbox_roots, brief_dirs, report_dirs, since: datetime, unti
             if brief["created"] > grouped[key]["last_created"]:
                 grouped[key]["last_created"] = brief["created"]
     briefs = sorted(grouped.values(), key=lambda item: item["created"])
+    workers = {}
+    for brief in briefs:
+        stats = workers.setdefault(
+            str(brief["target"]),
+            {"sends": 0, "distinct": 0, "matched_key": 0,
+             "matched_timing": 0, "lost": 0},
+        )
+        stats["sends"] += brief["sends"]
+        stats["distinct"] += 1
     used = set()
     lost = []
     matched_key = 0
     matched_timing = 0
     for brief in briefs:
-        key_matches = [i for i, report in enumerate(reports) if report_matches(brief, report)]
+        stats = workers[str(brief["target"])]
+        key_matches = [i for i, report in enumerate(reports)
+                       if report_matches(brief, report) and answers_in_time(brief, report)]
         if key_matches:
             matched_key += 1
+            stats["matched_key"] += 1
             used.update(key_matches)
             continue
-        same_target = [b for b in briefs if b["target"] == brief["target"] and b["created"] > brief["last_created"]]
+        same_target = [b for b in briefs
+                       if b["target"] == brief["target"]
+                       and b["created"] > brief["last_created"]]
         next_time = min((b["created"] for b in same_target), default=None)
         timing_match = None
         for index, report in enumerate(reports):
             if index in used:
                 continue
-            if str(report["sender"]).endswith(str(brief["target"]).split("-")[-1]):
-                if report["created"] >= brief["created"] and (next_time is None or report["created"] < next_time):
+            if str(report["sender"]).endswith(
+                    str(brief["target"]).split("-")[-1]):
+                if answers_in_time(brief, report) and (
+                        next_time is None or report["created"] < next_time):
                     timing_match = index
                     break
         if timing_match is not None:
             matched_timing += 1
+            stats["matched_timing"] += 1
             used.add(timing_match)
             continue
         if brief["last_created"] < until - timedelta(hours=2):
             lost.append(brief)
+            stats["lost"] += 1
+    for stats in workers.values():
+        stats["answered"] = stats["matched_key"] + stats["matched_timing"]
+        stats["share"] = (
+            stats["answered"] / stats["distinct"] if stats["distinct"] else 0.0
+        )
     groups = defaultdict(list)
     for index, report in enumerate(reports):
         body = re.sub(r"\s+", " ", report["text"]).strip().lower()[:160]
@@ -406,24 +443,64 @@ def measure_reports(outbox_roots, brief_dirs, report_dirs, since: datetime, unti
         }
         for brief in lost
     ]
+    return {
+        "distinct_briefs": len(briefs),
+        "brief_sends": len(raw_briefs),
+        "reports": len(reports),
+        "matched_key": matched_key,
+        "matched_timing": matched_timing,
+        "lost": lost_detail,
+        "doubled": doubled,
+        "workers": workers,
+    }
+
+
+def measure_reports(outbox_roots, brief_dirs, report_dirs, since: datetime, until: datetime) -> Measure:
+    stats = brief_report_stats(outbox_roots, brief_dirs, report_dirs, since, until)
     return Measure(
         "reports",
-        f"{len(lost)} lost / {len(briefs)} distinct briefs",
-        len(lost),
-        len(briefs),
+        f"{len(stats['lost'])} lost / {stats['distinct_briefs']} distinct briefs",
+        len(stats["lost"]),
+        stats["distinct_briefs"],
         "hx outbox + .hx/briefs + .hx/reports",
         {
-            "distinct_briefs": len(briefs),
-            "brief_sends": len(raw_briefs),
-            "reports": len(reports),
-            "matched_key": matched_key,
-            "matched_timing": matched_timing,
-            "lost": lost_detail,
-            "doubled": doubled,
+            "distinct_briefs": stats["distinct_briefs"],
+            "brief_sends": stats["brief_sends"],
+            "reports": stats["reports"],
+            "matched_key": stats["matched_key"],
+            "matched_timing": stats["matched_timing"],
+            "lost": stats["lost"],
+            "doubled": stats["doubled"],
+            "workers": stats["workers"],
         },
     )
 
 
+def lead_report_receipts(outbox_roots, since: datetime, until: datetime) -> dict:
+    records = load_outbox(outbox_roots)
+    rows = [
+        record
+        for record in records
+        if not str(record.get("sender") or "").startswith("dev-lead")
+        and destination_kind(record.get("target")) == "claude lead"
+        and in_window(record_created(record), since, until)
+    ]
+    receipts = Counter(receipt_of(record) for record in rows)
+    timeout = sum(
+        1 for record in rows
+        if receipt_of(record) == "uncertain"
+        and "timeout" in str(record.get("note") or "").lower()
+    )
+    confirmed = receipts.get("submitted", 0) + receipts.get("queued", 0)
+    uncertain = receipts.get("uncertain", 0) - timeout
+    return {
+        "total": len(rows),
+        "confirmed": confirmed,
+        "uncertain": uncertain,
+        "timeout": timeout,
+        "other": len(rows) - confirmed - uncertain - timeout,
+        "receipts": dict(receipts),
+    }
 def afk_rows(directories, since: datetime, until: datetime) -> list:
     rows = []
     for directory in map(Path, directories):

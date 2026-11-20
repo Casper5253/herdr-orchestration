@@ -1,0 +1,6 @@
+time	what	why	evidence	result
+10:00	Compacted OpenCode (200K to 80K) and sent Q-1 brief	synthetic	synthetic	running
+10:10	OpenCode -> Q-2 dispatched; OpenCode compact did not drop context (35%), left as is	synthetic	synthetic	running
+10:20	Q-3 to Codex review after compacting Codex	synthetic	synthetic	running
+10:30	Q-4 to Devin after compact	synthetic	synthetic	running
+10:40	Compacted Devin (100K to 40K)	synthetic	synthetic	running

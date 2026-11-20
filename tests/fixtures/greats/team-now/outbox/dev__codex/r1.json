@@ -1,0 +1,14 @@
+{
+  "id": "r1",
+  "sender": "dev-codex",
+  "sender_key": "dev__codex",
+  "target": "dev-lead",
+  "body": "[team report from dev-codex] Q-1 done.",
+  "created_at": "2026-11-15T00:40:00Z",
+  "updated_at": "2026-11-15T00:40:00Z",
+  "state": "delivered",
+  "delivered": true,
+  "delivered_at": "2026-11-15T00:40:00Z",
+  "receipt": "submitted",
+  "note": null
+}
