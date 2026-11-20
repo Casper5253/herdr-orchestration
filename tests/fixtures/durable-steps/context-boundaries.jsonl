@@ -1,0 +1,2 @@
+{"action":"keep","agent":"dev-opencode","task_id":"q1-one","disposition":"refused","readiness":"held","recorded_at":"2026-11-15T00:05:00Z"}
+{"action":"compact-needed","agent":"dev-devin","task_id":"q2-lost","disposition":"recovery-needed","readiness":"held","recorded_at":"2026-11-15T00:06:00Z"}

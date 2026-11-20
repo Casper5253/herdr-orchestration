@@ -1,0 +1,2 @@
+{"kind":"outcome","ts":"2026-11-15T00:25:00Z","ok":true,"worker":"opencode","task_id":"q1-one","failure":null}
+{"kind":"outcome","ts":"2026-11-15T00:30:00Z","ok":false,"worker":"devin","task_id":"q2-lost","failure":{"kind":"tool"}}

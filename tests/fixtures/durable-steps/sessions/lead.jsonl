@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-11-15T00:35:00Z","message":{"content":[{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"hx compact dev-opencode --task q1-one"}}]}}
+{"type":"user","timestamp":"2026-11-15T00:36:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":[{"type":"text","text":"{\"action\":\"compacted\",\"task_id\":\"q1-one\"}"}]}]}}
