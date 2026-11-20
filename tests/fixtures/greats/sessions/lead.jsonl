@@ -1,0 +1,6 @@
+{"type":"assistant","timestamp":"2026-10-30T00:00:00Z","message":{"content":[{"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"poteto-mode"}}]}}
+{"type":"assistant","timestamp":"2026-10-30T00:01:00Z","message":{"content":[{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"hx context decide dev-devin"}}]}}
+{"type":"user","timestamp":"2026-10-30T00:01:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":[{"type":"text","text":"{\"action\":\"keep\"}"}]}]}}
+{"type":"assistant","timestamp":"2026-10-30T00:02:00Z","message":{"content":[{"type":"tool_use","id":"c2","name":"Bash","input":{"command":"hx compact dev-devin"}}]}}
+{"type":"user","timestamp":"2026-10-30T00:02:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"c2","content":"{\"action\":\"keep\"}"}]}}
+{"type":"assistant","timestamp":"2026-11-10T00:00:00Z","message":{"content":[{"type":"tool_use","id":"s2","name":"Skill","input":{"skill":"hero"}}]}}

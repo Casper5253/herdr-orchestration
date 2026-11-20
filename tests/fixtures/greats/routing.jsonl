@@ -1,0 +1,5 @@
+{"kind":"decision","ts":"2026-10-26T00:00:00Z","worker":"devin"}
+{"kind":"decision","ts":"2026-10-27T00:00:00Z","worker":"codex"}
+{"kind":"outcome","ts":"2026-10-26T01:00:00Z","ok":true,"worker":"devin","failure":null}
+{"kind":"outcome","ts":"2026-10-27T01:00:00Z","ok":false,"worker":"devin","failure":{"kind":"tool"}}
+{"kind":"outcome","ts":"2026-11-10T01:00:00Z","ok":false,"worker":"codex","failure":{"kind":"tool"}}
