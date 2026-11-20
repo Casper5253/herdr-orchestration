@@ -25,6 +25,13 @@ def test_captured_opencode_home_allows_delivery(fake, capsys, sidebar):
     assert len(fake.sent) == 1
 
 
+@pytest.mark.parametrize("example", ["Fix broken tests", "What is the tech stack of this project?"])
+def test_opencode_rotating_placeholder_is_an_empty_composer(example):
+    """20 Nov: OpenCode 1.19.5 rotates the example inside its placeholder."""
+    assert host._composer_empty(f'Ask anything… "{example}"', "opencode")
+    assert not host._composer_empty("Fix broken tests", "opencode")
+
+
 def test_opencode_sidebar_does_not_hide_an_existing_draft(fake, capsys):
     screen = (_Q572 / "opencode-home.txt").read_text(encoding="utf-8")
     screen = screen.replace('Ask anything… "What is the tech stack of this project?"', "my existing draft")

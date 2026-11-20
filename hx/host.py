@@ -117,13 +117,21 @@ _COMPOSER_PLACEHOLDERS = {
     "codex": {"Ask Codex to do anything"},
     "devin": {"Ask Devin to build features, fix bugs, or work on your code",
               "Guide Devin while it works"},
-    "opencode": {'Ask anything… "What is the tech stack of this project?"'},
+}
+
+# OpenCode rotates the quoted example in its placeholder per session (20 Nov:
+# "Fix broken tests"), so only its frame is fixed.
+_COMPOSER_PLACEHOLDER_PATTERNS = {
+    "opencode": re.compile(r'Ask anything… "[^"]+"'),
 }
 
 
 def _composer_empty(staged: str, kind: str) -> bool:
     """The composer is provably free of staged text: blank or placeholder copy."""
-    return staged == "" or staged in _COMPOSER_PLACEHOLDERS.get(kind, ())
+    if staged == "" or staged in _COMPOSER_PLACEHOLDERS.get(kind, ()):
+        return True
+    pattern = _COMPOSER_PLACEHOLDER_PATTERNS.get(kind)
+    return bool(pattern and pattern.fullmatch(staged))
 
 
 # The key a staged paste still needs, by (provider kind, screen evidence), and
