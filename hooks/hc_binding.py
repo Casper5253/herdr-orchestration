@@ -21,6 +21,7 @@ from typing import Any, Callable
 PROVIDERS = {"claude", "codex", "opencode", "devin"}
 TERMINAL = re.compile(r"[A-Za-z0-9_-]+")
 MAX_ANCESTORS = 64
+_UPDATED_IMAGE = re.compile(r"\.old\.\d+\.\d+$")
 
 
 def state_dir() -> Path:
@@ -190,6 +191,9 @@ def provider_pid(provider: str, terminal_pid: int, own_pid: int, ancestors: list
     for pid in [own_pid, *ancestors]:
         image = process_image(pid)
         name = re.split(r"[\\/]", image or "")[-1].lower()
+        # A self-updating CLI renames its running binary (14 Nov 2026:
+        # claude.exe.old.1794619325437.8912), so the live process keeps that name.
+        name = _UPDATED_IMAGE.sub("", name)
         if name in (provider, f"{provider}.exe"):
             return pid
         if pid == terminal_pid:

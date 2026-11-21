@@ -291,3 +291,21 @@ def test_statusline_does_not_publish_an_unknown_session(tmp_path, monkeypatch) -
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
     assert module.main() == 0
     assert calls == []
+
+
+def test_provider_found_after_the_cli_renamed_its_running_binary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(hc_binding, "process_image", {
+        300: r"C:\Users\caspe\.local\bin\claude.exe.old.1794619325437.8912",
+        123: "powershell.exe",
+    }.get)
+    out = hc_binding.publish(
+        "claude",
+        "19bea786",
+        environ={"HC_TERMINAL_ID": "t1"},
+        run_hc=lambda terminal: _observed(),
+        ancestors=[300, 123],
+        own_pid=500,
+    )
+    assert out is not None
+    assert out["provider_pid"] == 300
