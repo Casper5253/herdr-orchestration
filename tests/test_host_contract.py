@@ -128,6 +128,9 @@ def test_all_members_parses_a_subprocess_roster(monkeypatch):
         calls.append((args, kwargs))
         return json.dumps(payload).encode("utf-8")
 
+    # The call contract is asserted without the no-console adjustments spawn
+    # adds when the test host has no console (covered by tests/test_spawn.py).
+    monkeypatch.setattr("hx.spawn._no_console", lambda: False)
     monkeypatch.setattr(host.subprocess, "check_output", check_output)
     members = host.HerdrHost().all_members()
 

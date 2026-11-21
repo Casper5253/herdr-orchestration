@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from hx import host, paths
+from hx import host, paths, spawn
 
 PROVIDER = "devin"
 FREE_TIER = "Free"
@@ -146,7 +146,7 @@ def promo_status(policy: dict[str, Any], now: datetime.datetime | None = None) -
 def list_models(bin_path: Path, timeout: float = 60.0) -> tuple[dict[str, Any] | None, str | None]:
     """``devin models list --format json`` as {model_uid: variant}."""
     try:
-        result = subprocess.run(
+        result = spawn.run(
             [str(bin_path), "models", "list", "--format", "json"],
             capture_output=True,
             timeout=timeout,
@@ -832,7 +832,7 @@ def pid_alive(pid: int) -> bool:
 def kill_tree(pid: int) -> bool:
     if sys.platform == "win32":
         try:
-            result = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+            result = spawn.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
         except Exception:
             return False
         return result.returncode == 0 or not pid_alive(pid)

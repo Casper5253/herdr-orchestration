@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+from hx import spawn
+
 TAIL_LINES = 40
 RECEIPT_VERSION = 1
 _RECEIPT_DIR = Path(".hx") / "receipts"
@@ -33,7 +35,7 @@ class CheckError(RuntimeError):
 
 def _git(cwd: Path, *args: str) -> str:
     try:
-        completed = subprocess.run(
+        completed = spawn.run(
             ["git", *args], cwd=str(cwd), capture_output=True, text=True,
             encoding="utf-8", errors="replace", check=False,
         )
@@ -146,7 +148,7 @@ def run(command: Sequence[str], *, cwd: Path | None = None,
     executable = shutil.which(argv[0])
     launch = [executable or argv[0], *argv[1:]]
     try:
-        process = subprocess.Popen(
+        process = spawn.Popen(
             launch, cwd=str(start_dir), stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8",
             errors="replace", bufsize=1,

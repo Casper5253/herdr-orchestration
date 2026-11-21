@@ -12,6 +12,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from hx import spawn
+
 
 def package_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -22,7 +24,7 @@ def project_root() -> Path:
     if env:
         return Path(env).resolve()
     try:
-        out = subprocess.check_output(
+        out = spawn.check_output(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=str(Path.cwd()),
             stderr=subprocess.DEVNULL,

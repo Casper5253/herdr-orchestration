@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
+from hx import spawn
+
 TEAM_AGENT = re.compile(r"([a-z0-9][a-z0-9-]*-)[a-z0-9]+")
 
 KINDS = frozenset({"claude", "codex", "opencode", "devin"})
@@ -405,7 +407,7 @@ class HerdrHost:
         self.pane_id = pane_id if pane_id is not None else os.environ.get("HERDR_PANE_ID")
 
     def all_members(self) -> list[Member]:
-        raw = subprocess.check_output(
+        raw = spawn.check_output(
             ["herdr", "agent", "list"],
             stderr=subprocess.DEVNULL,
             timeout=30,
@@ -439,7 +441,7 @@ class HerdrHost:
         return member(self._command("get", name)["result"]["agent"])
 
     def send(self, name: str, text: str) -> int:
-        return subprocess.run(["herdr", "agent", "prompt", name, text], timeout=60).returncode
+        return spawn.run(["herdr", "agent", "prompt", name, text], timeout=60).returncode
 
     def send_slash(self, member: Member | str, command: str) -> bool:
         """A native prompt carries the slash command on the standalone host."""
@@ -468,7 +470,7 @@ class HerdrHost:
             args.extend(("--timeout", str(timeout_ms)))
         process_timeout = (timeout_ms or 60000) / 1000 + 10 if wait else 60
         try:
-            completed = subprocess.run(
+            completed = spawn.run(
                 ["herdr", "agent", *args], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", check=False,
                 timeout=process_timeout, shell=False,
@@ -488,7 +490,7 @@ class HerdrHost:
         return _send_result(data, wait, "malformed response")
 
     def read(self, name: str, lines: int = 200) -> ReadText:
-        result = subprocess.run(
+        result = spawn.run(
             ["herdr", "agent", "read", name, "--source", "recent-unwrapped", "--lines", str(lines)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             check=True, timeout=30, shell=False,
@@ -497,7 +499,7 @@ class HerdrHost:
 
     def _command(self, *args: str, timeout: float = 30) -> dict[str, Any]:
         """A checked `herdr agent` call; callers go through the Host methods."""
-        result = subprocess.run(
+        result = spawn.run(
             ["herdr", "agent", *args], capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=True, timeout=timeout, shell=False,
         )
@@ -849,7 +851,7 @@ class HcHost:
         )
 
     def _run(self, *args: str, timeout: float = 30) -> subprocess.CompletedProcess:
-        return subprocess.run(
+        return spawn.run(
             [tool_path("hc"), *args], capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False, timeout=timeout, shell=False,
         )

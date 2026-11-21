@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hx import paths
+from hx import spawn
 
 
 def is_persistent_method(method: str | None) -> bool:
@@ -194,7 +195,7 @@ def _partition_files(files: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _git_head(repo_root: Path) -> str:
     try:
-        out = subprocess.check_output(
+        out = spawn.check_output(
             ["git", "rev-parse", "HEAD"],
             cwd=str(repo_root),
             stderr=subprocess.DEVNULL,
@@ -207,7 +208,7 @@ def _git_head(repo_root: Path) -> str:
 
 def _run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
     try:
-        proc = subprocess.run(
+        proc = spawn.run(
             ["git", *args],
             cwd=str(cwd),
             capture_output=True,

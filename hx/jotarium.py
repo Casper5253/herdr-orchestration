@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from hx import ledger, usage
+from hx import ledger, spawn, usage
 
 DEFAULT_URL = "http://127.0.0.1:4180"
 TOKEN_ENVS = (
@@ -510,7 +510,7 @@ def landed_commits(cwd: str | None = None) -> list[dict[str, Any]]:
     a main branch, git fails and the check has nothing to say.
     """
     try:
-        completed = subprocess.run(
+        completed = spawn.run(
             ["git", "-C", cwd or os.getcwd(), "log", "main", "--since=14.days", "--format=%h%x09%s"],
             capture_output=True,
             text=True,
