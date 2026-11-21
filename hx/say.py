@@ -229,6 +229,7 @@ def _submission_evidence(
     name: str,
     result: host.SendResult,
     text: str,
+    sent_ms: int,
 ) -> tuple[str, str | None]:
     """Verify a send admitted with an empty composer, retry its submit key once."""
     member = _host_member(detected, name)
@@ -242,6 +243,10 @@ def _submission_evidence(
     deadline = time.monotonic() + SUBMIT_POLL_SECONDS
     while True:
         screen, staged = _read_composer(detected, name, kind)
+        # A busy OpenCode pane keeps its turn; its plugin's message ack is the proof.
+        if (kind == "opencode"
+                and host.chat_ack_received(str(member["address"]), text, since_ms=sent_ms)):
+            return "submitted", None
         if staged is None:
             return "uncertain", "no composer identified"
         if not host._composer_empty(staged, kind):
@@ -716,6 +721,7 @@ def _deliver(
             if not host._composer_empty(staged, str(destination["kind"])):
                 _write_state(path, "pending", note="composer not empty")
                 return "pending", "composer not empty", (where, "pending")
+        sent_ms = int(time.time() * 1000)
         try:
             result = detected.send_checked(name, text)
         except host.SendNotAttempted as exc:
@@ -740,7 +746,8 @@ def _deliver(
         if state == "delivered":
             # The standalone CLI reports the provider response inline.
             if not isinstance(detected, host.HerdrHost):
-                outcome, receipt_reason = _submission_evidence(detected, name, result, text)
+                outcome, receipt_reason = _submission_evidence(
+                    detected, name, result, text, sent_ms)
                 if outcome == "pending":
                     state = "pending"
                     reason = receipt_reason or "paste still staged"

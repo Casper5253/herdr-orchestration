@@ -1,7 +1,9 @@
 """hx say receipts: one line per send, the Enter press, and dead-role records."""
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -465,6 +467,59 @@ def test_devin_queued_send_is_flushed_by_one_enter(fake, capsys):
     assert capsys.readouterr().out.endswith("submitted\n")
     assert fake.keys == [["enter"]]
     assert len(fake.sent) == 1
+
+
+# ---------- Q-862: the OpenCode plugin's message ack is submission evidence ----------
+
+
+def _opencode_ack(tmp_path: Path, address: str, text: str, received_ms: int) -> None:
+    """The ack the hc-status plugin leaves in the terminal's binding file."""
+    directory = tmp_path / "state" / "hc-bindings"
+    directory.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256("".join(text.split()).encode("utf-8")).hexdigest()
+    (directory / f"{address}.json").write_text(json.dumps({
+        "v": 2, "terminal": address, "provider": "opencode",
+        "chat_ack": {"text_sha256": digest, "received_ms": received_ms},
+    }), encoding="utf-8")
+
+
+def _busy_opencode_sidebar() -> str:
+    screen = (_Q572 / "opencode-home.txt").read_text(encoding="utf-8")
+    rows = screen.splitlines()
+    width = max(len(row) for row in rows)
+    return "\n".join(row.ljust(width + 2) + "│ Todo: finish report" for row in rows)
+
+
+def test_busy_opencode_pane_ack_proves_submission(fake, capsys, tmp_path, monkeypatch):
+    """Q-862: a busy OpenCode pane keeps its turn, so the fresh message ack in
+    its binding file is the submission evidence — no key press needed."""
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
+    fake.members["dev-lead"].update(kind="opencode", status="working")
+    fake.advance = False
+    fake.views["dev-lead"] = _busy_opencode_sidebar()
+    _opencode_ack(tmp_path, "t24", "[team from dev-codex] brief ends here",
+                  int(time.time() * 1000) + 60_000)
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert fake.keys == []
+
+
+@pytest.mark.parametrize("case", ["missing", "stale", "different"])
+def test_opencode_ack_gaps_stay_uncertain(fake, capsys, tmp_path, monkeypatch, case):
+    """A missing, older, or different ack is never evidence for this send."""
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
+    fake.members["dev-lead"].update(kind="opencode", status="working")
+    fake.advance = False
+    fake.views["dev-lead"] = _busy_opencode_sidebar()
+    if case == "stale":
+        _opencode_ack(tmp_path, "t24", "[team from dev-codex] brief ends here",
+                      int(time.time() * 1000) - 60_000)
+    elif case == "different":
+        _opencode_ack(tmp_path, "t24", "a different recent message",
+                      int(time.time() * 1000) + 60_000)
+    assert say.say("lead", "brief ends here") == 1
+    assert "uncertain (empty composer without submission evidence)" in capsys.readouterr().out
+    assert fake.keys == []
 
 
 def test_devin_foreign_queue_never_earns_enter(fake, capsys):

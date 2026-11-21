@@ -7,6 +7,7 @@ module. Nothing else in hx runs the host CLI or reads its wire format.
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import os
 import re
@@ -215,6 +216,8 @@ HC_APP_KINDS = {
 }
 # A team or role label that can flow into a path and a logical name.
 HC_LABEL = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+# A terminal address safe to use as an hc-bindings file name (the plugin's own rule).
+HC_ADDRESS = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
 class IdentityError(ValueError):
@@ -744,6 +747,33 @@ def _hc_binding(raw: dict[str, Any], parents: dict[int, int] | None) -> tuple[st
     if not isinstance(session, str) or not session:
         return None, "binding has no session id"
     return session, "v2 binding"
+
+
+def chat_ack_received(address: str, text: str, *, since_ms: int) -> bool:
+    """Whether this terminal's binding acks `text` received at or after `since_ms`.
+
+    The OpenCode hc-status plugin records a `chat_ack` in its hc-bindings file
+    for every user message it accepts: the sha256 of the whitespace-free body
+    (any `<hc from=...>` envelope stripped) and the receive time in epoch ms.
+    A missing, older, or different ack proves nothing about this send.
+    """
+    if not HC_ADDRESS.fullmatch(str(address)):
+        return False
+    try:
+        data = json.loads(
+            (_hc_state_dir() / "hc-bindings" / f"{address}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return False
+    ack = data.get("chat_ack") if isinstance(data, dict) else None
+    if not isinstance(ack, dict):
+        return False
+    received = ack.get("received_ms")
+    if (not isinstance(received, (int, float)) or isinstance(received, bool)
+            or received < since_ms):
+        return False
+    digest = hashlib.sha256(re.sub(r"\s+", "", text).encode("utf-8")).hexdigest()
+    return ack.get("text_sha256") == digest
 
 
 def hc_member(raw: dict[str, Any], *, parents: dict[int, int] | None = None) -> Member:

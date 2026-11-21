@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export const APP = "opencode";
 export const PROVIDER = "opencode";
@@ -70,6 +70,23 @@ export function stateForEvent(type, properties = {}) {
 
 export function enabled(env = {}) {
   return Boolean(env.HC_TERMINAL_ID) && TEAM_OVERLAY.test(env.OPENCODE_CONFIG || "");
+}
+
+// `hc send` wraps the sender's text in an <hc from="..."> envelope. The ack
+// hashes the body inside it, whitespace-free, so the sender can prove this
+// exact message arrived without knowing the envelope or the pane's layout.
+const HC_ENVELOPE = /^<hc from="[^"]*">([\s\S]*)<\/hc>$/;
+
+export function chatAckFor(parts, receivedMs) {
+  const text = (Array.isArray(parts) ? parts : [])
+    .map((part) => (part && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .join("");
+  const body = HC_ENVELOPE.exec(text)?.[1] ?? text;
+  if (!body) return null;
+  return {
+    text_sha256: createHash("sha256").update(body.replace(/\s+/g, ""), "utf8").digest("hex"),
+    received_ms: receivedMs,
+  };
 }
 
 export function sessionIDFrom(properties = {}, type) {
@@ -255,6 +272,7 @@ export function createPlugin(options = {}) {
     let activeRoot = null;
     let startedAt = now().toISOString();
     let rootStatus = {state: "idle"};
+    let lastAck = null;
 
     const bind = () => {
       const existing = readJson(claimFile, io);
@@ -265,7 +283,9 @@ export function createPlugin(options = {}) {
           atomicWriteJson(claimFile, {terminal, owner, provider_pid: pid, started_at: startedAt}, io);
           claimed = true;
         }
-        atomicWriteJson(file, bindingFor(terminal, activeRoot, observed, pid, writtenMs()), io);
+        const binding = bindingFor(terminal, activeRoot, observed, pid, writtenMs());
+        if (lastAck) binding.chat_ack = lastAck;
+        atomicWriteJson(file, binding, io);
         return true;
       } catch {
         // Status reporting must never disturb the agent; retry on a later event.
@@ -327,8 +347,13 @@ export function createPlugin(options = {}) {
         if (sessionID === activeRoot) rootStatus = mapped;
         emit();
       },
-      "chat.message": async ({ sessionID } = {}) => {
-        if (!select(sessionID)) return;
+      "chat.message": async (input = {}, output = {}) => {
+        if (!select(input.sessionID)) return;
+        const ack = chatAckFor(output.parts, writtenMs());
+        if (ack) {
+          lastAck = ack;
+          bind();
+        }
         rootStatus = {state: "working"};
         emit();
       },

@@ -7,6 +7,7 @@ shape, and the temp-then-rename write.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -495,6 +496,42 @@ console.log(JSON.stringify({
     assert all(out[key] is None for key in [
         "finished", "foreign", "noGeneration", "notAncestor", "wrongAncestor", "missing", "unsafe",
     ])
+
+
+def test_chat_message_records_a_text_ack_in_the_binding(tmp_path: Path) -> None:
+    """Q-862: a received user message leaves a fresh, message-specific ack in
+    the same binding file, so `hx say` can prove a busy pane got its send."""
+    state = tmp_path / "state"
+    out = _run(tmp_path, _body('''
+import * as p from __PLUGIN__;
+import fs from "node:fs";
+const file = __STATE__ + "/hc-bindings/t8.json";
+const hooks = await p.createPlugin({
+  env: {HC_TERMINAL_ID: "t8", OPENCODE_CONFIG: "C:/repo/opencode-trusted-dev.jsonc"},
+  stdout: {isTTY: true, write() {}}, stderr: null, stateDir: __STATE__, pid: 4242,
+  now: () => new Date("2026-11-09T00:00:00.000Z"),
+  terminalInfo: () => ({terminal_created_ms: 111}),
+  writtenMs: () => 222,
+})({});
+await hooks["chat.message"]({sessionID: "ses_one"}, {
+  parts: [{type: "text", text: '<hc from="t9">[team from dev-codex] brief ends here</hc>'}],
+});
+const first = JSON.parse(fs.readFileSync(file, "utf8")).chat_ack;
+await hooks["chat.message"]({sessionID: "ses_one"}, {
+  parts: [{type: "text", text: "padded\\t text\\n"}, {type: "text", text: " second"}],
+});
+const second = JSON.parse(fs.readFileSync(file, "utf8")).chat_ack;
+await hooks["chat.message"]({sessionID: "ses_one"}, {});
+console.log(JSON.stringify({first, second, kept: JSON.parse(fs.readFileSync(file, "utf8")).chat_ack}));
+''', PLUGIN=PLUGIN.as_uri(), STATE=str(state)))
+    wrapped_digest = hashlib.sha256(
+        "".join("[team from dev-codex] brief ends here".split()).encode("utf-8")
+    ).hexdigest()
+    plain_digest = hashlib.sha256(b"paddedtextsecond").hexdigest()
+    assert out["first"] == {"text_sha256": wrapped_digest, "received_ms": 222}
+    assert out["second"] == {"text_sha256": plain_digest, "received_ms": 222}
+    # A chat.message with no text parts leaves the last ack untouched.
+    assert out["kept"] == out["second"]
 
 
 def test_plugin_refuses_unset_terminal_with_one_diagnostic(tmp_path: Path) -> None:
