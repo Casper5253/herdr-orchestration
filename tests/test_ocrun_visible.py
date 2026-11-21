@@ -255,6 +255,10 @@ def test_cli_mode_defaults_from_herdr_env(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("HERDR_ENV", "1")
 
     ocrun.main(["--model", "glm-5.3-flash", "prompt text"])
+    assert selected == ["headless"]
+
+    selected.clear()
+    ocrun.main(["--model", "glm-5.3-flash", "prompt text", "--visible"])
     assert selected == ["visible"]
 
     selected.clear()

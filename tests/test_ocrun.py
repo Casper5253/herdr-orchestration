@@ -632,3 +632,28 @@ def test_write_run_script_variant_only_when_declared(tmp_path: Path, monkeypatch
     ocrun.write_run_script(run_dir, "p", "glm-5.3-flash", "medium", "vis-v", tmp_path)
     script = (run_dir / "run.ps1").read_text(encoding="utf-8")
     assert "--variant 'medium'" in script
+
+
+def test_headless_worker_gets_a_hidden_console_on_windows(tmp_path, monkeypatch) -> None:
+    import subprocess as sp
+    import sys as _sys
+
+    seen: dict = {}
+
+    class FakeProc:
+        returncode = 0
+        pid = 1
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def fake_popen(cmd, **kw):
+        seen.update(kw)
+        return FakeProc()
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    monkeypatch.setattr(sp, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(ocrun.subprocess, "Popen", fake_popen)
+    ocrun.execute(["opencode", "run"], tmp_path, 5.0)
+    assert seen["creationflags"] == 0x08000000
+    assert seen["stdin"] is sp.DEVNULL

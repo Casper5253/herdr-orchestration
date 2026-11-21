@@ -5,7 +5,7 @@
 event stream. A headless run exits 0 even when the model silently failed
 (docs/FINDINGS.md items 4, 6, 7), so ocrun never trusts the exit code.
 
-``visible`` (the default when HERDR_ENV=1) shows every run in its own
+``visible`` (opt in with ``--visible``; headless is the default) shows every run in its own
 console window: it writes ``<repo>/.hx/runs/<title>/{prompt.md, run.ps1,
 done.json}`` and opens the script via ``powershell -Command Start-Process
 powershell -ArgumentList -NoExit,...,-File,<run.ps1>``. The window stays
@@ -858,6 +858,11 @@ def execute(
             popen_kwargs["env"] = env
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True
+        else:
+            # A hidden console of its own, inherited by every helper the worker
+            # starts (MCP cmd shims), so nothing flashes a window.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         proc = subprocess.Popen(cmd, **popen_kwargs)
     except OSError as exc:
         return 1, "", str(exc), False, True
@@ -1499,11 +1504,11 @@ def run_devin(
     return _finish(failure, parsed, exit_code, timed_out, terminated, extra)
 
 
-def resolve_mode(headless: bool) -> str:
-    """CLI-level mode choice: visible by default in a Herdr pane."""
-    if headless:
-        return "headless"
-    return "visible" if os.environ.get("HERDR_ENV") == "1" else "headless"
+def resolve_mode(visible: bool, worker: str = "opencode") -> str:
+    """CLI-level mode choice: headless unless asked (creator, 21 Nov 2026: the
+    visible windows were popping up "every once in a while"). Codex exec has no
+    headless path here, so it stays visible."""
+    return "visible" if visible or worker == "codex" else "headless"
 
 
 def _permission_config(
@@ -1742,10 +1747,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task-id", default=None, help="correlation id for the task")
     parser.add_argument("--decision-id", default=None, help="correlation id from route.decide")
     parser.add_argument(
-        "--headless",
+        "--visible",
         action="store_true",
-        help="run in background --format json mode even when HERDR_ENV=1 (visible mode is the default there)",
+        help="show the run in its own PowerShell window (headless is the default)",
     )
+    parser.add_argument("--headless", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--allow-preflight-risk",
         action="store_true",
@@ -1764,9 +1770,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         parser.error("one of prompt or --prompt-file is required")
 
-    mode = resolve_mode(args.headless)
-    if args.worker == "codex" and mode == "headless":
+    if args.worker == "codex" and args.headless:
         parser.error("codex worker supports visible mode only (drop --headless)")
+    mode = resolve_mode(args.visible, args.worker)
 
     from hx.usage import load_policy
 
