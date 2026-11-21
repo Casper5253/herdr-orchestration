@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -219,15 +220,22 @@ def check(
         if name == lead:
             continue
         status = str(member.get("status") or "unknown")
+        note = "not working"
         try:
             screen = str(detected.read(name, SCREEN_LINES))
+        except subprocess.TimeoutExpired:
+            screen = None
+            note = "read timed out"
+            _append_log(log_file, {"at": _timestamp(clock),
+                                   "event": "read_timeout", "worker": name})
         except Exception:
             screen = None
+            note = "screen unreadable"
         last = last_line(screen or "")
         row: dict[str, Any] = {"name": name, "status": status, "last_line": last}
         if status != "working" or screen is None:
             row.update({"stalled": False, "minutes": 0.0, "alerted": False,
-                        "note": "screen unreadable" if screen is None else "not working"})
+                        "note": note})
             rows.append(row)
             continue
         current = digest(screen)

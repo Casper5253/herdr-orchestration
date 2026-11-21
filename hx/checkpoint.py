@@ -18,6 +18,7 @@ from typing import Any
 
 from hx import ledger as ledger_mod
 from hx import paths
+from hx import spawn
 
 
 class CheckpointInvalid(Exception):
@@ -66,7 +67,7 @@ def _task_workdir(task: dict[str, Any], repo_root: Path) -> Path:
 
 def _run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
     try:
-        proc = subprocess.run(
+        proc = spawn.run(
             ["git", *args],
             cwd=str(cwd),
             capture_output=True,

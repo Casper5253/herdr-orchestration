@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 
 import pytest
@@ -27,6 +28,7 @@ class FakeHost:
         self.sent = []
         self.reads = []
         self.unreadable = set()
+        self.timed_out = set()
 
     def team(self, prefix):
         return {name: item for name, item in self.members.items()
@@ -38,6 +40,8 @@ class FakeHost:
     def read(self, name, lines=team_stalls.SCREEN_LINES):
         if name in self.unreadable:
             raise RuntimeError("unreadable screen")
+        if name in self.timed_out:
+            raise subprocess.TimeoutExpired(["hc", "read", name], 30)
         self.reads.append(name)
         return self.screens[name]
 
@@ -149,6 +153,42 @@ def test_unreadable_screen_is_unknown_not_stalled(tmp_path):
     assert devin["stalled"] is False
     assert devin["note"] == "screen unreadable"
     assert not fake.sent
+
+
+def test_a_timed_out_read_is_a_logged_error_not_a_crash(tmp_path):
+    fake, state, log = fixture(tmp_path)
+    run(fake, state, log, 0)
+    fake.timed_out.add("dev-devin")
+    rows = run(fake, state, log, 120 * 60)
+    devin = next(row for row in rows if row["name"] == "dev-devin")
+    assert devin["stalled"] is False
+    assert devin["note"] == "read timed out"
+    assert not fake.sent
+    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["event"] == "read_timeout"
+    assert entry["worker"] == "dev-devin"
+
+
+def test_a_timed_out_roster_call_is_a_logged_run_error(monkeypatch, tmp_path):
+    class HungHost:
+        def team(self, prefix):
+            raise subprocess.TimeoutExpired(["hc", "ls", "--json"], 30)
+
+        def all_members(self):
+            raise subprocess.TimeoutExpired(["hc", "ls", "--json"], 30)
+
+    state = tmp_path / "state" / "team-stalls.json"
+    log = tmp_path / "state" / "stalls.log"
+    monkeypatch.setattr(host, "HcHost", lambda: HungHost())
+    monkeypatch.setattr(team_stalls.usage, "load_policy", lambda: POLICY)
+
+    code = team_stalls.run(team="dev", dry_run=True, state_path=state, log_path=log)
+
+    assert code == 1
+    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["event"] == "run"
+    assert entry["status"] == "error"
+    assert "timed out" in entry["error"]
 
 
 def test_dry_run_sends_logs_and_saves_nothing(tmp_path):

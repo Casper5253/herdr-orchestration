@@ -45,6 +45,7 @@ from typing import Any
 from hx import capability
 from hx import devin as devin_mod
 from hx import paths
+from hx import spawn
 
 PROVIDER = "opencode-go"
 
@@ -365,7 +366,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> bool:
     """Kill ``proc`` and its descendants; return True when confirmed dead."""
     if sys.platform == "win32":
         try:
-            result = subprocess.run(
+            result = spawn.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=PROCESS_TREE_KILL_TIMEOUT,
@@ -492,7 +493,7 @@ def launch_visible(script_path: Path) -> bool:
         "'" + part.replace("'", "''") + "'" for part in parts
     )
     try:
-        proc = subprocess.Popen(
+        proc = spawn.Popen(
             [
                 "powershell",
                 "-NoProfile",
@@ -574,7 +575,7 @@ def find_session_by_title(
     deadline = time.monotonic() + settle_seconds
     while True:
         try:
-            result = subprocess.run(
+            result = spawn.run(
                 ["opencode", "session", "list", "--format", "json", "-n", "50"],
                 capture_output=True,
                 timeout=60,
@@ -600,7 +601,7 @@ def export_session_text(session_id: str | None) -> tuple[str | None, str | None]
     if not session_id:
         return None, None
     try:
-        result = subprocess.run(
+        result = spawn.run(
             ["opencode", "export", session_id],
             capture_output=True,
             timeout=300,
@@ -858,7 +859,7 @@ def execute(
             popen_kwargs["env"] = env
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True
-        proc = subprocess.Popen(cmd, **popen_kwargs)
+        proc = spawn.Popen(cmd, **popen_kwargs)
     except OSError as exc:
         return 1, "", str(exc), False, True
     try:
@@ -1315,7 +1316,7 @@ def _read_pid(pid_path: Path) -> int | None:
 
 def _git_dirty_files(cwd: Path) -> set[str]:
     try:
-        out = subprocess.run(
+        out = spawn.run(
             ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=str(cwd),
             capture_output=True,

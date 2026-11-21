@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from hx import ledger as ledger_mod
+from hx import spawn
 from hx import paths
 from hx import usage as usage_mod
 
@@ -52,7 +53,7 @@ def _repo_root() -> Path:
 
 
 def _run_git(args: list[str], cwd: Path) -> tuple[int, str]:
-    proc = subprocess.run(
+    proc = spawn.run(
         ["git", "-C", str(cwd)] + args, capture_output=True, text=True, timeout=30
     )
     return proc.returncode, proc.stdout.strip()
@@ -123,7 +124,7 @@ def _resolve_family(agent: str, model: str | None, policy: dict[str, Any] | None
 
 
 def _run_git_raw(args: list[str], cwd: Path) -> tuple[int, str]:
-    proc = subprocess.run(
+    proc = spawn.run(
         ["git", "-C", str(cwd)] + args, capture_output=True, text=True, timeout=30
     )
     return proc.returncode, proc.stdout
