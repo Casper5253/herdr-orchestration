@@ -1,6 +1,7 @@
 {
   "team_prefix": "hx-",
   "lead_role": "lead",
+  "stall_minutes": 30,
   "active_plan": "go",
   "opencode_pool": {
     "go": {

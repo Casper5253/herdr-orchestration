@@ -126,6 +126,29 @@ The lead (Claude) is not compacted by hx: Claude's own auto-compact runs, the `P
 
 `.hx/routing.jsonl`: one line per routing decision and one per outcome: task id, worker, model, effort, method, reason, duration, tokens/cost when known (ocrun and codex exec report them), attempts, result. `hx report` summarises by pool and model: tasks, success rate, cost, and the Claude/Codex work avoided. No dashboard.
 
+## Stall detection (`hx team stalls`)
+
+A live non-lead worker whose status is `working` is stalled when its normalised
+screen has not changed for `policy.stall_minutes` (default 30). Normalisation
+removes ANSI, spinner glyphs and every run of digits, so a ticking timer or
+token counter is not progress; a new line changes the hash. Idle, done and
+blocked workers are never stalled, and an unreadable screen is unknown, not a
+stall. The check keeps each worker's last hash and first-seen time in
+`.hx/team-stalls.json`, sends the lead one line per stall, and appends the
+same facts to `.hx/stalls.log`. A screen change, a new session/turn or a
+status change resets the clock; the alert is not repeated for the same stall.
+`--dry-run` prints each worker's state without sending, logging or saving.
+
+Install the ten-minute check for the current user (hidden, no console):
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File team/Register-StallCheck.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File team/Register-StallCheck.ps1 -Unregister
+
+On an alert, interrupt the worker in its pane with Esc (`hc keys <terminal> esc`),
+then Ctrl+C if it still ignores keys. If the pane stays frozen, restart the team
+through `team/Start-HerdrAppTeam.ps1`. The check reads panes and spends no model
+tokens.
+
 ## Review round 1 (hx-codex, f61a26b): binding amendments
 
 These override the sections above where they conflict.

@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import boundary, checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_watch, usage
+from hx import boundary, checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -204,6 +204,15 @@ def _build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--interval", type=float, default=1.0, help="Roster rescan period in seconds.")
     watch_parser.add_argument("--timeout", type=float, default=None, help="Seconds to watch before exiting quietly.")
     watch_parser.set_defaults(func=lambda args: _team_watch(args))
+    stalls_parser = team_sub.add_parser(
+        "stalls",
+        help="One-shot stall check: alert the lead when a working worker's screen has not changed for stall_minutes.",
+    )
+    stalls_parser.add_argument("--team", help="Team name; default is this pane's team, else the one live team with a lead.")
+    stalls_parser.add_argument("--dry-run", action="store_true",
+                               help="Print every worker's state without sending, logging or saving state.")
+    stalls_parser.set_defaults(
+        func=lambda args: team_stalls.run(args.team, dry_run=args.dry_run))
     return parser
 
 
