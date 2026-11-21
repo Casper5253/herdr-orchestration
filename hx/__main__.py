@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import boundary, checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_stalls, team_watch, usage
+from hx import boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -374,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"hx: {exc}", file=sys.stderr)
             return 1
-    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile"}:
+    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile", "check"}:
         handler = {
             "route": route.main,
             "ocrun": ocrun.main,
@@ -382,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             "handoff": handoff.main,
             "review": review.main,
             "profile": profile.main,
+            "check": check.main,
         }[args_list[0]]
         try:
             return int(handler(args_list[1:]) or 0)

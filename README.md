@@ -36,6 +36,20 @@ The JSON result includes `sender`, a final-message preview, and `final_message_f
 pointing to the full `final.md` in the run directory. Failed runs print their
 classified failure reason to stderr. Persistent teammate panes still use `hx say`.
 
+## Check receipts
+
+Workers run their final full check through `hx check` from the repo or worktree root:
+
+    hx check -- npm run check
+
+It refuses tracked changes, runs the command, and writes `.hx/receipts/<commit>-<slug>.json` with the repo, HEAD commit and tree, command, start and end, duration, exit code and the last 40 output lines. It exits with the command's code. Report the receipt path with the result.
+
+The lead verifies the receipt instead of rerunning a check a worker already ran on the same code:
+
+    hx check verify HEAD --command 'npm run check'
+
+`verify` exits 0 only for a passing receipt for that exact commit and command. A rerun of the same commit and command replaces its receipt atomically; a failed run stays visible and fails verification.
+
 ## Context boundaries
 
 `hx task done <id>` validates the completion checkpoint, runs the owning agent's context decision, and returns it in `boundary`. For pane work without a ledger task, run `hx boundary <agent>`. Both append a disposition to the project's `.hx/context-boundaries.jsonl`: `keep`, `defer`, `unknown`, `refused`, or `recovery-needed`, with session telemetry and `readiness` (`ready` or `held`). These operations recommend recovery; they do not execute compaction.
