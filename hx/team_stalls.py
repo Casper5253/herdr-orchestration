@@ -5,7 +5,10 @@ has not changed for `policy.stall_minutes` (default 30). The normalised
 screen removes ANSI, spinner glyphs, and every run of digits, so a ticking
 timer or token counter is not progress. Idle, done and blocked workers are
 never stalled. The check is one shot: a scheduled task runs it every ten
-minutes, and the alert goes to the lead once per stall.
+minutes, and the alert goes to the lead once per stall. It reads the Herdr
+app through `hc`, so it works from a scheduled task with no terminal
+identity. Every run appends one status line to `stalls.log`; a failed alert
+is logged with its reason.
 """
 
 from __future__ import annotations
@@ -146,6 +149,30 @@ def _append_log(path: Path, entry: dict[str, Any]) -> None:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
+def _timestamp(clock: float) -> str:
+    return dt.datetime.fromtimestamp(clock, dt.timezone.utc).isoformat()
+
+
+def _run_record(started: float, status: str, team: str | None, dry_run: bool,
+                rows: list[dict[str, Any]] | None = None,
+                error: str | None = None) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "at": _timestamp(started), "event": "run", "status": status,
+        "team": team, "dry_run": dry_run,
+    }
+    if rows is not None:
+        named = [row for row in rows if "name" in row]
+        record.update({
+            "workers": len(named),
+            "stalled": sum(1 for row in named if row.get("stalled")),
+            "alerts": sum(1 for row in named
+                          if row.get("alert") in ("sent", "would-alert")),
+        })
+    if error:
+        record["error"] = error
+    return record
+
+
 def _alert_text(name: str, minutes: float, line: str) -> str:
     text = (f"[hx] stall: {name} has been working for {minutes:.0f}m "
             f"without a screen change. Last line: {line or '(none)'}")
@@ -243,16 +270,19 @@ def check(
                     entry["alerted"] = True
                     entry["alerted_at"] = clock
                     _append_log(log_file, {
-                        "at": dt.datetime.fromtimestamp(
-                            clock, dt.timezone.utc).isoformat(),
+                        "at": _timestamp(clock), "event": "alert",
                         "worker": name, "minutes": round(minutes, 1),
                         "last_line": last,
                     })
                     alert = "sent"
                 else:
                     alert = "pending"
-                    if reason:
-                        row["send_reason"] = reason
+                    row["send_reason"] = reason or "unknown"
+                    _append_log(log_file, {
+                        "at": _timestamp(clock), "event": "send_failed",
+                        "worker": name, "minutes": round(minutes, 1),
+                        "reason": row["send_reason"], "last_line": last,
+                    })
         elif stalled:
             alert = "already"
         workers[name] = entry
@@ -267,12 +297,22 @@ def check(
     return rows
 
 
-def run(team: str | None = None, *, dry_run: bool = False) -> int:
-    detected = host.detect()
-    if detected is None:
-        print(json.dumps({"error": "hx team stalls runs only in a team host"}))
+def run(team: str | None = None, *, dry_run: bool = False,
+        state_path: Path | None = None, log_path: Path | None = None) -> int:
+    log_file = Path(log_path) if log_path is not None else _log_path()
+    started = time.time()
+    try:
+        detected = host.HcHost()
+        policy = usage.load_policy()
+        rows = check(detected, team=team, policy=policy,
+                     state_path=state_path, log_path=log_file,
+                     dry_run=dry_run)
+        for row in rows:
+            print(json.dumps(row))
+        _append_log(log_file, _run_record(started, "ok", team, dry_run, rows))
+        return 0
+    except Exception as exc:
+        _append_log(log_file, _run_record(
+            started, "error", team, dry_run, error=str(exc)))
+        print(json.dumps({"error": str(exc)}))
         return 1
-    policy = usage.load_policy()
-    for row in check(detected, team=team, policy=policy, dry_run=dry_run):
-        print(json.dumps(row))
-    return 0

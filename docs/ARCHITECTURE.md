@@ -133,11 +133,14 @@ screen has not changed for `policy.stall_minutes` (default 30). Normalisation
 removes ANSI, spinner glyphs and every run of digits, so a ticking timer or
 token counter is not progress; a new line changes the hash. Idle, done and
 blocked workers are never stalled, and an unreadable screen is unknown, not a
-stall. The check keeps each worker's last hash and first-seen time in
-`.hx/team-stalls.json`, sends the lead one line per stall, and appends the
-same facts to `.hx/stalls.log`. A screen change, a new session/turn or a
-status change resets the clock; the alert is not repeated for the same stall.
-`--dry-run` prints each worker's state without sending, logging or saving.
+stall. The check is an observer. It reads the Herdr app through `hc`, including
+from the scheduled task, which has no terminal identity. It keeps each
+worker's last hash and first-seen time in `.hx/team-stalls.json`, sends the
+lead one line per stall, and appends the same facts to `.hx/stalls.log`.
+Every run also appends one status line, so a failed run or a failed alert has
+a record. A screen change, a new session/turn or a status change resets the
+clock; the alert is not repeated for the same stall. `--dry-run` prints each
+worker's state without sending or saving; its run line is still logged.
 
 Install the ten-minute check for the current user (hidden, no console):
 

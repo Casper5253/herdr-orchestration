@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -188,3 +189,92 @@ def test_opencode_progress_bar_frames_count_as_unchanged():
     first = "Thinking\n⬝⬝⬝⬝■■■■  esc interrupt  28.3K (3%)"
     later = "Thinking\n■■⬝⬝⬝⬝■■  esc interrupt  28.3K (3%)"
     assert team_stalls.digest(first) == team_stalls.digest(later)
+
+
+def test_run_uses_hc_without_terminal_identity(monkeypatch, tmp_path):
+    fake, state, log = fixture(tmp_path)
+    monkeypatch.delenv("HC_TERMINAL_ID", raising=False)
+    monkeypatch.setattr(host, "HcHost", lambda: fake)
+
+    def forbidden_detect():
+        raise AssertionError("host.detect must not run for the stall observer")
+
+    monkeypatch.setattr(host, "detect", forbidden_detect)
+    monkeypatch.setattr(team_stalls.usage, "load_policy", lambda: POLICY)
+
+    code = team_stalls.run(team="dev", dry_run=True, state_path=state, log_path=log)
+
+    assert code == 0
+    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["event"] == "run"
+    assert entry["status"] == "ok"
+    assert entry["dry_run"] is True
+    assert entry["workers"] == 1
+    assert not state.exists()
+
+
+def test_run_alerts_the_lead_without_terminal_identity(monkeypatch, tmp_path):
+    fake, state, log = fixture(tmp_path)
+    screen = fake.screens["dev-devin"]
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"version": 1, "workers": {"dev-devin": {
+        "hash": team_stalls.digest(screen), "since": time.time() - 31 * 60,
+        "alerted": False, "alerted_at": None, "status": "working",
+        "session_id": "s1", "created_ms": 1, "turn": 1}}}), encoding="utf-8")
+    monkeypatch.delenv("HC_TERMINAL_ID", raising=False)
+    monkeypatch.setattr(host, "HcHost", lambda: fake)
+
+    def forbidden_detect():
+        raise AssertionError("host.detect must not run for the stall observer")
+
+    monkeypatch.setattr(host, "detect", forbidden_detect)
+    monkeypatch.setattr(team_stalls.usage, "load_policy", lambda: POLICY)
+
+    code = team_stalls.run(team="dev", state_path=state, log_path=log)
+
+    assert code == 0
+    assert fake.sent and fake.sent[0][0] == "dev-lead"
+    lines = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert any(entry["event"] == "alert" for entry in lines)
+    assert lines[-1]["event"] == "run"
+    assert lines[-1]["status"] == "ok"
+    assert lines[-1]["alerts"] == 1
+
+
+def test_run_logs_its_own_error(monkeypatch, tmp_path, capsys):
+    class BrokenHost:
+        def team(self, prefix):
+            raise RuntimeError("hc down")
+
+    state = tmp_path / "state" / "team-stalls.json"
+    log = tmp_path / "state" / "stalls.log"
+    monkeypatch.setattr(host, "HcHost", lambda: BrokenHost())
+    monkeypatch.setattr(team_stalls.usage, "load_policy", lambda: POLICY)
+
+    code = team_stalls.run(team="dev", dry_run=True, state_path=state, log_path=log)
+
+    assert code == 1
+    assert "hc down" in capsys.readouterr().out
+    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["event"] == "run"
+    assert entry["status"] == "error"
+    assert entry["error"] == "hc down"
+
+
+def test_a_failed_alert_is_logged(tmp_path):
+    fake, state, log = fixture(tmp_path)
+
+    def fail(name, text, **_kwargs):
+        return {"started": False, "status": "error", "turn": None,
+                "ended": False, "reason": "error"}
+
+    fake.send_checked = fail
+    run(fake, state, log, 0)
+    rows = run(fake, state, log, 30 * 60)
+
+    assert rows[0]["alert"] == "pending"
+    assert rows[0]["send_reason"] == "error"
+    entry = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["event"] == "send_failed"
+    assert entry["worker"] == "dev-devin"
+    assert entry["reason"] == "error"

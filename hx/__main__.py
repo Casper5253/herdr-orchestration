@@ -210,7 +210,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     stalls_parser.add_argument("--team", help="Team name; default is this pane's team, else the one live team with a lead.")
     stalls_parser.add_argument("--dry-run", action="store_true",
-                               help="Print every worker's state without sending, logging or saving state.")
+                               help="Print every worker's state without sending or saving state; the run line is still logged.")
     stalls_parser.set_defaults(
         func=lambda args: team_stalls.run(args.team, dry_run=args.dry_run))
     return parser
