@@ -126,8 +126,24 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:.88em}
 </ul>
 </div>
 
-<h2>Honest: what's too early to measure</h2>
-<p class="early">Most fixes landed hours ago. The before numbers cover 14 days, so a fair after needs about the same. Failed-run rate, compaction count, review coverage and skill use get remeasured in two weeks, on the same measurements. The proof above is real, but it's from single cases, not trends yet.</p>
+<h2>Two weeks later: the after numbers (measured 22 Nov)</h2>
+<p>Same script, same 14-day length. Before is 25 Oct to 7 Nov, after is 8 to 21 Nov. Both columns were rerun today, so they compare like for like.</p>
+<div class="card"><h3>The same four measures</h3>
+<ul>
+<li><b>Skills used:</b> 37 before, 96 after.</li>
+<li><b>One-off runs that failed:</b> 6 of 17 before, 10 of 16 after. This looks worse, but one-off runs are no longer how work gets done: 16 runs against 396 briefs sent to the standing workers. Seven of the ten were tool failures in one-off Devin runs, which is why long work moved to the standing Devin worker.</li>
+<li><b>Review coverage:</b> about 1% before and after on the old count, because that count only sees reviews logged in one file. The team now sends reviews as briefs: 95 cross-family reviews for 248 commits after, none before.</li>
+<li><b>Lead compaction:</b> can't be measured this way any more. The old count reads four old sessions. The lead now compacts itself automatically.</li>
+</ul>
+</div>
+<div class="card"><h3>New measures for how the team works now</h3>
+<ul>
+<li><b>Briefs sent:</b> 396 in two weeks, split about evenly across Codex, Devin and OpenCode.</li>
+<li><b>Briefs with a report back:</b> at least 63%. That's a floor, because some reports arrive in ways the script can't match.</li>
+<li><b>Delivery receipts:</b> 258 of 280 reports to the lead read "uncertain" even when they arrived. That was a bug in how delivery is confirmed. It was fixed today (Q-868), and today's sends already read "submitted".</li>
+</ul>
+</div>
+<p class="early">One caveat: the old baseline page counted 75 skill uses before. Rerun today it finds 37, because some older session logs have since been cleaned up. Use 37 to compare.</p>
 </main>
 </body>
 </html>
