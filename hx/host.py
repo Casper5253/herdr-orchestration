@@ -217,6 +217,13 @@ def _queue_holds(screen: str, kind: str, sent: str) -> bool:
     without any of it; a display that truncates the send never matches and
     never earns a key press.
     """
+    if kind == "opencode" and sent:
+        normalized = re.sub(r"\s+", "", sent)
+        return any(
+            re.search(r"(?<!\w)QUEUED(?!\w)", block)
+            and normalized in re.sub(r"\s+", "", block)
+            for block in re.split(r"\n\s*\n", screen or "")
+        )
     region = _queued_text(screen, kind)
     if region is None or not sent:
         return False

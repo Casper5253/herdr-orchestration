@@ -13,6 +13,7 @@ from hx import devin, host, ledger, say
 
 _Q572 = Path(__file__).parent / "fixtures" / "q572"
 _Q869_CODEX_BUSY = Path(__file__).parent / "fixtures" / "q869-codex-busy.json"
+_Q878_OPENCODE_QUEUED = Path(__file__).parent / "fixtures" / "q878-opencode-queued.txt"
 
 
 @pytest.mark.parametrize("sidebar", [False, True])
@@ -278,6 +279,23 @@ def test_a_working_send_with_no_advance_is_uncertain_not_queued(fake, capsys):
     fake.advance = False  # status alone: the 1312-char stuck-paste shape
     assert say.say("lead", "hi") == 1
     assert " -> t24: uncertain" in capsys.readouterr().out
+
+
+def test_busy_opencode_send_marked_queued_gets_queued_receipt(fake, capsys):
+    fake.members["dev-lead"].update(kind="opencode", status="working")
+    fake.advance = False
+    fake.views["dev-lead"] = _OPENCODE_EMPTY
+
+    def show_queued(name):
+        queued = _Q878_OPENCODE_QUEUED.read_text(encoding="utf-8")
+        fake.views[name] = queued.replace("queued note", fake.sent[-1][1])
+    fake.on_send = show_queued
+
+    assert say.say("lead", "queued note") == 0
+    assert capsys.readouterr().out.splitlines()[-1].endswith(" -> t24: queued")
+    assert fake.keys == []
+    assert not host._queue_holds(fake.views["dev-lead"], "opencode", "another message")
+    assert not host._queue_holds("QUEUED\n\nqueued note", "opencode", "queued note")
 
 
 def test_send_not_attempted_is_pending_and_retried(fake, capsys):
