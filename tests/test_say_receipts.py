@@ -68,6 +68,24 @@ def test_empty_codex_without_turn_advance_is_uncertain(fake, capsys):
     assert fake.keys == []
 
 
+def test_uncertain_receipt_records_submission_evidence(fake, capsys):
+    fake.members["dev-lead"].update(kind="codex", session_id="session-after-compact")
+    fake.advance = False
+    assert say.say("lead", "brief ends here") == 1
+    capsys.readouterr()
+    records = say.records_for("dev__codex")
+    record = next(record for _, record, _ in records if record and record.get("body") == "brief ends here")
+    evidence = record["receipt_evidence"]
+    assert evidence["sent_turn"] == 4
+    assert evidence["session_id"] == "session-after-compact"
+    assert evidence["samples"]
+    assert evidence["samples"][0]["turn"] == 4
+    assert evidence["samples"][0]["status"] == "idle"
+    assert evidence["samples"][0]["session_id"] == "session-after-compact"
+    assert evidence["samples"][0]["composer"] == "empty"
+    assert isinstance(evidence["samples"][0]["at_ms"], int)
+
+
 def _member(name, role=None, kind="codex", status="idle", address="t1"):
     team = name.rsplit("-", 1)[0]
     return host.Member(

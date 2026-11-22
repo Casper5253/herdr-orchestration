@@ -235,9 +235,12 @@ def _submission_evidence(
     text: str,
     sent_ms: int,
     status_before: str,
+    evidence: dict[str, object],
 ) -> tuple[str, str | None]:
     """Verify a send admitted with an empty composer, retry its submit key once."""
     member = _host_member(detected, name)
+    evidence["sent_turn"] = result["turn"]
+    evidence["samples"] = []
     if member is None:
         return "uncertain", "no composer identified"
     kind = str(member["kind"])
@@ -250,6 +253,13 @@ def _submission_evidence(
     deadline = time.monotonic() + SUBMIT_POLL_SECONDS
     while True:
         screen, staged = _read_composer(detected, name, kind)
+        observed = _host_member(detected, name)
+        sample = {"at_ms": int(time.time() * 1000), "session_id": observed.get("session_id") if observed else None,
+                  "turn": observed.get("turn") if observed else None,
+                  "status": observed.get("status") if observed else "missing",
+                  "composer": "unknown" if staged is None else
+                  "empty" if host._composer_empty(staged, kind) else "staged"}
+        evidence["samples"].append(sample)
         # A busy OpenCode pane keeps its turn; its plugin's message ack is the proof.
         if (kind == "opencode"
                 and host.chat_ack_received(str(member["address"]), text, since_ms=sent_ms)):
@@ -264,7 +274,6 @@ def _submission_evidence(
                     provider = {"devin": "Devin", "opencode": "OpenCode"}[kind]
                     return "uncertain", f"staged {provider} text differs from send"
             break
-        observed = _host_member(detected, name)
         if observed is None or observed["address"] != member["address"]:
             return "uncertain", "receiver changed during submission check"
         if _turn_advanced(observed, result["turn"]):
@@ -768,11 +777,13 @@ def _deliver(
             raise
         state, reason = _delivery_state(result)
         outcome = _OUTCOME_WORDS.get(state, "uncertain")
+        receipt_evidence: dict[str, object] = {
+            "sent_turn": result.get("turn"), "session_id": destination.get("session_id"), "samples": []}
         if state == "delivered":
             # The standalone CLI reports the provider response inline.
             if not isinstance(detected, host.HerdrHost):
                 outcome, receipt_reason = _submission_evidence(
-                    detected, name, result, text, sent_ms, status_before)
+                    detected, name, result, text, sent_ms, status_before, receipt_evidence)
                 if outcome == "pending":
                     state = "pending"
                     reason = receipt_reason or "paste still staged"
@@ -782,7 +793,8 @@ def _deliver(
         # Keep the claim until the outcome is durable: releasing it first lets a
         # second sender claim the same still-pending record and send twice.
         try:
-            _write_state(path, state, note=reason, receipt=outcome)
+            _write_state(path, state, note=reason, receipt=outcome,
+                         receipt_evidence=receipt_evidence)
         except OSError:
             try:
                 _write_state(path, "uncertain", note="outcome write failed")
