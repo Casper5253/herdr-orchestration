@@ -428,7 +428,7 @@ def _config(tmp_path: Path, deny: list[str]) -> Path:
     config = tmp_path / "deny-rules.config.json"
     config.write_text(
         "// comment lines and trailing comments are legal here\n"
-        + json.dumps({"permissions": {"allow": ["exec"], "deny": deny}}, indent=2)
+        + json.dumps({"permissions": {"allow": ["exec", *devin.KNOWN_TOOLS], "deny": deny}}, indent=2)
         + "\n// trailing comment\n",
         encoding="utf-8",
     )
@@ -445,11 +445,11 @@ def test_prepare_run_prepends_generated_denied_section(
     run_dir = tmp_path / "run"
     devin.prepare_run(run_dir, "PREAMBLE\ndo the brief", policy)
     prompt = (run_dir / "prompt.md").read_text(encoding="utf-8")
-    assert prompt.startswith("Denied command prefixes")
+    assert prompt.startswith("Denied for this one-off run:")
     assert "`git push`" in prompt and "`herdr`" in prompt and "`hx`" in prompt
     assert "Write(.env*)" in prompt
     assert "PREAMBLE\ndo the brief" in prompt
-    assert prompt.index("Denied command prefixes") < prompt.index("PREAMBLE")
+    assert prompt.index("Denied for this one-off run:") < prompt.index("PREAMBLE")
 
 
 def test_denied_section_comes_from_config_not_a_handcopy(

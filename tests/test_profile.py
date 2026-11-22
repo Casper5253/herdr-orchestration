@@ -83,7 +83,8 @@ def test_prepare_run_renders_profiled_devin_config(tmp_path: Path) -> None:
     assert "Exec(git checkout)" in config["permissions"]["ask"]
     assert "Write(.env*)" in deny
     prompt = files["prompt"].read_text(encoding="utf-8")
-    assert "Exec(git push)" in prompt
+    assert prompt.startswith("Denied for this one-off run:")
+    assert "`git push`" in prompt
 
 
 # ---------- C5: profiles fail closed ----------

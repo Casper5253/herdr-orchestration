@@ -149,6 +149,41 @@ def test_devin_headless_ok(devin_run: tuple[dict, list], tmp_path: Path) -> None
     assert entry["models_seen"] == [MODEL]
 
 
+def test_one_off_prompt_names_denials_from_current_config(
+    devin_run: tuple[dict, list], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _ = devin_run
+    devin_config = Path(policy["devin"]["worker_config"])
+    monkeypatch.setattr(devin_mod, "list_models", _free_lister)
+
+    def run_prompt(title: str) -> str:
+        result = ocrun.run(
+            "do the work", MODEL, cwd=tmp_path, title=title, mode="headless",
+            worker="devin", policy=policy,
+        )
+        assert result["ok"] is True, result["failure"]
+        return (Path(result["run_dir"]) / "prompt.md").read_text(encoding="utf-8")
+
+    devin_config.write_text(json.dumps({"permissions": {
+        "allow": ["read", "grep", "glob", "edit", "exec"],
+        "deny": ["Exec(first-blocked-command)"],
+    }}), encoding="utf-8")
+    first = run_prompt("denials-first")
+    first_line = next(line for line in first.splitlines() if line.startswith("Denied for this one-off run:"))
+    assert "`webfetch`" in first_line
+    assert "`first-blocked-command`" in first_line
+
+    devin_config.write_text(json.dumps({"permissions": {
+        "allow": ["read", "grep", "glob", "edit", "exec", "webfetch"],
+        "deny": ["Exec(second-blocked-command)"],
+    }}), encoding="utf-8")
+    second = run_prompt("denials-second")
+    second_line = next(line for line in second.splitlines() if line.startswith("Denied for this one-off run:"))
+    assert "`webfetch`" not in second_line
+    assert "`second-blocked-command`" in second_line
+    assert "`first-blocked-command`" not in second_line
+
+
 def test_devin_preflight_refusal_never_executes(devin_run: tuple[dict, list], tmp_path: Path) -> None:
     policy, calls = devin_run
     result = ocrun.run_devin(

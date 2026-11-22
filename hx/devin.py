@@ -23,6 +23,7 @@ Free. Either way the worker fails closed and hx routes to the other pools.
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import json
 import os
 import re
@@ -41,6 +42,7 @@ PROVIDER = "devin"
 FREE_TIER = "Free"
 DEFAULT_KINDS = ("routine", "investigate", "feature", "debug", "refactor", "test")
 DEFAULT_MODELS = {"low": "swe-2-high", "medium": "swe-2-high", "high": "swe-2-max", "max": "swe-2-max"}
+KNOWN_TOOLS = ("webfetch", "websearch", "browser", "notebook", "ask_user", "upload_secrets")
 CONFIG_FILE = "devin-config.json"
 EXPORT_FILE = "export.json"
 PID_FILE = "pid.txt"
@@ -282,6 +284,15 @@ def denied_prefixes(config: dict[str, Any]) -> tuple[list[str], list[str]]:
     return commands, other
 
 
+def denied_tools(config: dict[str, Any]) -> list[str]:
+    """Known Devin tools omitted from the config allow list."""
+    allow = ((config.get("permissions") or {}).get("allow") or [])
+    return [
+        tool for tool in KNOWN_TOOLS
+        if not any(fnmatch.fnmatchcase(tool, pattern.lower()) for pattern in allow)
+    ]
+
+
 def _denied_lists(config: dict[str, Any]) -> tuple[str, str]:
     """Backticked, comma-joined (Exec command prefixes, other deny rules) for prompt text."""
     commands, other = denied_prefixes(config)
@@ -296,18 +307,26 @@ def denied_section(policy: dict[str, Any]) -> str:
     never copied by hand.
     """
     try:
-        commands, other = _denied_lists(_worker_config(policy))
+        config = _worker_config(policy)
     except Exception:
         return ""
-    if not commands and not other:
+    return _denied_section_for_config(config)
+
+
+def _denied_section_for_config(config: dict[str, Any]) -> str:
+    commands, other = _denied_lists(config)
+    tools = denied_tools(config)
+    if not commands and not other and not tools:
         return ""
-    lines = []
+    denied = []
+    if tools:
+        denied.append("tools " + ", ".join(f"`{tool}`" for tool in tools))
     if commands:
-        lines.append(
-            "Denied command prefixes (a denied call ends this run; never run a command starting with one): "
-            + commands
-            + "."
-        )
+        denied.append("command prefixes " + commands)
+    lines = [
+        "Denied for this one-off run: "
+        + "; ".join(denied) + ". A denied call ends the run; fetch web pages with Python HTTP, not a tool."
+    ] if denied else []
     if other:
         lines.append("Other denied rules: " + other + ".")
     return "\n".join(lines) + "\n\n"
@@ -373,11 +392,8 @@ def prepare_run(
         named = profile_mod.get(profile, policy)
         if named is None:
             raise ValueError(f"unknown profile {profile}")
-        deny_text = "Denied for you (a denied call ends this run): " + ", ".join(
-            f"`{rule}`" for rule in named.get("deny") or []
-        ) + ".\n\n"
-        prompt_path.write_text(deny_text + prompt, encoding="utf-8")
         rendered = profile_mod.render_devin_config(named, _worker_config(policy))
+        prompt_path.write_text(_denied_section_for_config(rendered) + prompt, encoding="utf-8")
         config_path.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
     else:
         prompt_path.write_text(denied_section(policy) + prompt, encoding="utf-8")

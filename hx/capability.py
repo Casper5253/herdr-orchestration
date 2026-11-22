@@ -57,17 +57,6 @@ WORKER_PROFILES: tuple[str, ...] = ("devin", "opencode", "codex")
 OPENCODE_CONFIG = "team/opencode-trusted-dev.jsonc"
 CODEX_PROFILE = ".codex/trusted-dev.config.toml"
 
-# Devin's own tool surface: names a brief or an outcome can literally carry.
-# Only distinctive names are scanned in prose; read/write/edit/exec are too
-# common as English words.
-DEVIN_KNOWN_TOOLS = (
-    "webfetch",
-    "websearch",
-    "browser",
-    "notebook",
-    "ask_user",
-    "upload_secrets",
-)
 EXEC_TOOL_NAMES = {"exec", "exec_command", "bash", "shell", "run_command", "local_shell_call"}
 
 _WRITE_VERB_RE = re.compile(
@@ -175,12 +164,9 @@ def _devin_profile(policy: dict[str, Any] | None) -> dict[str, Any]:
             if rule not in path_rules:
                 path_rules.append(rule)
     seq = _narrow_by_pane(worker_seq, pane_seq)
-    allow = ((configs[0][1].get("permissions") or {}).get("allow") or []) if configs else []
-    denied_tools = [
-        tool
-        for tool in DEVIN_KNOWN_TOOLS
-        if not any(fnmatch.fnmatchcase(tool, pattern.lower()) for pattern in allow)
-    ]
+    config = configs[0][1] if configs else {}
+    allow = ((config.get("permissions") or {}).get("allow") or [])
+    denied_tools = devin_mod.denied_tools(config)
     return {
         "worker": "devin",
         "seq_rules": seq,
