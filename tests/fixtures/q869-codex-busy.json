@@ -1,0 +1,24 @@
+[
+  {
+    "case": "live-started-turn",
+    "status_before": "idle",
+    "turn_before": 42,
+    "started": true,
+    "sent_turn": 43,
+    "status_after": "working",
+    "turn_after": 43,
+    "composer": "empty",
+    "expected": "submitted"
+  },
+  {
+    "case": "dropped",
+    "status_before": "idle",
+    "turn_before": 42,
+    "started": true,
+    "sent_turn": 43,
+    "status_after": "idle",
+    "turn_after": 43,
+    "composer": "empty",
+    "expected": "uncertain"
+  }
+]

@@ -282,7 +282,8 @@ def _submission_evidence(
             return _flush_queued_send(detected, observed, name, kind, text, screen)
         # The host saw this send start, and the worker changed from settled to
         # busy with no remaining draft. An empty pane alone proves neither.
-        if (same_turn and status_before in host.SETTLED and result["started"] is True
+        if ((same_turn or kind == "codex") and status_before in host.SETTLED
+                and result["started"] is True
                 and observed["status"] not in ("blocked", "error")
                 and (observed["status"] == "working" or host._composer_working(screen, kind))):
             return "submitted", None
@@ -751,9 +752,9 @@ def _deliver(
             if not host._composer_empty(staged, kind):
                 _write_state(path, "pending", note="composer not empty")
                 return "pending", "composer not empty", (where, "pending")
-            if kind in _SAME_TURN_COMPOSERS:
+            if kind in _SAME_TURN_COMPOSERS or kind == "codex":
                 status_before = _host_status(detected, name)
-                if host._composer_working(screen, kind):
+                if kind in _SAME_TURN_COMPOSERS and host._composer_working(screen, kind):
                     status_before = "working"
         sent_ms = int(time.time() * 1000)
         try:

@@ -12,6 +12,7 @@ from hx import devin, host, ledger, say
 
 
 _Q572 = Path(__file__).parent / "fixtures" / "q572"
+_Q869_CODEX_BUSY = Path(__file__).parent / "fixtures" / "q869-codex-busy.json"
 
 
 @pytest.mark.parametrize("sidebar", [False, True])
@@ -65,6 +66,28 @@ def test_empty_codex_without_turn_advance_is_uncertain(fake, capsys):
     fake.advance = False
     assert say.say("lead", "brief ends here") == 1
     assert "uncertain (empty composer without submission evidence)" in capsys.readouterr().out
+    assert fake.keys == []
+
+
+@pytest.mark.parametrize("scenario", json.loads(_Q869_CODEX_BUSY.read_text(encoding="utf-8")),
+                         ids=lambda scenario: scenario["case"])
+def test_codex_busy_receipt_uses_live_send_evidence(fake, capsys, scenario):
+    member = fake.members["dev-lead"]
+    member.update(kind="codex", status=scenario["status_before"],
+                  turn=scenario["turn_before"], session_id="01a2011f")
+    fake.advance = False
+
+    def send_checked(name, text, **_):
+        fake.sent.append((name, text))
+        member.update(status=scenario["status_after"], turn=scenario["turn_after"])
+        return host.SendResult(started=scenario["started"], status=scenario["status_before"],
+                               turn=scenario["sent_turn"], ended=False, reason=None)
+
+    fake.send_checked = send_checked
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    assert say.say("lead", "brief ends here") == int(scenario["expected"] == "uncertain")
+    receipt = capsys.readouterr().out.rpartition(": ")[2].split(maxsplit=1)[0]
+    assert receipt == scenario["expected"]
     assert fake.keys == []
 
 
