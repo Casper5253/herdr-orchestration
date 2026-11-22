@@ -137,6 +137,22 @@ def _composer_empty(staged: str, kind: str) -> bool:
     return bool(pattern and pattern.fullmatch(staged))
 
 
+def _composer_working(screen: str, kind: str) -> bool:
+    """Read the provider's busy indicator beside the composer, outside scrollback."""
+    rows = screen.splitlines()
+    if kind == "opencode":
+        for index in range(len(rows) - 2, -1, -1):
+            if re.match(r"\s*╹▀+", rows[index]):
+                return re.match(r"\s*[•⬝]+\s+esc interrupt\b", rows[index + 1]) is not None
+    if kind == "devin":
+        for index in range(len(rows) - 2, 1, -1):
+            if (_DEVIN_FOOTER_RULE.fullmatch(rows[index + 1].strip())
+                    and rows[index].lstrip().startswith("❭")
+                    and _DEVIN_COMPOSER_TOP.fullmatch(rows[index - 1].strip())):
+                return re.match(r"\s*[\u2800-\u28ff]+\s+Thinking\b", rows[index - 2]) is not None
+    return False
+
+
 # The key a staged paste still needs, by (provider kind, screen evidence), and
 # the receipt its press earns. A mid-turn Codex dead-drops Enter and says so
 # in its footer; Tab files the paste into its queue. Every other provider and

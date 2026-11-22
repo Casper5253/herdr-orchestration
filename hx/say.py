@@ -48,6 +48,7 @@ DELIVERY_WAIT_SECONDS = 2.0
 UNCONFIRMED_LONG_CHARS = 1000
 # The pointer must stay inside the transport bound that the probe showed works.
 POINTER_MAX_CHARS = 280
+_SAME_TURN_COMPOSERS = frozenset({"opencode", "devin"})
 # How long `hx say` watches a receiver for a turn to start before it checks
 # the composer for unsubmitted text, and how long the submit-key press gets
 # to settle before the one recheck.
@@ -147,6 +148,12 @@ def _host_status(detected: host.Host, name: str) -> str:
     return str(member["status"]) if member else "unknown"
 
 
+def _turn_advanced(member: host.Member, sent_turn: int | None) -> bool:
+    turn = member.get("turn")
+    return (isinstance(sent_turn, int) and not isinstance(sent_turn, bool)
+            and isinstance(turn, int) and not isinstance(turn, bool) and turn > sent_turn)
+
+
 def _await_advance(detected: host.Host, name: str, sent_turn: int | None, seconds: float) -> bool:
     """Submission evidence: the receiver's turn number advanced past ours.
 
@@ -159,10 +166,7 @@ def _await_advance(detected: host.Host, name: str, sent_turn: int | None, second
         member = _host_member(detected, name)
         if member is None:
             return False
-        turn = member.get("turn")
-        if (isinstance(sent_turn, int) and not isinstance(sent_turn, bool)
-                and isinstance(turn, int) and not isinstance(turn, bool)
-                and turn > sent_turn):
+        if _turn_advanced(member, sent_turn):
             return True
         if member["status"] in ("blocked", "error"):
             return False
@@ -230,6 +234,7 @@ def _submission_evidence(
     result: host.SendResult,
     text: str,
     sent_ms: int,
+    status_before: str,
 ) -> tuple[str, str | None]:
     """Verify a send admitted with an empty composer, retry its submit key once."""
     member = _host_member(detected, name)
@@ -240,6 +245,8 @@ def _submission_evidence(
         if not _await_advance(detected, name, result["turn"], SUBMIT_POLL_SECONDS):
             return "uncertain", "no submission evidence"
         return ("queued" if result["status"] == "working" else "submitted"), None
+    same_turn = kind in _SAME_TURN_COMPOSERS
+    queued_before = (status_before if status_before != "unknown" else result["status"]) == "working"
     deadline = time.monotonic() + SUBMIT_POLL_SECONDS
     while True:
         screen, staged = _read_composer(detected, name, kind)
@@ -250,16 +257,26 @@ def _submission_evidence(
         if staged is None:
             return "uncertain", "no composer identified"
         if not host._composer_empty(staged, kind):
-            if kind == "devin" and host._composer_text(screen, kind) is None:
+            if same_turn:
                 wrapped = re.fullmatch(r'<hc from="[^"]+">(.*)</hc>', staged)
                 body = wrapped[1] if wrapped else staged
                 if "".join(body.split()) != "".join(text.split()):
-                    return "uncertain", "staged Devin text differs from send"
+                    provider = {"devin": "Devin", "opencode": "OpenCode"}[kind]
+                    return "uncertain", f"staged {provider} text differs from send"
             break
-        if _await_advance(detected, name, result["turn"], 0):
-            return ("queued" if result["status"] == "working" else "submitted"), None
+        observed = _host_member(detected, name)
+        if observed is None or observed["address"] != member["address"]:
+            return "uncertain", "receiver changed during submission check"
+        if _turn_advanced(observed, result["turn"]):
+            return ("queued" if queued_before else "submitted"), None
         if host._queue_holds(screen, kind, text):
-            return _flush_queued_send(detected, member, name, kind, text, screen)
+            return _flush_queued_send(detected, observed, name, kind, text, screen)
+        # The host saw this send start, and the worker changed from settled to
+        # busy with no remaining draft. An empty pane alone proves neither.
+        if (same_turn and status_before in host.SETTLED and result["started"] is True
+                and observed["status"] not in ("blocked", "error")
+                and (observed["status"] == "working" or host._composer_working(screen, kind))):
+            return "submitted", None
         if time.monotonic() >= deadline:
             return "uncertain", "empty composer without submission evidence"
         time.sleep(0.25)
@@ -273,11 +290,13 @@ def _submission_evidence(
     if not pressed:
         return "pending", f"paste staged; {key} press failed"
     time.sleep(KEY_SETTLE_SECONDS)
-    _, staged = _read_composer(detected, name, kind)
+    screen, staged = _read_composer(detected, name, kind)
     if staged is None:
         return "uncertain", f"no composer identified after {key}"
     if not host._composer_empty(staged, kind):
         return "pending", f"paste still staged after {key}"
+    if same_turn and (queued_before or host._queue_holds(screen, kind, text)):
+        return "queued", None
     return word, None
 
 
@@ -712,15 +731,21 @@ def _deliver(
             return "pending", reason or "compaction active", (where, "pending")
         if admitted:
             delivery_agent, delivery_holder = name, holder
+        status_before = "unknown"
         if (not isinstance(detected, host.HerdrHost)
                 and destination["kind"] in host._COMPOSER_KINDS):
-            _, staged = _read_composer(detected, name, str(destination["kind"]))
+            kind = destination["kind"]
+            screen, staged = _read_composer(detected, name, kind)
             if staged is None:
                 _write_state(path, "uncertain", note="no composer identified")
                 return "uncertain", "no composer identified", (where, "uncertain")
-            if not host._composer_empty(staged, str(destination["kind"])):
+            if not host._composer_empty(staged, kind):
                 _write_state(path, "pending", note="composer not empty")
                 return "pending", "composer not empty", (where, "pending")
+            if kind in _SAME_TURN_COMPOSERS:
+                status_before = _host_status(detected, name)
+                if host._composer_working(screen, kind):
+                    status_before = "working"
         sent_ms = int(time.time() * 1000)
         try:
             result = detected.send_checked(name, text)
@@ -747,7 +772,7 @@ def _deliver(
             # The standalone CLI reports the provider response inline.
             if not isinstance(detected, host.HerdrHost):
                 outcome, receipt_reason = _submission_evidence(
-                    detected, name, result, text, sent_ms)
+                    detected, name, result, text, sent_ms, status_before)
                 if outcome == "pending":
                     state = "pending"
                     reason = receipt_reason or "paste still staged"

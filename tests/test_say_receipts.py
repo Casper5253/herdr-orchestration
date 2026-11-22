@@ -309,7 +309,8 @@ def test_empty_composers_and_placeholders_allow_delivery(fake, capsys, kind, emp
     ("devin", _DEVIN_STAGED_WRAP, _DEVIN_EMPTY, "enter", "submitted"),
     ("opencode", _OPENCODE_STAGED_WRAP, _OPENCODE_EMPTY, "enter", "submitted"),
 ])
-def test_newly_staged_paste_gets_provider_key(fake, capsys, kind, staged, empty, key, word):
+def test_newly_staged_paste_gets_provider_key(fake, capsys, monkeypatch, kind, staged, empty, key, word):
+    monkeypatch.setattr(devin, "pane_denied_line", lambda name: "")
     fake.members["dev-lead"]["kind"] = kind
     fake.views["dev-lead"] = empty
     fake.on_send = lambda name: fake.views.update({name: staged})
@@ -321,6 +322,62 @@ def test_newly_staged_paste_gets_provider_key(fake, capsys, kind, staged, empty,
     assert say.say("lead", "brief ends here") == 0
     assert capsys.readouterr().out.endswith(word + "\n")
     assert fake.keys == [[key]]
+
+
+@pytest.mark.parametrize("kind,staged,empty,working", [
+    ("opencode", _OPENCODE_STAGED_WRAP, _OPENCODE_EMPTY,
+     _OPENCODE_EMPTY + "\n╹▀▀▀▀▀\n  •⬝⬝⬝⬝⬝⬝  esc interrupt"),
+    ("devin", _DEVIN_STAGED_WRAP, _DEVIN_EMPTY,
+     "⠐⠒ Thinking · 1s\n" + "─" * 20 + "\n" + _DEVIN_EMPTY),
+], ids=["opencode", "devin"])
+@pytest.mark.parametrize("case,expected", [
+    ("status", "submitted"),
+    ("screen", "submitted"),
+    ("dropped", "uncertain"),
+    ("unrelated_work", "uncertain"),
+    ("already_working", "uncertain"),
+    ("already_spinning", "uncertain"),
+    ("quoted_spinner", "uncertain"),
+    ("queued", "queued"),
+    ("foreign_draft", "uncertain"),
+])
+def test_same_turn_worker_receipts(fake, capsys, tmp_path, monkeypatch,
+                                   kind, staged, empty, working, case, expected):
+    monkeypatch.setenv("HX_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(devin, "pane_denied_line", lambda name: "")
+    member = fake.members["dev-lead"]
+    busy_before = case in {"queued", "already_working"}
+    member.update(kind=kind, status="working" if busy_before else "idle")
+    fake.views["dev-lead"] = working if busy_before or case == "already_spinning" else empty
+    fake.advance = False
+
+    def send(name):
+        if case in {"status", "unrelated_work"}:
+            member["status"] = "working"
+        elif case == "screen":
+            fake.views[name] = working
+        elif case == "queued":
+            fake.views[name] = staged
+        elif case == "foreign_draft":
+            fake.views[name] = staged.replace("ends", "edited")
+        elif case == "quoted_spinner":
+            fake.views[name] = f"Earlier output: esc interrupt and Thinking\n\n{empty}"
+
+    def press(member, *keys):
+        fake.keys.append(list(keys))
+        fake.views["dev-lead"] = working
+        return True
+
+    fake.on_send = send
+    fake.press = press
+    if case == "unrelated_work":
+        send_checked = fake.send_checked
+        fake.send_checked = lambda *args: {**send_checked(*args), "started": False}
+    code = say.say("lead", "brief ends here")
+    receipt = capsys.readouterr().out.partition(" -> t24: ")[2]
+    assert receipt.split()[0] == expected, receipt
+    assert code == int(expected == "uncertain")
+    assert fake.keys == ([["enter"]] if case == "queued" else [])
 
 
 @pytest.mark.parametrize("after", [_CODEX_IDLE_STAGED, _CODEX_STAGED_WITH_EDIT,
