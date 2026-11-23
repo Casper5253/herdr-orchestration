@@ -320,33 +320,13 @@ def _claude_member_model(roots: dict[str, Path], sid: str, now: dt.datetime) -> 
 
 def _codex_member_model(sid: str, now: dt.datetime) -> dict[str, Any]:
     sessions = usage.default_codex_sessions_dir()
-    newest: tuple[str, str] | None = None
-    try:
-        paths_ = list(sessions.rglob(f"*{sid}*.jsonl"))
-    except OSError:
-        paths_ = []
-    for path in paths_:
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            payload = event.get("payload") or {}
-            model = payload.get("model")
-            if isinstance(model, dict):
-                model = model.get("name") or model.get("id")
-            if isinstance(model, str) and model:
-                stamp = str(event.get("timestamp") or payload.get("timestamp") or "")
-                if newest is None or stamp > newest[0]:
-                    newest = (stamp, model)
-    if newest is None:
-        return _model_unknown(f"codex rollout for the bound session carries no model field")
-    return {"status": "ok", "observed": newest[1], "source": f"{sessions} session={sid}",
-            "age_seconds": _age_seconds(newest[0], now), "reason": None}
+    applied = context._codex_applied_model(sid, sessions)
+    if applied is None:
+        return _model_unknown(
+            "codex rollout for the bound session carries no applied-model record "
+            "(thread_settings_applied or turn_context)", str(sessions))
+    return {"status": "ok", "observed": applied["model"], "source": applied["source"],
+            "age_seconds": _age_seconds(applied["timestamp"], now), "reason": None}
 
 
 def _opencode_member_model(roots: dict[str, Path], sid: str, now: dt.datetime) -> dict[str, Any]:

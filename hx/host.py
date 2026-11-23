@@ -1066,8 +1066,13 @@ class HcHost:
         if not address:
             raise SendNotAttempted("the member's terminal has no address")
         kind = str(resolved.get("kind") or "")
-        if not (self._run("keys", address, *command, timeout=30).returncode == 0
-                and self._run("keys", address, "enter", timeout=30).returncode == 0):
+        if self._run("keys", address, *command, timeout=30).returncode != 0:
+            return False
+        time.sleep(SLASH_ENTER_SETTLE_SECONDS)
+        refusal = self._enter_refusal(address, command, kind)
+        if refusal is not None:
+            raise SendNotAttempted(refusal)
+        if self._run("keys", address, "enter", timeout=30).returncode != 0:
             return False
         time.sleep(SLASH_ENTER_SETTLE_SECONDS)
         staged = self._staged_command(address, command, kind)
@@ -1077,6 +1082,43 @@ class HcHost:
             return False
         time.sleep(SLASH_ENTER_SETTLE_SECONDS)
         return self._staged_command(address, command, kind) is False
+
+    def _enter_refusal(self, address: str, command: str, kind: str) -> str | None:
+        """Why Enter must not be pressed on this pane, or None when it is safe.
+
+        Codex draws model-switch and rate-limit offers where a typed slash
+        command lands — on 22 Nov a compact Enter accepted a model-switch
+        offer. Before the first Enter the composer region must hold exactly
+        the typed command on a settled pane: an offer, different staged text,
+        placeholder copy, or no identifiable composer means the keys went
+        somewhere Enter should not confirm. Other kinds have no composer
+        position to verify, so this check stays codex-only.
+        """
+        if kind != "codex":
+            return None
+        try:
+            detail = self._detail(address)
+            completed = self._run("read", address, "--json", "--lines", "12")
+            data = self._json(completed)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return "the pane could not be read; what Enter would accept is unproven"
+        state = detail.get("status") if isinstance(detail, dict) else None
+        observed = state.get("state") if isinstance(state, dict) else None
+        if observed not in SETTLED:
+            return f"the pane is {observed or 'unknown'}; a pending prompt may hold it"
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str):
+            return "the pane could not be read; what Enter would accept is unproven"
+        staged = _composer_text(text, kind)
+        if staged == command:
+            return None
+        if staged is None:
+            tail = next(
+                (line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+            return ("no Codex composer is on screen; a pending prompt may hold the pane"
+                    + (f" (bottom line: {tail[:80]!r})" if tail else ""))
+        return (f"the composer region holds {staged[:80]!r}, not the typed "
+                f"{command!r}; a pending prompt is in the way")
 
     def _staged_command(self, address: str, command: str, kind: str) -> bool | None:
         """Whether the typed slash command still sits in the provider's composer.

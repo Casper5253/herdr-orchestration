@@ -300,6 +300,90 @@ def _sample(session_id: str, tokens: Any, limit: Any, sampled_at: str) -> dict[s
     return {"session_id": session_id, "utilisation": fraction, "sampled_at": sampled_at}
 
 
+def _codex_rollout_paths(sessions_dir: Path, session_id: str) -> list[Path]:
+    try:
+        return sorted(sessions_dir.rglob(f"*{session_id}*.jsonl"))
+    except OSError:
+        return []
+
+
+def _codex_applied_model(session_id: str,
+                         sessions_dir: Path | None = None) -> dict[str, Any] | None:
+    """The model the bound Codex session actually runs, read from its rollout.
+
+    ``thread_settings_applied`` is the record a model change writes — the
+    settings the provider applied, never the configured ones — so the newest
+    is the live model. A rollout without it falls back to the newest
+    ``turn_context`` model, the equivalent per-turn record. Anything else is
+    no evidence: a file naming the session whose ``session_meta`` id says
+    otherwise is not the bound session, and no applied record is None.
+    """
+    sessions = sessions_dir or usage.default_codex_sessions_dir()
+    applied: dict[str, Any] | None = None
+    fallback: dict[str, Any] | None = None
+    order = 0
+    for path in _codex_rollout_paths(sessions, session_id):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        meta_id = None
+        records: list[tuple[str, str, str | None]] = []
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            etype = event.get("type")
+            if etype == "session_meta":
+                meta_id = payload.get("id")
+                continue
+            model = record = None
+            if (etype == "event_msg"
+                    and payload.get("type") == "thread_settings_applied"):
+                settings = payload.get("thread_settings")
+                model = settings.get("model") if isinstance(settings, dict) else None
+                record = "thread_settings_applied"
+            elif etype == "turn_context":
+                model = payload.get("model")
+                record = "turn_context"
+            if record and isinstance(model, str) and model:
+                stamp = event.get("timestamp")
+                records.append((record, model, str(stamp) if stamp else None))
+        if isinstance(meta_id, str) and meta_id and meta_id != session_id:
+            continue
+        for record, model, stamp in records:
+            order += 1
+            key = (stamp or "", order)
+            found = {"key": key, "model": model, "timestamp": stamp,
+                     "record": record, "source": f"{path} ({record})"}
+            if record == "thread_settings_applied":
+                if applied is None or key > applied["key"]:
+                    applied = found
+            elif fallback is None or key > fallback["key"]:
+                fallback = found
+    found = applied or fallback
+    if found is None:
+        return None
+    return {key: found[key] for key in ("model", "timestamp", "record", "source")}
+
+
+def _codex_model_status(session_id: str, policy: dict[str, Any]) -> dict[str, Any]:
+    """The bound session's applied model against the policy-selected Codex model."""
+    selected = (policy.get("codex") or {}).get("strong_model")
+    applied = _codex_applied_model(session_id) if session_id else None
+    observed = applied["model"] if applied else None
+    if observed is None or selected is None:
+        status = "unknown"
+    else:
+        status = "ok" if observed == selected else "drift"
+    return {"status": status, "selected": selected, "observed": observed,
+            "source": applied["source"] if applied else None}
+
+
 def telemetry(agent: host.Member, policy: dict[str, Any]) -> dict[str, Any]:
     """Read only the provider session named by the host; never pick newest globally."""
     sid = _session(agent)
@@ -505,8 +589,12 @@ class Controller:
                     **write_reset(self.resets_path, name, verdict.get("from_sid") or sid)}
         if verdict["action"] == "blocked":
             raise RuntimeError(verdict["reason"])
+        refused = None
         try:
             accepted = _send_slash(agent, command)
+        except host.SendNotAttempted as exc:
+            refused = str(exc)
+            accepted = False
         except Exception:
             accepted = False
         if not accepted:
@@ -515,7 +603,7 @@ class Controller:
                 if isinstance(entry, dict):
                     entry["state"] = "reset-unknown"
             self.ledger.mutate_leases(fail)
-            raise RuntimeError("host did not accept the reset keys")
+            raise RuntimeError(refused or "host did not accept the reset keys")
         # Proof of reset is a new provider session id through the binding, not the
         # key call's exit code; without it the outcome is unknown, not "sent".
         deadline = time.monotonic() + float(
@@ -680,6 +768,8 @@ class Controller:
         sample = (_lead_telemetry(sid, self.policy) if kind == "claude"
                   else session_telemetry(agent, self.policy)[1])
         result.update(session_id=sid, telemetry=sample, agent_kind=kind)
+        if kind == "codex":
+            result["model"] = _codex_model_status(sid, self.policy)
         result.setdefault("task_id", "lead")
         if not sid:
             raise ValueError("provider session id unavailable; pass --session <session-id>")
@@ -778,6 +868,8 @@ class Controller:
                 return self._decide_lead(result, agent, session_id, task_id, work_item)
             sid, sample = session_telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("kind"))
+            if agent.get("kind") == "codex":
+                result["model"] = _codex_model_status(sid, self.policy)
             if agent.get("status") not in READY:
                 raise _DeferredContext("agent is not idle")
             if not _fresh(sample, sid, _now()):

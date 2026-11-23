@@ -301,7 +301,126 @@ def test_member_model_unknown_reasons(tmp_path, monkeypatch):
     unknown = _member("dev-mystery", kind="unknown", sid="s1")
     assert "no model source" in doctor._member_model(unknown, {}, _policy(), now)["reason"]
     codex = _member("dev-codex", kind="codex", sid="absent-sid")
-    assert "no model field" in doctor._member_model(codex, {}, _policy(), now)["reason"]
+    assert "no applied-model record" in doctor._member_model(
+        codex, {}, _policy(), now)["reason"]
+
+
+def _rollout_event(timestamp: str, etype: str, payload: dict) -> dict:
+    return {"timestamp": timestamp, "type": etype, "payload": payload}
+
+
+def _thread_settings(model: str, ts: str) -> dict:
+    return _rollout_event(ts, "event_msg", {
+        "type": "thread_settings_applied",
+        "thread_settings": {"model": model}})
+
+
+def _turn_context(model: str, ts: str) -> dict:
+    return _rollout_event(ts, "turn_context", {"model": model})
+
+
+def _codex_rollout(directory: Path, sid: str, events: list) -> Path:
+    path = directory / "2026" / "11" / "22" / f"rollout-2026-11-22T02-44-37-{sid}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    return path
+
+
+def _codex_member_check(tmp_path, monkeypatch, events, selected="gpt-6.2-sol"):
+    sessions = tmp_path / "codex-sessions"
+    _codex_rollout(sessions, "s1", events)
+    monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(sessions))
+    now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
+    policy = _policy()
+    policy["codex"]["strong_model"] = selected
+    member = _member("dev-codex", sid="s1")
+    return doctor._member_model(member, {}, policy, now), member, policy, now
+
+
+def test_member_model_codex_drift_reads_applied_settings_not_config(
+    tmp_path, monkeypatch
+):
+    """Q-911, the 22 Nov incident: config and an early thread setting said sol,
+    the last thread_settings_applied (02:53:24Z) says luna — that is the live model."""
+    model, member, policy, now = _codex_member_check(tmp_path, monkeypatch, [
+        _rollout_event("2026-11-22T02:44:37Z", "session_meta",
+                       {"id": "s1", "cwd": "C:\\repo", "model": None}),
+        _thread_settings("gpt-6.2-sol", "2026-11-22T02:44:42Z"),
+        _turn_context("gpt-6.2-sol", "2026-11-22T02:45:07Z"),
+        _thread_settings("gpt-6-luna", "2026-11-22T02:53:24Z"),
+        _turn_context("gpt-6-luna", "2026-11-22T02:53:56Z"),
+    ])
+    assert model["observed"] == "gpt-6-luna"
+    members = doctor._check_members(policy, {}, now, detected=FakeHost({"dev-codex": member}))
+    check = members["members"]["dev-codex"]["model"]
+    assert check["status"] == "drift"
+    assert check["selected"] == "gpt-6.2-sol"
+
+
+def test_member_model_codex_consistent_is_ok(tmp_path, monkeypatch):
+    model, member, policy, now = _codex_member_check(tmp_path, monkeypatch, [
+        _rollout_event("2026-11-22T02:44:37Z", "session_meta",
+                       {"id": "s1", "cwd": "C:\\repo", "model": None}),
+        _thread_settings("gpt-6.2-sol", "2026-11-22T02:44:42Z"),
+        _turn_context("gpt-6.2-sol", "2026-11-22T02:45:07Z"),
+    ])
+    assert model["observed"] == "gpt-6.2-sol"
+    members = doctor._check_members(policy, {}, now, detected=FakeHost({"dev-codex": member}))
+    assert members["members"]["dev-codex"]["model"]["status"] == "ok"
+
+
+def test_member_model_codex_no_applied_record_stays_unknown(tmp_path, monkeypatch):
+    """No thread_settings_applied and no turn_context model: unknown, never ok."""
+    model, member, policy, now = _codex_member_check(tmp_path, monkeypatch, [
+        _rollout_event("2026-11-22T02:44:37Z", "session_meta",
+                       {"id": "s1", "cwd": "C:\\repo", "model": None}),
+        _rollout_event("2026-11-22T02:45:00Z", "event_msg",
+                       {"type": "token_count", "info": {}}),
+    ])
+    assert model["status"] == "unknown"
+    assert model["observed"] is None
+    members = doctor._check_members(policy, {}, now, detected=FakeHost({"dev-codex": member}))
+    assert members["members"]["dev-codex"]["model"]["status"] == "unknown"
+
+
+def test_member_model_codex_turn_context_is_the_fallback_record(tmp_path, monkeypatch):
+    """The equivalent turn-context record counts when no thread setting exists."""
+    model, member, policy, now = _codex_member_check(tmp_path, monkeypatch, [
+        _rollout_event("2026-11-22T02:44:37Z", "session_meta",
+                       {"id": "s1", "cwd": "C:\\repo", "model": None}),
+        _turn_context("gpt-6-luna", "2026-11-22T02:45:07Z"),
+    ])
+    assert model["observed"] == "gpt-6-luna"
+    members = doctor._check_members(policy, {}, now, detected=FakeHost({"dev-codex": member}))
+    assert members["members"]["dev-codex"]["model"]["status"] == "drift"
+
+
+def test_member_model_codex_rollout_of_another_session_is_ignored(tmp_path, monkeypatch):
+    """A filename match whose session_meta names a different id is not the bound session."""
+    model, _, _, _ = _codex_member_check(tmp_path, monkeypatch, [
+        _rollout_event("2026-11-22T02:44:37Z", "session_meta",
+                       {"id": "other", "cwd": "C:\\repo", "model": None}),
+        _thread_settings("gpt-6-luna", "2026-11-22T02:53:24Z"),
+    ])
+    assert model["status"] == "unknown"
+
+
+def test_doctor_exits_1_on_codex_model_drift(tmp_path, monkeypatch):
+    roots = _roots(tmp_path)
+    sessions = tmp_path / "codex-sessions"
+    _codex_rollout(sessions, "s1", [
+        _rollout_event("2026-11-22T02:44:37Z", "session_meta",
+                       {"id": "s1", "cwd": "C:\\repo", "model": None}),
+        _thread_settings("gpt-6-luna", "2026-11-22T02:53:24Z"),
+    ])
+    monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(sessions))
+    policy = _policy()
+    monkeypatch.setattr(doctor.usage, "load_policy", lambda: policy)
+    monkeypatch.setattr(doctor, "_roots", lambda: roots)
+    monkeypatch.setattr(doctor.host, "detect", lambda: FakeHost({
+        "dev-codex": _member("dev-codex", sid="s1")}))
+    assert doctor.main([]) == 1
 
 
 def _devin_pane(tmp_path: Path, transcript: dict | None = None,

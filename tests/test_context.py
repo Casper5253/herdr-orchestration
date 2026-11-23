@@ -421,6 +421,45 @@ def test_codex_telemetry_uses_exact_session_and_cwd(tmp_path, monkeypatch):
     assert context.telemetry(agent, {})["utilisation"] is None
 
 
+def _codex_rollout(directory, sid, events):
+    path = directory / f"rollout-{sid}.jsonl"
+    path.write_text("\n".join(map(json.dumps, events)) + "\n", encoding="utf-8")
+
+
+def _thread_settings(model, ts):
+    return {"type": "event_msg", "timestamp": ts,
+            "payload": {"type": "thread_settings_applied",
+                        "thread_settings": {"model": model}}}
+
+
+@pytest.mark.parametrize("events,selected,expected,observed", [
+    # Q-911: config said sol, the last applied thread setting says luna.
+    ([{"type": "session_meta", "payload": {"id": "sid", "cwd": ""}},
+      _thread_settings("gpt-6.2-sol", "2026-11-22T02:44:42Z"),
+      _thread_settings("gpt-6-luna", "2026-11-22T02:53:24Z")],
+     "gpt-6.2-sol", "drift", "gpt-6-luna"),
+    ([{"type": "session_meta", "payload": {"id": "sid", "cwd": ""}},
+      _thread_settings("gpt-6.2-sol", "2026-11-22T02:44:42Z")],
+     "gpt-6.2-sol", "ok", "gpt-6.2-sol"),
+    ([{"type": "session_meta", "payload": {"id": "sid", "cwd": ""}}],
+     "gpt-6.2-sol", "unknown", None),
+    ([{"type": "session_meta", "payload": {"id": "sid", "cwd": ""}},
+      {"type": "turn_context", "timestamp": "2026-11-22T02:45:07Z",
+       "payload": {"model": "gpt-6-luna"}}],
+     "gpt-6.2-sol", "drift", "gpt-6-luna"),
+])
+def test_decide_reports_the_codex_session_model(controller, tmp_path, monkeypatch,
+                                              events, selected, expected, observed):
+    """`hx context decide` reports the bound rollout's applied model, never config."""
+    monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(tmp_path))
+    _codex_rollout(tmp_path, "sid", events)
+    controller.policy["codex"] = {"strong_model": selected}
+    result = controller.decide("hx-codex")
+    assert result["model"]["status"] == expected
+    assert result["model"]["observed"] == observed
+    assert result["model"]["selected"] == selected
+
+
 def test_claude_telemetry_requires_session_specific_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
     path = tmp_path / "claude-status-sid.json"

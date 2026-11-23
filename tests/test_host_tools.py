@@ -191,13 +191,33 @@ def test_generated_commands_use_the_resolved_powershell_quoted_path(
 
 _CODEX_IDLE = "› \n  gpt-5.2-codex high · 91% context left"
 _CODEX_STAGED = "› /compact\n  gpt-5.2-codex high · 91% context left"
+_CODEX_STAGED_CLEAR = "› /clear\n  gpt-5.2-codex high · 91% context left"
 _DEVIN_RULE = "─" * 20
 _DEVIN_IDLE = "❭ \n" + _DEVIN_RULE + "\nSWE-2 High · accept edits"
 _DEVIN_STAGED = "❭ /compact\n" + _DEVIN_RULE + "\nSWE-2 High · accept edits"
 
 
-def test_send_slash_types_each_character_then_enter(fake: FakeHc) -> None:
-    fake.read_payload = {"how": "screen", "complete": True, "text": _CODEX_IDLE}
+def _reads_staged_until_enter(fake, monkeypatch, staged: str, idle: str) -> None:
+    """Reads that show the typed command staged until the first Enter lands."""
+    enters = [0]
+    original = fake.run
+
+    def run(argv, **kwargs):
+        if argv[1] == "read":
+            return _completed(json.dumps({
+                "how": "screen", "complete": True,
+                "text": staged if enters[0] < 1 else idle}))
+        result = original(argv, **kwargs)
+        if argv[1] == "keys" and argv[3] == "enter":
+            enters[0] += 1
+        return result
+
+    monkeypatch.setattr(host.subprocess, "run", run)
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+
+
+def test_send_slash_types_each_character_then_enter(fake: FakeHc, monkeypatch) -> None:
+    _reads_staged_until_enter(fake, monkeypatch, _CODEX_STAGED, _CODEX_IDLE)
     assert host.HcHost().send_slash("dev-codex", "/compact") is True
     assert fake.keys == [
         ["hc", "keys", "t7", "/", "c", "o", "m", "p", "a", "c", "t"],
@@ -205,8 +225,10 @@ def test_send_slash_types_each_character_then_enter(fake: FakeHc) -> None:
     ]
 
 
-def test_send_slash_uses_a_member_address_without_a_roster_rescan(fake: FakeHc) -> None:
-    fake.read_payload = {"how": "screen", "complete": True, "text": _CODEX_IDLE}
+def test_send_slash_uses_a_member_address_without_a_roster_rescan(
+    fake: FakeHc, monkeypatch
+) -> None:
+    _reads_staged_until_enter(fake, monkeypatch, _CODEX_STAGED_CLEAR, _CODEX_IDLE)
     member = host.HcHost().info("dev-codex")
     before = len(fake.runs)
     assert host.HcHost().send_slash(member, "/clear") is True
@@ -271,9 +293,8 @@ def test_send_slash_is_unverified_when_the_command_stays_staged(
 def test_send_slash_never_retries_enter_for_a_submitted_command(
     fake: FakeHc, monkeypatch
 ) -> None:
-    fake.read_payload = {"how": "screen", "complete": True,
-                         "text": "some output\n" + _CODEX_IDLE}
-    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    _reads_staged_until_enter(
+        fake, monkeypatch, _CODEX_STAGED, "some output\n" + _CODEX_IDLE)
     assert host.HcHost().send_slash("dev-codex", "/compact") is True
     enters = [run for run in fake.keys if run[3:] == ["enter"]]
     assert len(enters) == 1
@@ -283,14 +304,15 @@ def test_send_slash_never_enters_for_prompt_shaped_output_while_working(
     fake: FakeHc, monkeypatch
 ) -> None:
     """Review finding 2: a Markdown `> /compact` quote in task output is not a
-    composer. The pane is working, so no live composer exists to stage it."""
+    composer. The pane is working, so Enter would reach an unseen prompt."""
     fake.terminals["t7"]["status"]["state"] = "working"
     fake.read_payload = {"how": "screen", "complete": True,
                          "text": "Model output only\n> /compact\nworking..."}
     monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
-    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    with pytest.raises(host.SendNotAttempted, match="the pane is working"):
+        host.HcHost().send_slash("dev-codex", "/compact")
     enters = [run for run in fake.keys if run[3:] == ["enter"]]
-    assert len(enters) == 1
+    assert len(enters) == 0
 
 
 @pytest.mark.parametrize("text", [
@@ -302,12 +324,13 @@ def test_send_slash_never_enters_for_prompt_shaped_output_while_idle(
 ) -> None:
     """Round-2 review finding 1: an idle screen whose `> /compact` sits in
     output — not at the codex composer position above its model status line —
-    never earns the second Enter."""
+    means the typed keys staged nowhere Enter should confirm."""
     fake.read_payload = {"how": "screen", "complete": True, "text": text}
     monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
-    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    with pytest.raises(host.SendNotAttempted, match="no Codex composer"):
+        host.HcHost().send_slash("dev-codex", "/compact")
     enters = [run for run in fake.keys if run[3:] == ["enter"]]
-    assert len(enters) == 1
+    assert len(enters) == 0
 
 
 def test_send_slash_ignores_a_devin_prompt_not_above_the_footer_rule(
@@ -378,13 +401,14 @@ def test_send_slash_is_unverified_for_a_provider_without_a_composer_position(
 def test_send_slash_is_unverified_without_a_visible_composer(
     fake: FakeHc, monkeypatch
 ) -> None:
-    """Review finding 2: no composer line means unverified, never submitted."""
+    """Review finding 2: no composer line means nothing proves what Enter accepts."""
     fake.read_payload = {"how": "screen", "complete": True,
                          "text": "No composer currently rendered"}
     monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
-    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    with pytest.raises(host.SendNotAttempted, match="no Codex composer"):
+        host.HcHost().send_slash("dev-codex", "/compact")
     enters = [run for run in fake.keys if run[3:] == ["enter"]]
-    assert len(enters) == 1
+    assert len(enters) == 0
 
 
 def test_send_slash_is_unverified_when_the_screen_cannot_be_read(
@@ -392,7 +416,51 @@ def test_send_slash_is_unverified_when_the_screen_cannot_be_read(
 ) -> None:
     fake.read_fail = True
     monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
-    assert host.HcHost().send_slash("dev-codex", "/compact") is False
+    with pytest.raises(host.SendNotAttempted, match="could not be read"):
+        host.HcHost().send_slash("dev-codex", "/compact")
+
+
+_CODEX_MODEL_OFFER = (
+    "  Weekly rate limit nearly reached.\n"
+    "  Switch to gpt-6-luna to keep working?\n"
+    "  › Switch model   Esc to dismiss\n"
+)
+_CODEX_OFFER_IN_COMPOSER = (
+    "› Switch to gpt-6-luna   Esc to dismiss\n"
+    "  gpt-5.2-codex high · 91% context left")
+_CODEX_PLACEHOLDER = (
+    "› Ask Codex to do anything\n\n"
+    "  gpt-5.2-codex high · 91% context left")
+
+
+@pytest.mark.parametrize("text,seen", [
+    (_CODEX_MODEL_OFFER, "Switch model"),
+    (_CODEX_OFFER_IN_COMPOSER, "Switch to gpt-6-luna"),
+])
+def test_send_slash_refuses_a_pending_offer_before_enter(
+    fake: FakeHc, monkeypatch, text: str, seen: str
+) -> None:
+    """Q-911: the 22 Nov model switch — a pending offer owns Enter, so the
+    typed /compact must never be followed by it. The refusal names what it saw."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": text}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    with pytest.raises(host.SendNotAttempted, match="pending prompt") as excinfo:
+        host.HcHost().send_slash("dev-codex", "/compact")
+    assert seen in str(excinfo.value)
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 0
+
+
+def test_send_slash_refuses_when_the_command_never_staged(
+    fake: FakeHc, monkeypatch
+) -> None:
+    """Placeholder copy where the command should be: the keys went to a modal."""
+    fake.read_payload = {"how": "screen", "complete": True, "text": _CODEX_PLACEHOLDER}
+    monkeypatch.setattr(host.time, "sleep", lambda seconds: None)
+    with pytest.raises(host.SendNotAttempted, match="pending prompt"):
+        host.HcHost().send_slash("dev-codex", "/compact")
+    enters = [run for run in fake.keys if run[3:] == ["enter"]]
+    assert len(enters) == 0
 
 
 def test_send_slash_ignores_the_command_in_output_above_the_composer(
