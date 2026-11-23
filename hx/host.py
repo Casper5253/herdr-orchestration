@@ -125,7 +125,14 @@ def _below_codex_status(text: str) -> str:
                    if _CODEX_STATUS_LINE.search(lines[index])), None)
     if status is None:
         return ""
-    return next((line.strip() for line in lines[status + 1:] if line.strip()), "")
+    return next((line.strip() for line in lines[status + 1:]
+                 if line.strip() and not _CODEX_FOOTER_HINT.search(line)), "")
+
+
+# Codex's own key-hint row under the status line (live idle screen, 23 Nov:
+# "← for agents · ? for shortcuts   ⚠ 4 warnings · f2 to view"). It is chrome
+# on every settled screen, not a popup, so it never owns Enter.
+_CODEX_FOOTER_HINT = re.compile(r"\? for shortcuts|f2 to view")
 
 
 # Placeholder copy an empty composer prints on its input line, observed on

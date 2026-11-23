@@ -659,3 +659,15 @@ def test_roster_failure_before_send_is_not_attempted(fake: FakeHc, monkeypatch, 
     with pytest.raises(host.SendNotAttempted):
         host.HcHost().send_checked("dev-claude", "report")
     assert fake.sent == []
+
+
+def test_codex_footer_hint_row_is_not_an_offer():
+    from hx.host import _below_codex_status
+    idle = (
+        "\n› /compact\n\n"
+        "  GPT-6.2-Sol medium · ~\Documents\Projects\todo-rpg · Review q914 brief\n"
+        "  ← for agents · ? for shortcuts                            ⚠ 4 warnings · f2 to view\n"
+    )
+    assert _below_codex_status(idle) == "", "live idle footer must not block a staged /compact"
+    offer = idle + "  Switch to gpt-6-luna to keep going? [Enter] yes\n"
+    assert "Switch to gpt-6-luna" in _below_codex_status(offer), "a real offer under the footer still refuses"
