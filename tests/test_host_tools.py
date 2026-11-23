@@ -665,7 +665,7 @@ def test_codex_footer_hint_row_is_not_an_offer():
     from hx.host import _below_codex_status
     idle = (
         "\n› /compact\n\n"
-        "  GPT-6.2-Sol medium · ~\Documents\Projects\todo-rpg · Review q914 brief\n"
+        "  GPT-6.2-Sol medium · ~\\Documents\\Projects\\todo-rpg · Review q914 brief\n"
         "  ← for agents · ? for shortcuts                            ⚠ 4 warnings · f2 to view\n"
     )
     assert _below_codex_status(idle) == "", "live idle footer must not block a staged /compact"
