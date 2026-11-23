@@ -27,7 +27,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from hx import capability, context, host, paths, usage
+from hx import capability, context, host, paths, runtime, usage
 from hx import devin as devin_mod
 
 REQUIRED_SKILLS = ("herdr-team", "hx-router", "poteto-mode")
@@ -588,6 +588,9 @@ def doctor(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None =
     members = _check_members(policy, roots, dt.datetime.now(dt.timezone.utc))
     prose = _scan_prose(policy, roots)
     installed = _installed_files(roots)
+    runtime_check = runtime.status(roots.get("repo"))
+    # Runtime drift is informational: a newer main than the pinned build is
+    # expected between releases and never a failed check.
     drift = any(
         part.get("status") == "drift"
         for worker in workers.values()
@@ -597,7 +600,7 @@ def doctor(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None =
         for member in members.get("members", {}).values()
     ) or any(f.get("status") == "drift" for f in prose + installed)
     return {"workers": workers, "members": members, "prose": prose,
-            "installed_files": installed, "drift": drift}
+            "installed_files": installed, "runtime": runtime_check, "drift": drift}
 
 
 def _summary(report: dict[str, Any]) -> str:
@@ -632,6 +635,17 @@ def _summary(report: dict[str, Any]) -> str:
             lines.append(f"drift  {finding['file']}:{finding['line']} {finding['message']}")
         elif finding["status"] == "unknown":
             lines.append(f"unknown {finding['file']} (unreadable)")
+    rt = report.get("runtime") or {}
+    if rt:
+        loaded = (rt.get("loaded_commit") or "unknown")[:12]
+        lines.append(
+            f"runtime mode:{rt.get('mode')} status:{rt.get('status')} "
+            f"commit:{loaded} install={rt.get('install_path')}")
+        if rt.get("status") == "drift":
+            head = (rt.get("head_commit") or "unknown")[:12]
+            lines.append(
+                f"info   loaded commit {loaded} differs from "
+                f"{rt.get('release_ref')} HEAD {head} (informational, not a failure)")
     lines.append("drift found" if report["drift"] else "no drift")
     return "\n".join(lines)
 

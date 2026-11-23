@@ -106,9 +106,10 @@ if (Test-Path $syncPy) {
 }
 
 # hx on PATH (~/.local/bin is already on PATH): a .cmd for PowerShell/cmd and a shell script for Git Bash.
+# Both load hx only from the activated runtime pointer (see `hx activate`), never from the
+# source checkout, so unreviewed edits there cannot go live by being on PYTHONPATH.
 $bin = Join-Path $home_ '.local\bin'
 if (-not $DryRun) { New-Item -ItemType Directory -Force $bin | Out-Null }
-$repo = $PSScriptRoot
 function Install-Text($to, $content) {
     if ($script:DryRun) {
         Write-Host "would install $to"
@@ -124,10 +125,14 @@ function Install-Text($to, $content) {
 $hxPython = $null
 if (Get-Command uv -ErrorAction SilentlyContinue) { $hxPython = (& uv python find 3.11 2>$null) }
 if (-not $hxPython) { $hxPython = $python }
-Install-Text (Join-Path $bin 'hx.cmd') "@echo off`r`nsetlocal`r`nset `"PYTHONPATH=$repo;%PYTHONPATH%`"`r`n`"$hxPython`" -m hx %*`r`n"
-$repoPosix = $repo.Replace('\', '/')
 $hxPythonPosix = $hxPython.Replace('\', '/')
-Install-Text (Join-Path $bin 'hx') "#!/bin/sh`nPYTHONPATH=`"$repoPosix`${PYTHONPATH:+;`$PYTHONPATH}`" exec `"$hxPythonPosix`" -m hx `"`$@`"`n"
+$shimSrc = Join-Path $PSScriptRoot 'team\shims'
+$cmdContent = [IO.File]::ReadAllText((Join-Path $shimSrc 'hx.cmd'), [Text.Encoding]::UTF8)
+$cmdContent = $cmdContent.Replace('__HX_PYTHON__', $hxPython) -replace "`r?`n", "`r`n"
+$shContent = [IO.File]::ReadAllText((Join-Path $shimSrc 'hx'), [Text.Encoding]::UTF8)
+$shContent = $shContent.Replace('__HX_PYTHON_POSIX__', $hxPythonPosix) -replace "`r`n", "`n"
+Install-Text (Join-Path $bin 'hx.cmd') $cmdContent
+Install-Text (Join-Path $bin 'hx') $shContent
 if ($DryRun) { Write-Host "would install $bin\hx(.cmd)" } else { Write-Host "installed $bin\hx(.cmd)" }
 
 # One pointer line in the global Claude instructions, added once.
