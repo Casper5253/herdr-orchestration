@@ -113,6 +113,21 @@ def _composer_text(text: str, kind: str, *, allow_full_devin: bool = False) -> s
     return None
 
 
+def _below_codex_status(text: str) -> str:
+    """The first non-empty line under the Codex status line, or "".
+
+    A settled Codex screen ends at its model status line; anything rendered
+    below it is a prompt or popup the composer position cannot see — an offer
+    there owns Enter while the typed command still shows staged above.
+    """
+    lines = text.rstrip().splitlines()
+    status = next((index for index in range(len(lines) - 1, -1, -1)
+                   if _CODEX_STATUS_LINE.search(lines[index])), None)
+    if status is None:
+        return ""
+    return next((line.strip() for line in lines[status + 1:] if line.strip()), "")
+
+
 # Placeholder copy an empty composer prints on its input line, observed on
 # live screens 16 Nov (`hc read`): it is the composer holding nothing, never
 # staged text. Providers without one leave the line blank.
@@ -1048,10 +1063,13 @@ class HcHost:
 
         `hc send` wraps text in `<hc from=...>`, so a slash command sent as a
         message never reaches the provider's native command handling. Typing
-        the keys does. The first Enter can land in the provider's
-        slash-command menu instead of submitting: the screen is read, one
-        more Enter goes out only while the command still sits in the
-        composer, and True means the staged text is verifiably gone.
+        the keys does. On a Codex pane every Enter first needs a complete,
+        settled screen whose composer verifiably holds the command — the
+        refusal is a SendNotAttempted. Other providers keep the proven
+        ordering: type, Enter, then verify. The first Enter can land in the
+        provider's slash-command menu instead of submitting: the screen is
+        read, one more Enter goes out only while the command still sits in
+        the composer, and True means the staged text is verifiably gone.
         """
         if not command.startswith("/"):
             raise ValueError("send_slash types slash commands like /compact or /clear")
@@ -1068,49 +1086,63 @@ class HcHost:
         kind = str(resolved.get("kind") or "")
         if self._run("keys", address, *command, timeout=30).returncode != 0:
             return False
-        time.sleep(SLASH_ENTER_SETTLE_SECONDS)
-        refusal = self._enter_refusal(address, command, kind)
-        if refusal is not None:
-            raise SendNotAttempted(refusal)
+        if kind == "codex":
+            time.sleep(SLASH_ENTER_SETTLE_SECONDS)
+            refusal = self._enter_refusal(address, command)
+            if refusal is not None:
+                raise SendNotAttempted(refusal)
         if self._run("keys", address, "enter", timeout=30).returncode != 0:
             return False
         time.sleep(SLASH_ENTER_SETTLE_SECONDS)
         staged = self._staged_command(address, command, kind)
         if staged is not True:
             return staged is False
+        if kind == "codex":
+            refusal = self._enter_refusal(address, command)
+            if refusal is not None:
+                raise SendNotAttempted(refusal)
         if self._run("keys", address, "enter", timeout=30).returncode != 0:
             return False
         time.sleep(SLASH_ENTER_SETTLE_SECONDS)
         return self._staged_command(address, command, kind) is False
 
-    def _enter_refusal(self, address: str, command: str, kind: str) -> str | None:
-        """Why Enter must not be pressed on this pane, or None when it is safe.
+    def _enter_refusal(self, address: str, command: str) -> str | None:
+        """Why Enter must not be pressed on this Codex pane, or None when safe.
 
         Codex draws model-switch and rate-limit offers where a typed slash
         command lands — on 22 Nov a compact Enter accepted a model-switch
-        offer. Before the first Enter the composer region must hold exactly
-        the typed command on a settled pane: an offer, different staged text,
-        placeholder copy, or no identifiable composer means the keys went
-        somewhere Enter should not confirm. Other kinds have no composer
-        position to verify, so this check stays codex-only.
+        offer. Enter is proven only by a complete, readable screen of a
+        settled pane whose composer holds exactly the typed command and whose
+        status line ends the screen. A failed or partial read, an unsettled
+        pane, other staged text, no identifiable composer, or content under
+        the status line is no evidence at all, so Enter must not be pressed.
         """
-        if kind != "codex":
-            return None
         try:
             detail = self._detail(address)
             completed = self._run("read", address, "--json", "--lines", "12")
-            data = self._json(completed)
         except (OSError, ValueError, subprocess.SubprocessError):
             return "the pane could not be read; what Enter would accept is unproven"
         state = detail.get("status") if isinstance(detail, dict) else None
         observed = state.get("state") if isinstance(state, dict) else None
         if observed not in SETTLED:
             return f"the pane is {observed or 'unknown'}; a pending prompt may hold it"
-        text = data.get("text") if isinstance(data, dict) else None
+        data = self._json(completed)
+        if completed.returncode != 0 or not isinstance(data, dict):
+            return "the pane could not be read; what Enter would accept is unproven"
+        text = data.get("text")
         if not isinstance(text, str):
             return "the pane could not be read; what Enter would accept is unproven"
-        staged = _composer_text(text, kind)
+        if data.get("complete") is not True:
+            why = data.get("why")
+            return ("the pane read is incomplete"
+                    + (f" ({why})" if isinstance(why, str) else "")
+                    + "; a pending prompt may be off-screen")
+        staged = _composer_text(text, "codex")
         if staged == command:
+            below = _below_codex_status(text)
+            if below:
+                return (f"content below the Codex status line may be a pending "
+                        f"prompt: {below[:80]!r}")
             return None
         if staged is None:
             tail = next(

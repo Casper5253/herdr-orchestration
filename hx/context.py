@@ -307,39 +307,64 @@ def _codex_rollout_paths(sessions_dir: Path, session_id: str) -> list[Path]:
         return []
 
 
-def _codex_applied_model(session_id: str,
-                         sessions_dir: Path | None = None) -> dict[str, Any] | None:
-    """The model the bound Codex session actually runs, read from its rollout.
+class _ObservedSample(dict):
+    """A telemetry sample plus the rollout observation it was computed from.
 
-    ``thread_settings_applied`` is the record a model change writes — the
-    settings the provider applied, never the configured ones — so the newest
-    is the live model. A rollout without it falls back to the newest
-    ``turn_context`` model, the equivalent per-turn record. Anything else is
-    no evidence: a file naming the session whose ``session_meta`` id says
-    otherwise is not the bound session, and no applied record is None.
+    It serializes and compares exactly like a plain dict; ``rollout`` lets
+    ``decide`` reuse the same disk pass for the applied-model check instead
+    of scanning the session file a second time.
+    """
+    rollout: dict[str, Any] | None = None
+
+
+def _codex_rollout_observation(session_id: str,
+                               sessions_dir: Path | None = None) -> dict[str, Any]:
+    """One pass over the rollouts bound to a Codex session.
+
+    A file is bound only by its own ``session_meta`` id — a filename that
+    merely contains the session id, or a meta for another session, is unbound
+    and skipped. Each bound file reports its session cwd, the newest
+    ``token_count`` sample, and the newest record of each model kind:
+    ``thread_settings_applied``, the provider-applied model a change writes,
+    and ``turn_context``, the per-turn equivalent. Lines that are not JSON
+    objects, ``null`` included, carry no evidence. Model records keep a
+    ``(timestamp, order)`` key so the newest across files is deterministic.
     """
     sessions = sessions_dir or usage.default_codex_sessions_dir()
-    applied: dict[str, Any] | None = None
-    fallback: dict[str, Any] | None = None
+    files: list[dict[str, Any]] = []
     order = 0
     for path in _codex_rollout_paths(sessions, session_id):
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
-        meta_id = None
-        records: list[tuple[str, str, str | None]] = []
+        meta: dict[str, Any] | None = None
+        sample: dict[str, Any] | None = None
+        applied: dict[str, Any] | None = None
+        fallback: dict[str, Any] | None = None
         for line in lines:
             try:
                 event = json.loads(line)
             except ValueError:
+                continue
+            if not isinstance(event, dict):
                 continue
             payload = event.get("payload")
             if not isinstance(payload, dict):
                 continue
             etype = event.get("type")
             if etype == "session_meta":
-                meta_id = payload.get("id")
+                meta = payload
+                continue
+            if etype == "event_msg" and payload.get("type") == "token_count":
+                info = payload.get("info")
+                if isinstance(info, dict):
+                    last = info.get("last_token_usage")
+                    sample = _sample(
+                        session_id,
+                        last.get("input_tokens") if isinstance(last, dict) else None,
+                        info.get("model_context_window"),
+                        event.get("timestamp"))
                 continue
             model = record = None
             if (etype == "event_msg"
@@ -351,30 +376,88 @@ def _codex_applied_model(session_id: str,
                 model = payload.get("model")
                 record = "turn_context"
             if record and isinstance(model, str) and model:
+                order += 1
                 stamp = event.get("timestamp")
-                records.append((record, model, str(stamp) if stamp else None))
-        if isinstance(meta_id, str) and meta_id and meta_id != session_id:
+                keyed = {"key": (str(stamp) if stamp else "", order),
+                         "model": model,
+                         "timestamp": str(stamp) if stamp else None,
+                         "record": record,
+                         "source": f"{path} ({record})"}
+                if record == "thread_settings_applied":
+                    if applied is None or keyed["key"] > applied["key"]:
+                        applied = keyed
+                elif fallback is None or keyed["key"] > fallback["key"]:
+                    fallback = keyed
+        if not isinstance(meta, dict) or meta.get("id") != session_id:
             continue
-        for record, model, stamp in records:
-            order += 1
-            key = (stamp or "", order)
-            found = {"key": key, "model": model, "timestamp": stamp,
-                     "record": record, "source": f"{path} ({record})"}
-            if record == "thread_settings_applied":
-                if applied is None or key > applied["key"]:
-                    applied = found
-            elif fallback is None or key > fallback["key"]:
-                fallback = found
-    found = applied or fallback
+        files.append({"path": path, "cwd": meta.get("cwd"),
+                      "sample": sample, "applied": applied,
+                      "fallback": fallback})
+    return {"session_id": session_id, "files": files}
+
+
+def _codex_sample(agent: host.Member, session_id: str,
+                  observation: dict[str, Any]) -> dict[str, Any]:
+    """The newest token_count sample in the bound rollout at the agent's cwd.
+
+    The observation it was computed from rides on the returned sample so a
+    caller checking the applied model never scans the same rollout twice.
+    """
+    sample = _ObservedSample(
+        session_id=session_id, utilisation=None, sampled_at=None)
+    agent_cwd = ledger._canonical_path(str(agent.get("cwd") or ""))
+    for entry in observation["files"]:
+        if ledger._canonical_path(str(entry.get("cwd") or "")) == agent_cwd:
+            sample.update(entry["sample"] or {})
+            break
+    sample.rollout = observation
+    return sample
+
+
+def _codex_applied_from(observation: dict[str, Any]) -> dict[str, Any] | None:
+    """The newest applied-model record in a rollout observation.
+
+    ``thread_settings_applied`` is the record a model change writes — the
+    settings the provider applied, never the configured ones — so the newest
+    is the live model. Without it, the newest ``turn_context`` model is the
+    equivalent per-turn record.
+    """
+    best: dict[str, dict[str, Any] | None] = {
+        "thread_settings_applied": None, "turn_context": None}
+    for entry in observation["files"]:
+        for record in (entry["applied"], entry["fallback"]):
+            if record is None:
+                continue
+            current = best[record["record"]]
+            if current is None or record["key"] > current["key"]:
+                best[record["record"]] = record
+    found = best["thread_settings_applied"] or best["turn_context"]
     if found is None:
         return None
     return {key: found[key] for key in ("model", "timestamp", "record", "source")}
 
 
-def _codex_model_status(session_id: str, policy: dict[str, Any]) -> dict[str, Any]:
+def _codex_applied_model(session_id: str,
+                         sessions_dir: Path | None = None) -> dict[str, Any] | None:
+    """The model the bound Codex session actually runs, read from its rollout.
+
+    Anything else is no evidence: a file naming the session whose
+    ``session_meta`` id says otherwise — or that carries no ``session_meta``
+    at all — is not the bound session, and no applied record is None.
+    """
+    if not session_id:
+        return None
+    return _codex_applied_from(_codex_rollout_observation(session_id, sessions_dir))
+
+
+def _codex_model_status(session_id: str, policy: dict[str, Any],
+                        observation: dict[str, Any] | None = None) -> dict[str, Any]:
     """The bound session's applied model against the policy-selected Codex model."""
     selected = (policy.get("codex") or {}).get("strong_model")
-    applied = _codex_applied_model(session_id) if session_id else None
+    if observation is not None and observation.get("session_id") != session_id:
+        observation = None
+    applied = (_codex_applied_from(observation) if observation is not None
+               else _codex_applied_model(session_id)) if session_id else None
     observed = applied["model"] if applied else None
     if observed is None or selected is None:
         status = "unknown"
@@ -392,23 +475,7 @@ def telemetry(agent: host.Member, policy: dict[str, Any]) -> dict[str, Any]:
         return unknown
     try:
         if agent.get("kind") == "codex":
-            for path in usage.default_codex_sessions_dir().rglob(f"*{sid}*.jsonl"):
-                meta = None
-                latest = None
-                for line in path.read_text(encoding="utf-8").splitlines():
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if event.get("type") == "session_meta":
-                        meta = event.get("payload", {})
-                    payload = event.get("payload") or {}
-                    if event.get("type") == "event_msg" and payload.get("type") == "token_count":
-                        info = payload.get("info") or {}
-                        latest = _sample(sid, (info.get("last_token_usage") or {}).get("input_tokens"),
-                                         info.get("model_context_window"), event.get("timestamp"))
-                if meta and meta.get("id") == sid and ledger._canonical_path(meta.get("cwd", "")) == ledger._canonical_path(agent.get("cwd", "")):
-                    return latest or unknown
+            return _codex_sample(agent, sid, _codex_rollout_observation(sid))
         elif agent.get("kind") == "claude":
             state_dir = Path(os.environ.get("HX_STATE_DIR", Path.home() / ".herdr-team" / "state"))
             path = state_dir / f"claude-status-{sid}.json"
@@ -511,9 +578,10 @@ def _compact_steps(name: str, task_id: str) -> list[str]:
     return [
         f"hx checkpoint write {task_id} --owner {name} --objective '<current objective>' --decisions '<decisions>' --errors '<exact errors or none>' --tests '<tests and results>' --next '<next action>'",
         f"Run hx compact {name} --task {task_id}. It types the provider's /compact "
-        f"({host.prompt_command(name, '/compact')}), presses Enter again when the "
-        "command menu keeps it staged, proves the same session at lower "
-        "utilisation, and re-briefs the worker from the checkpoint.",
+        "as keys through the one guarded path — the screen must prove no pending "
+        "prompt before each Enter — presses Enter again when the command menu "
+        "keeps it staged, proves the same session at lower utilisation, and "
+        "re-briefs the worker from the checkpoint.",
     ]
 
 
@@ -769,7 +837,8 @@ class Controller:
                   else session_telemetry(agent, self.policy)[1])
         result.update(session_id=sid, telemetry=sample, agent_kind=kind)
         if kind == "codex":
-            result["model"] = _codex_model_status(sid, self.policy)
+            result["model"] = _codex_model_status(
+                sid, self.policy, getattr(sample, "rollout", None))
         result.setdefault("task_id", "lead")
         if not sid:
             raise ValueError("provider session id unavailable; pass --session <session-id>")
@@ -869,7 +938,8 @@ class Controller:
             sid, sample = session_telemetry(agent, self.policy)
             result.update(session_id=sid, telemetry=sample, agent_kind=agent.get("kind"))
             if agent.get("kind") == "codex":
-                result["model"] = _codex_model_status(sid, self.policy)
+                result["model"] = _codex_model_status(
+                    sid, self.policy, getattr(sample, "rollout", None))
             if agent.get("status") not in READY:
                 raise _DeferredContext("agent is not idle")
             if not _fresh(sample, sid, _now()):

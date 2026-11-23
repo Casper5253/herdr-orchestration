@@ -7,11 +7,16 @@ import sqlite3
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from hx import __main__ as cli
 from hx import checkpoint, context, host, ledger
+
+# The controller fixture fakes context.telemetry; tests that measure the real
+# rollout scan restore the module-level original saved here.
+_REAL_TELEMETRY = context.telemetry
 
 
 @pytest.fixture
@@ -458,6 +463,83 @@ def test_decide_reports_the_codex_session_model(controller, tmp_path, monkeypatc
     assert result["model"]["status"] == expected
     assert result["model"]["observed"] == observed
     assert result["model"]["selected"] == selected
+
+
+def test_compact_steps_route_through_hx_compact_only(monkeypatch):
+    """Q-919 finding 2: a printed `hc keys ... enter` recipe bypasses the screen
+    guard — the steps name the guarded command, never the raw keys."""
+    def no_raw_keys(name, text):
+        raise AssertionError("prompt_command emits keys that skip the guard")
+    monkeypatch.setattr(host, "prompt_command", no_raw_keys)
+    steps = context._compact_steps("hx-codex", "t")
+    assert any("hx compact hx-codex --task t" in step for step in steps)
+
+
+def test_decide_scans_the_bound_rollout_once(controller, tmp_path, monkeypatch):
+    """Q-919 finding 3: telemetry and the applied-model check share one pass
+    over the bound rollout; decide used to read the same file twice."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(sessions))
+    _codex_rollout(sessions, "sid", [
+        {"type": "session_meta", "payload": {"id": "sid", "cwd": str(tmp_path)}},
+        {"type": "event_msg", "timestamp": context._now().isoformat(),
+         "payload": {"type": "token_count", "info": {
+             "last_token_usage": {"input_tokens": 700},
+             "model_context_window": 1000}}},
+        _thread_settings("gpt-6.2-sol", context._now().isoformat()),
+    ])
+    controller.policy["codex"] = {"strong_model": "gpt-6.2-sol"}
+    monkeypatch.setattr(context, "telemetry", _REAL_TELEMETRY)
+    reads = [0]
+    real_read = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        if str(self).endswith(".jsonl"):
+            reads[0] += 1
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    result = controller.decide("hx-codex")
+    assert result["telemetry"]["utilisation"] == pytest.approx(.7)
+    assert result["model"]["observed"] == "gpt-6.2-sol"
+    assert reads[0] == 1
+
+
+@pytest.mark.parametrize("meta", [
+    [],
+    [{"type": "session_meta", "payload": {"cwd": ""}}],
+])
+def test_decide_codex_model_ignores_an_unbound_rollout(controller, tmp_path,
+                                                       monkeypatch, meta):
+    """A rollout that names the session but carries no session_meta proving it
+    is not the bound session — its applied records are no evidence."""
+    monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(tmp_path))
+    _codex_rollout(tmp_path, "sid", [
+        *meta, _thread_settings("gpt-6-luna", "2026-11-22T02:53:24Z")])
+    controller.policy["codex"] = {"strong_model": "gpt-6.2-sol"}
+    result = controller.decide("hx-codex")
+    assert result["model"]["status"] == "unknown"
+    assert result["model"]["observed"] is None
+
+
+@pytest.mark.parametrize("bad_line", ["null", "[]", '"text"', "5"])
+def test_decide_codex_model_survives_non_object_rollout_lines(
+        controller, tmp_path, monkeypatch, bad_line):
+    """A JSON line that is not an object — null included — carries no evidence;
+    reading it must never crash the model check."""
+    monkeypatch.setenv("HX_CODEX_SESSIONS_DIR", str(tmp_path))
+    path = tmp_path / "rollout-sid.jsonl"
+    path.write_text(
+        bad_line + "\n"
+        + json.dumps({"type": "session_meta", "payload": {"id": "sid", "cwd": ""}}) + "\n"
+        + bad_line + "\n"
+        + json.dumps(_thread_settings("gpt-6-luna", "2026-11-22T02:53:24Z")) + "\n",
+        encoding="utf-8")
+    controller.policy["codex"] = {"strong_model": "gpt-6.2-sol"}
+    result = controller.decide("hx-codex")
+    assert result["model"]["observed"] == "gpt-6-luna"
+    assert result["model"]["status"] == "drift"
 
 
 def test_claude_telemetry_requires_session_specific_snapshot(tmp_path, monkeypatch):
