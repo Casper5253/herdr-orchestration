@@ -252,6 +252,45 @@ def _queue_holds(screen: str, kind: str, sent: str) -> bool:
     return re.sub(r"\s+", "", sent) in re.sub(r"\s+", "", region)
 
 
+def _opencode_transcript(screen: str) -> str:
+    """The rows above an OpenCode composer box, or "" when the box is absent.
+
+    The transcript ends where the composer box's topmost `┃` row begins; a
+    screen without the `Build` status anchor has no readable transcript.
+    """
+    lines = (screen or "").splitlines()
+    status = next((index for index in range(len(lines) - 1, -1, -1)
+                   if lines[index].strip().lstrip("┃").strip().startswith("Build")),
+                  None)
+    if status is None:
+        return ""
+    top = status
+    while top >= 0 and lines[top].lstrip().startswith("┃"):
+        top -= 1
+    return "\n".join(lines[:top + 1])
+
+
+def _transcript_shows_new_message(
+    screen: str, kind: str, sent: str, before: str = "",
+) -> bool:
+    """Whether this send added its text to the transcript above the composer.
+
+    A busy OpenCode folds an accepted message into its running turn: the turn
+    does not advance and the composer stays empty, but the text is rendered as
+    a transcript row. The same text already visible before the send proves
+    nothing, so only a rise in visible occurrences counts. A send that never
+    landed leaves the transcript unchanged and earns no receipt.
+    """
+    if kind != "opencode" or not sent:
+        return False
+    normalized = re.sub(r"\s+", "", sent)
+    if len(normalized) < 16:
+        return False
+    after = re.sub(r"\s+", "", _opencode_transcript(screen))
+    prior = re.sub(r"\s+", "", _opencode_transcript(before))
+    return after.count(normalized) > prior.count(normalized)
+
+
 # The 7501 `app` word, the only evidence of which provider runs in a terminal.
 HC_APP_KINDS = {
     "claude-code": "claude",

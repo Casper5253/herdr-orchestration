@@ -236,6 +236,7 @@ def _submission_evidence(
     sent_ms: int,
     status_before: str,
     evidence: dict[str, object],
+    before_screen: str = "",
 ) -> tuple[str, str | None]:
     """Verify a send admitted with an empty composer, retry its submit key once."""
     member = _host_member(detected, name)
@@ -280,6 +281,10 @@ def _submission_evidence(
             return ("queued" if queued_before else "submitted"), None
         if host._queue_holds(screen, kind, text):
             return _flush_queued_send(detected, observed, name, kind, text, screen)
+        # A message folded into a running OpenCode turn never advances the
+        # turn and never marks the queue; its transcript row is the proof.
+        if host._transcript_shows_new_message(screen, kind, text, before_screen):
+            return "submitted", None
         # The host saw this send start, and the worker changed from settled to
         # busy with no remaining draft. An empty pane alone proves neither.
         if ((same_turn or kind == "codex") and status_before in host.SETTLED
@@ -742,10 +747,12 @@ def _deliver(
         if admitted:
             delivery_agent, delivery_holder = name, holder
         status_before = "unknown"
+        before_screen = ""
         if (not isinstance(detected, host.HerdrHost)
                 and destination["kind"] in host._COMPOSER_KINDS):
             kind = destination["kind"]
             screen, staged = _read_composer(detected, name, kind)
+            before_screen = screen
             if staged is None:
                 _write_state(path, "uncertain", note="no composer identified")
                 return "uncertain", "no composer identified", (where, "uncertain")
@@ -784,7 +791,8 @@ def _deliver(
             # The standalone CLI reports the provider response inline.
             if not isinstance(detected, host.HerdrHost):
                 outcome, receipt_reason = _submission_evidence(
-                    detected, name, result, text, sent_ms, status_before, receipt_evidence)
+                    detected, name, result, text, sent_ms, status_before,
+                    receipt_evidence, before_screen)
                 if outcome == "pending":
                     state = "pending"
                     reason = receipt_reason or "paste still staged"

@@ -14,6 +14,8 @@ from hx import devin, host, ledger, say
 _Q572 = Path(__file__).parent / "fixtures" / "q572"
 _Q869_CODEX_BUSY = Path(__file__).parent / "fixtures" / "q869-codex-busy.json"
 _Q878_OPENCODE_QUEUED = Path(__file__).parent / "fixtures" / "q878-opencode-queued.txt"
+_Q904_OPENCODE_BUSY_BEFORE = Path(__file__).parent / "fixtures" / "q904-opencode-busy-before.txt"
+_Q904_OPENCODE_BUSY_AFTER = Path(__file__).parent / "fixtures" / "q904-opencode-busy-after.txt"
 
 
 @pytest.mark.parametrize("sidebar", [False, True])
@@ -633,6 +635,32 @@ def test_opencode_ack_gaps_stay_uncertain(fake, capsys, tmp_path, monkeypatch, c
     elif case == "different":
         _opencode_ack(tmp_path, "t24", "a different recent message",
                       int(time.time() * 1000) + 60_000)
+    assert say.say("lead", "brief ends here") == 1
+    assert "uncertain (empty composer without submission evidence)" in capsys.readouterr().out
+    assert fake.keys == []
+
+
+def test_busy_opencode_midturn_transcript_message_is_submitted(fake, capsys):
+    """Q-904, 22 Nov 20:55 (send 127ea686): a busy OpenCode folds the message
+    into its running turn. Turn and status stay put, the composer stays empty,
+    and the text appears in the transcript with no QUEUED label — that
+    transcript row is the submission evidence."""
+    fake.members["dev-lead"].update(kind="opencode", status="working")
+    fake.advance = False
+    before = _Q904_OPENCODE_BUSY_BEFORE.read_text(encoding="utf-8")
+    after = _Q904_OPENCODE_BUSY_AFTER.read_text(encoding="utf-8")
+    fake.views["dev-lead"] = before
+    fake.on_send = lambda name: fake.views.update({name: after})
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert fake.keys == []
+
+
+def test_busy_opencode_unchanged_transcript_stays_uncertain(fake, capsys):
+    """The same busy pane with no new transcript row is no evidence at all."""
+    fake.members["dev-lead"].update(kind="opencode", status="working")
+    fake.advance = False
+    fake.views["dev-lead"] = _Q904_OPENCODE_BUSY_BEFORE.read_text(encoding="utf-8")
     assert say.say("lead", "brief ends here") == 1
     assert "uncertain (empty composer without submission evidence)" in capsys.readouterr().out
     assert fake.keys == []
