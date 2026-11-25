@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,15 @@ def _switch_installs(root: Path, install: Path, previous: Path | None) -> None:
     try:
         with tmp.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(f"{install}\n{previous or ''}\n")
-        os.replace(tmp, pointer)
+        # Windows readers without delete sharing can briefly block replacement.
+        for delay in (0.05, 0.1, 0.2, 0.3, 0.35, None):
+            try:
+                os.replace(tmp, pointer)
+                break
+            except PermissionError as exc:
+                if delay is None or getattr(exc, "winerror", None) not in (5, 32):
+                    raise
+                time.sleep(delay)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -195,7 +204,9 @@ def _export(repo: Path, commit: str, staging: Path, root: Path) -> None:
         archive.unlink(missing_ok=True)
 
 
-def _export_files(directory: Path) -> dict[str, tuple[str, str]]:
+def _export_files(
+    directory: Path, caches: list[Path] | None = None,
+) -> dict[str, tuple[str, str]]:
     """Inventory the export without following symlinks or directory junctions."""
     files = {}
     for path in directory.iterdir():
@@ -205,10 +216,16 @@ def _export_files(directory: Path) -> dict[str, tuple[str, str]]:
         elif getattr(info, "st_reparse_tag", 0):
             raise RuntimeError(f"refusing: unexpected reparse point in export: {path}")
         elif stat.S_ISDIR(info.st_mode):
+            if caches is not None and path.name == "__pycache__":
+                caches.append(path)
+                continue
             files[path.name] = ("directory", "")
             files.update((f"{path.name}/{name}", entry)
-                         for name, entry in _export_files(path).items())
+                         for name, entry in _export_files(path, caches).items())
         elif stat.S_ISREG(info.st_mode):
+            if caches is not None and path.suffix == ".pyc":
+                caches.append(path)
+                continue
             files[path.name] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
         else:
             raise RuntimeError(f"refusing: unexpected file type in export: {path}")
@@ -218,12 +235,19 @@ def _export_files(directory: Path) -> dict[str, tuple[str, str]]:
 def _verify_export(install: Path, reviewed: Path) -> None:
     if install.is_symlink() or getattr(install.lstat(), "st_reparse_tag", 0):
         raise RuntimeError(f"refusing: export {install} differs from the reviewed commit")
-    actual = _export_files(install)
+    caches: list[Path] = []
+    actual = _export_files(install, caches)
     # Activation generates this metadata after exporting the commit.
     metadata = actual.pop(BUILD_FILE, None)
     if (metadata is None or metadata[0] != "file"
             or actual != _export_files(reviewed)):
         raise RuntimeError(f"refusing: export {install} differs from the reviewed commit")
+    # -B prevents writing bytecode, but Python can still load existing caches.
+    for path in caches:
+        if path.name == "__pycache__":
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
 
 def _require_reviewed_commit(source: Path, full: str) -> None:

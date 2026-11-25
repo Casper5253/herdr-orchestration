@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -132,6 +133,70 @@ def test_failed_current_replacement_preserves_rollback_target(
     assert runtime.current_install(root) == Path(active["activated"])
     assert runtime.previous_install(root) == Path(first["activated"])
     assert runtime.rollback(root)["activated"] == first["activated"]
+
+
+def test_rollback_accepts_old_bytecode_caches(reviewed_export) -> None:
+    source, root = reviewed_export
+    first = runtime.activate("1" * 40, root=root, repo=source)
+    second = runtime.activate("2" * 40, root=root, repo=source)
+    package = Path(first["activated"]) / "hx"
+    cache = package / "__pycache__"
+    cache.mkdir()
+    cached = cache / "__main__.cpython-311.pyc"
+    standalone = package / "_legacy.pyc"
+    for path in (cached, standalone):
+        path.write_bytes(b"stale bytecode")
+
+    assert runtime.rollback(root)["activated"] == first["activated"]
+    assert runtime.current_install(root) == Path(first["activated"])
+    assert runtime.previous_install(root) == Path(second["activated"])
+    assert not cache.exists()
+    assert not standalone.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows readers deny pointer replacement")
+@pytest.mark.parametrize("operation", ["activate", "rollback"])
+def test_runtime_retries_when_a_pointer_reader_closes(
+        reviewed_export, monkeypatch, operation) -> None:
+    source, root = reviewed_export
+    first = runtime.activate("1" * 40, root=root, repo=source)
+    second = runtime.activate("2" * 40, root=root, repo=source)
+    with (root / "current").open(encoding="utf-8") as reader:
+        # Release the real Windows handle at the first retry without a timer race.
+        monkeypatch.setattr(time, "sleep", lambda delay: reader.close())
+        if operation == "activate":
+            result = runtime.activate("3" * 40, root=root, repo=source)
+            assert result["commit"] == "3" * 40
+        else:
+            result = runtime.rollback(root)
+            assert result["activated"] == first["activated"]
+        assert reader.closed
+
+    assert runtime.current_install(root) == Path(result["activated"])
+    assert runtime.previous_install(root) == Path(second["activated"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows readers deny pointer replacement")
+def test_rollback_keeps_both_pointers_when_reader_stays_open(
+        reviewed_export, monkeypatch) -> None:
+    source, root = reviewed_export
+    first = runtime.activate("1" * 40, root=root, repo=source)
+    second = runtime.activate("2" * 40, root=root, repo=source)
+    delays = []
+
+    def record_delay(delay):
+        delays.append(delay)
+        assert sum(delays) <= 1.1, "pointer retry exceeded its time budget"
+
+    monkeypatch.setattr(time, "sleep", record_delay)
+    with (root / "current").open(encoding="utf-8"):
+        with pytest.raises(PermissionError):
+            runtime.rollback(root)
+
+    assert 0 < sum(delays) <= 1.1
+    assert runtime.current_install(root) == Path(second["activated"])
+    assert runtime.previous_install(root) == Path(first["activated"])
+    assert not list(root.glob("current.tmp-*"))
 
 
 @pytest.mark.parametrize("override", ["argument", "environment"])
@@ -344,3 +409,45 @@ def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path
         assert posix.returncode == 0, posix.stderr
         assert posix.stdout.strip() == "hx 0.1.0"
     assert not list(runtime.current_install(root).rglob("__pycache__"))
+
+
+def test_both_shims_follow_the_current_build_after_activation_and_rollback(
+        tmp_path: Path) -> None:
+    repo = _scratch_repo(tmp_path)
+    root = tmp_path / "runtime with spaces"
+    first = runtime.activate(root=root, repo=repo)
+    init = repo / "hx" / "__init__.py"
+    init.write_text(
+        init.read_text(encoding="utf-8").replace('"0.1.0"', '"0.1.1"'),
+        encoding="utf-8")
+    second = runtime.activate(_commit(repo, "second runtime"), root=root, repo=repo)
+    assert second["previous"] == first["activated"]
+
+    home = tmp_path / "home"
+    home.mkdir()
+    installed = _install_shims(home)
+    assert installed.returncode == 0, installed.stderr
+    git_bash = Path(shutil.which("git")).resolve().parent.parent / "bin" / "bash.exe"
+    shell_shim = home / ".local" / "bin" / "hx"
+    env = dict(os.environ, HX_RUNTIME_ROOT=root.as_posix(), PYTHONPATH=str(repo))
+    env.pop("HX_RUNTIME_DIR", None)
+
+    def check_shims(version: str) -> None:
+        posix = subprocess.run(
+            [str(git_bash), shell_shim.as_posix(), "--version"],
+            cwd=repo, env=env, capture_output=True, text=True, timeout=120)
+        windows = _run_new_shim(home, root, repo, repo)
+        for result in (posix, windows):
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == f"hx {version}"
+
+    check_shims("0.1.1")
+    assert runtime.rollback(root)["activated"] == first["activated"]
+    check_shims("0.1.0")
+
+    pointer = root / "current"
+    for ending in ("", "\n", "\r\n"):
+        pointer.write_bytes((first["activated"] + ending).encode("utf-8"))
+        check_shims("0.1.0")
+    pointer.write_bytes(f"\n{second['activated']}\n".encode("utf-8"))
+    assert _run_new_shim(home, root, repo, repo).returncode != 0
