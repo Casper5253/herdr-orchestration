@@ -5,7 +5,7 @@ description: "Lead playbook for routing work across the Herdr team with the hx C
 
 # hx router (lead playbook)
 
-`hx` is a stdlib-only CLI: `hx <command>` (wrapper on PATH) or `python -m hx <command>`. Source and design: `~/Documents/Projects/herdr-orchestration` (`docs/ARCHITECTURE.md`, `docs/FINDINGS.md`, `bench/RESULTS.md`). Project state goes to `<repo>/.hx/` of the repo you run it in. Routing decisions are deterministic; spend judgment only where the router says so.
+`hx` is a stdlib-only CLI. Use `hx <command>` on PATH to run the activated build. Source and design: `~/Documents/Projects/herdr-orchestration` (`docs/ARCHITECTURE.md`, `docs/FINDINGS.md`, `bench/RESULTS.md`). Project state goes to `<repo>/.hx/` of the repo you run it in. Routing decisions are deterministic; spend judgment only where the router says so.
 
 ## Policy in one paragraph
 **Until 2026-11-30 (promotion guard): Devin SWE-2 and OpenCode share implementation work about 50/50.** SWE-2 is free on Devin Pro in the CLI, so `hx route` balances routine, investigate, feature, debug, refactor and test work between `ocrun-devin` and OpenCode (`policy.json` `routing_balance`). Don't hold SWE-2 back to save it; do keep briefs scoped and never retry blindly (free tokens are not free concurrency or rate limits). Otherwise: spend OpenCode Go first. It is one shared pool across its models, and `hx usage` reads its measured 5h, week and month percentages from OpenCode's servers; it is the cheapest pool. Keep Claude for architecture, prose and judgment, and Codex for review, hard debugging and risky changes. A failure caused by missing context, an unclear brief or a tool problem is fixed by fixing the input, never by a bigger model. Only a capability failure escalates, one step at a time.

@@ -7,11 +7,12 @@ if [ ! -f "$root/current" ]; then
     echo "hx: no runtime activated; run hx activate from the source checkout" >&2
     exit 1
 fi
-dir=$(cat "$root/current")
+IFS= read -r dir < "$root/current"
+dir=${dir%"$(printf '\r')"}
 if [ ! -f "$dir/hx/__main__.py" ]; then
     echo "hx: activated runtime missing at $dir; run hx activate --rollback" >&2
     exit 1
 fi
 HX_RUNTIME_DIR="$dir"
 export HX_RUNTIME_DIR
-exec "__HX_PYTHON_POSIX__" -I -c 'import os,sys; sys.path.insert(0, os.environ["HX_RUNTIME_DIR"]); from hx.__main__ import main; raise SystemExit(main())' "$@"
+exec "__HX_PYTHON_POSIX__" -I -B -c 'import os,sys; sys.path.insert(0, os.environ["HX_RUNTIME_DIR"]); from hx.__main__ import main; raise SystemExit(main())' "$@"

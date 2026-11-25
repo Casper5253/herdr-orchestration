@@ -40,7 +40,7 @@ def _scratch_repo(base: Path) -> Path:
     assert Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() == repo.resolve()
     _git(repo, "config", "user.email", "scratch@example.com")
     _git(repo, "config", "user.name", "scratch")
-    _git(repo, "checkout", "-b", "rel")
+    _git(repo, "checkout", "-b", "main")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "seed")
     return repo
@@ -52,14 +52,129 @@ def _commit(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+@pytest.fixture
+def reviewed_export(tmp_path, monkeypatch):
+    """Stub Git's answers and exports without touching the worktree's Git state."""
+    source = tmp_path / "source"
+    source.mkdir()
+    commits = {
+        "1" * 40: "STATE_FORMAT = 1\n",
+        "2" * 40: "STATE_FORMAT = 1\n",
+        "3" * 40: "STATE_FORMAT = 1\n",
+        "4" * 40: "",
+    }
+
+    def export(repo, commit, staging, root):
+        package = staging / "hx"
+        package.mkdir()
+        (package / "reviewed.txt").write_text("reviewed\n", encoding="utf-8")
+        (package / "__init__.py").write_text(commits[commit], encoding="utf-8")
+        (package / "__main__.py").write_text("# reviewed\n", encoding="utf-8")
+
+    monkeypatch.delenv("HX_RELEASE_REF", raising=False)
+    monkeypatch.setattr(runtime, "_git", lambda repo, *args: args[-1].split("^")[0])
+    monkeypatch.setattr(runtime, "_is_ancestor", lambda repo, commit, ref: True)
+    monkeypatch.setattr(runtime, "dirty_hx_changes", lambda repo: [])
+    monkeypatch.setattr(runtime, "_export", export)
+    monkeypatch.setattr(runtime, "_self_check", lambda install, cwd: None)
+    return source, tmp_path / "runtime"
+
+
+def test_team_skills_use_only_the_pinned_hx_entry_point() -> None:
+    for name in ("hx-router", "herdr-team"):
+        skill = (REPO / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "python -m hx" not in skill, name
+
+
+@pytest.mark.parametrize("change", ["changed", "added", "missing"])
+@pytest.mark.parametrize("operation", ["activate", "rollback"])
+def test_runtime_rejects_a_modified_export(reviewed_export, change, operation) -> None:
+    source, root = reviewed_export
+    first = runtime.activate("1" * 40, root=root, repo=source)
+    active = runtime.activate("2" * 40, root=root, repo=source)
+    package = Path(first["activated"]) / "hx"
+    if change == "missing":
+        (package / "reviewed.txt").unlink()
+    else:
+        file = "__main__.py" if change == "changed" else "_extra.py"
+        (package / file).write_text("# modified\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="export.*differs"):
+        if operation == "activate":
+            runtime.activate("1" * 40, root=root, repo=source)
+        else:
+            runtime.rollback(root)
+    assert runtime.current_install(root) == Path(active["activated"])
+    assert runtime.previous_install(root) == Path(first["activated"])
+
+
+@pytest.mark.parametrize("operation", ["activate", "rollback"])
+def test_failed_current_replacement_preserves_rollback_target(
+        reviewed_export, monkeypatch, operation) -> None:
+    source, root = reviewed_export
+    first = runtime.activate("1" * 40, root=root, repo=source)
+    active = runtime.activate("2" * 40, root=root, repo=source)
+    replace = os.replace
+
+    def fail_current(src, dst):
+        if Path(dst) == root / "current":
+            raise OSError("current replacement failed")
+        return replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_current)
+        with pytest.raises(OSError, match="current replacement failed"):
+            if operation == "activate":
+                runtime.activate("3" * 40, root=root, repo=source)
+            else:
+                runtime.rollback(root)
+
+    assert runtime.current_install(root) == Path(active["activated"])
+    assert runtime.previous_install(root) == Path(first["activated"])
+    assert runtime.rollback(root)["activated"] == first["activated"]
+
+
+@pytest.mark.parametrize("override", ["argument", "environment"])
+def test_activate_refuses_an_alternate_release_ref(reviewed_export, monkeypatch, override):
+    source, root = reviewed_export
+    kwargs = {}
+    if override == "argument":
+        kwargs["release"] = "side"
+    else:
+        monkeypatch.setenv("HX_RELEASE_REF", "side")
+    with pytest.raises(RuntimeError, match="reviewed release ref"):
+        runtime.activate("1" * 40, root=root, repo=source, **kwargs)
+    assert runtime.current_install(root) is None
+
+
+@pytest.mark.parametrize("operation", ["activate-candidate", "activate-current", "rollback"])
+def test_runtime_refuses_an_unknown_state_format(reviewed_export, operation) -> None:
+    source, root = reviewed_export
+    active = runtime.activate("1" * 40, root=root, repo=source)
+    if operation == "rollback":
+        active = runtime.activate("2" * 40, root=root, repo=source)
+        target = runtime.previous_install(root)
+    else:
+        target = Path(active["activated"])
+    if operation != "activate-candidate":
+        (target / "hx" / "__init__.py").write_text("# no format\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unknown state format"):
+        if operation == "rollback":
+            runtime.rollback(root)
+        else:
+            runtime.activate("4" * 40 if operation == "activate-candidate" else "2" * 40,
+                             root=root, repo=source, allow_state_change=True)
+    assert runtime.current_install(root) == Path(active["activated"])
+
+
 def test_activate_refuses_a_commit_off_the_release_ref(tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
     _git(repo, "checkout", "-b", "side")
     (repo / "hx" / "_side.py").write_text("VALUE = 1\n", encoding="utf-8")
     side = _commit(repo, "side work")
-    _git(repo, "checkout", "rel")
-    with pytest.raises(RuntimeError, match="not on rel"):
-        runtime.activate(side, root=tmp_path / "rt", repo=repo, release="rel")
+    _git(repo, "checkout", "main")
+    with pytest.raises(RuntimeError, match="not on main"):
+        runtime.activate(side, root=tmp_path / "rt", repo=repo)
     assert runtime.current_install(tmp_path / "rt") is None
 
 
@@ -68,14 +183,14 @@ def test_activate_refuses_dirty_tracked_hx_changes(tmp_path: Path) -> None:
     with open(repo / "hx" / "__init__.py", "a", encoding="utf-8") as fh:
         fh.write("\n# unreviewed edit\n")
     with pytest.raises(RuntimeError, match="uncommitted tracked hx changes"):
-        runtime.activate(root=tmp_path / "rt", repo=repo, release="rel")
+        runtime.activate(root=tmp_path / "rt", repo=repo)
 
 
 def test_activate_switches_pointer_and_keeps_the_previous_build(tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
     root = tmp_path / "rt"
     first = _git(repo, "rev-parse", "HEAD")
-    result = runtime.activate(root=root, repo=repo, release="rel")
+    result = runtime.activate(root=root, repo=repo)
     install = root / first[:12]
     assert result["activated"] == str(install) and result["switched"] is True
     assert (install / "hx" / "__main__.py").is_file()
@@ -85,7 +200,7 @@ def test_activate_switches_pointer_and_keeps_the_previous_build(tmp_path: Path) 
 
     (repo / "hx" / "_marker.txt").write_text("second\n", encoding="utf-8")
     second = _commit(repo, "second build")
-    result = runtime.activate(root=root, repo=repo, release="rel")
+    result = runtime.activate(root=root, repo=repo)
     new_install = root / second[:12]
     assert runtime.current_install(root) == new_install
     assert runtime.previous_install(root) == install
@@ -96,20 +211,25 @@ def test_activate_switches_pointer_and_keeps_the_previous_build(tmp_path: Path) 
     assert runtime.current_install(root) == install
     assert runtime.previous_install(root) == new_install
 
+    again = runtime.activate(root=root, repo=repo)
+    assert again["created"] is False and again["switched"] is True
+    assert runtime.current_install(root) == new_install
+    assert runtime.previous_install(root) == install
+
 
 def test_activate_refuses_a_state_format_change_unless_allowed(tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
     root = tmp_path / "rt"
-    runtime.activate(root=root, repo=repo, release="rel")
+    runtime.activate(root=root, repo=repo)
     init = repo / "hx" / "__init__.py"
     init.write_text(
         init.read_text(encoding="utf-8").replace("STATE_FORMAT = 1", "STATE_FORMAT = 2"),
         encoding="utf-8")
     _commit(repo, "state format 2")
     with pytest.raises(RuntimeError, match="state format changes 1->2"):
-        runtime.activate(root=root, repo=repo, release="rel")
+        runtime.activate(root=root, repo=repo)
     result = runtime.activate(
-        root=root, repo=repo, release="rel", allow_state_change=True)
+        root=root, repo=repo, allow_state_change=True)
     assert result["state_format"] == 2
     back = runtime.rollback(root)
     assert back["state_format"] == 1
@@ -119,10 +239,10 @@ def test_activate_refuses_a_state_format_change_unless_allowed(tmp_path: Path) -
 def test_doctor_reports_runtime_drift_informationally(tmp_path, monkeypatch) -> None:
     repo = _scratch_repo(tmp_path)
     root = tmp_path / "rt"
-    result = runtime.activate(root=root, repo=repo, release="rel")
+    result = runtime.activate(root=root, repo=repo)
     install = Path(result["activated"])
     (repo / "hx" / "_marker.txt").write_text("ahead of the build\n", encoding="utf-8")
-    _commit(repo, "advance rel")
+    _commit(repo, "advance main")
     status = runtime.status(install)
     assert status["mode"] == "runtime"
     assert status["status"] == "drift" and status["loaded_commit"] == result["commit"]
@@ -167,10 +287,22 @@ def _run_new_shim(home: Path, root: Path, repo: Path, cwd: Path) -> subprocess.C
         capture_output=True, text=True, timeout=120)
 
 
+def test_migrates_legacy_pointer_files_with_one_replacement(reviewed_export) -> None:
+    source, root = reviewed_export
+    first = runtime.activate("1" * 40, root=root, repo=source)
+    second = runtime.activate("2" * 40, root=root, repo=source)
+    (root / "current").write_text(second["activated"] + "\n", encoding="utf-8")
+    (root / "previous").write_text(first["activated"] + "\n", encoding="utf-8")
+
+    assert runtime.rollback(root)["activated"] == first["activated"]
+    assert runtime.current_install(root) == Path(first["activated"])
+    assert runtime.previous_install(root) == Path(second["activated"])
+
+
 def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
     root = tmp_path / "rt"
-    runtime.activate(root=root, repo=repo, release="rel")
+    runtime.activate(root=root, repo=repo)
 
     init = repo / "hx" / "__init__.py"
     init.write_text(
@@ -188,7 +320,7 @@ def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path
     assert installed.returncode == 0, installed.stderr
     cmd_text = (home / ".local" / "bin" / "hx.cmd").read_text(encoding="utf-8")
     sh_text = (home / ".local" / "bin" / "hx").read_text(encoding="utf-8")
-    assert "-I -c" in cmd_text and "-I -c" in sh_text
+    assert "-I -B -c" in cmd_text and "-I -B -c" in sh_text
     assert str(repo) not in cmd_text and str(repo) not in sh_text
 
     from_repo = _run_new_shim(home, root, repo, repo)
@@ -202,3 +334,13 @@ def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path
     assert from_elsewhere.returncode == 0, from_elsewhere.stderr
     assert "hx 0.1.0" in from_elsewhere.stdout
     assert "DIRTY-SENTINEL" not in from_elsewhere.stdout
+
+    git_bash = Path(shutil.which("git")).resolve().parent.parent / "bin" / "bash.exe"
+    if git_bash.is_file():
+        env = dict(os.environ, HX_RUNTIME_ROOT=root.as_posix(), PYTHONPATH=str(repo))
+        posix = subprocess.run(
+            [str(git_bash), (home / ".local" / "bin" / "hx").as_posix(), "--version"],
+            cwd=str(repo), env=env, capture_output=True, text=True, timeout=120)
+        assert posix.returncode == 0, posix.stderr
+        assert posix.stdout.strip() == "hx 0.1.0"
+    assert not list(runtime.current_install(root).rglob("__pycache__"))

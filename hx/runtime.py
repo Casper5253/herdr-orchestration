@@ -4,11 +4,11 @@ The shims used to put the source checkout on PYTHONPATH, so a worker edit
 there ran on every agent's next hx call, before review. This module owns the
 replacement boundary:
 
-* ``activate`` refuses a commit that is not on the release ref (``main`` by
-  default) or a checkout with uncommitted tracked hx changes, exports that
-  commit's tree into a versioned install dir under the runtime root, self-checks
-  the import from there, then atomically switches the ``current`` pointer.
-* ``rollback`` switches the pointer back to the previous build, which is kept.
+* ``activate`` checks that the commit is on ``main`` and the checkout has no
+  uncommitted tracked hx changes. It exports the commit and self-checks a new
+  install or compares an existing one to the export before switching.
+* ``rollback`` verifies the previous build and switches back to it. The active
+  and previous pointers change together.
 * ``status`` reports the loaded commit and install path for ``hx doctor``.
 
 Project state still lives in ``<repo>/.hx/`` and the shared state dirs: only
@@ -19,20 +19,25 @@ the code location changes. The exported tree carries ``policy.json`` and
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from hx import paths
+from hx.ledger import LeaseLock
 
 CURRENT = "current"
-PREVIOUS = "previous"
+LEGACY_PREVIOUS = "previous"
+RELEASE_REF = "refs/heads/main"
 BUILD_FILE = "runtime.json"
 HX_PATHS = ("hx", "policy.json")
 
@@ -42,41 +47,46 @@ def runtime_root() -> Path:
     return Path(env) if env else Path.home() / ".hx-runtime"
 
 
-def release_ref() -> str:
-    return os.environ.get("HX_RELEASE_REF") or "main"
-
-
-def _read_pointer(path: Path) -> str | None:
-    try:
-        value = path.read_text(encoding="utf-8").strip()
-    except OSError:
+def _install_path(value: str) -> Path | None:
+    if not value:
         return None
-    return value or None
+    path = Path(value)
+    return path if (path / "hx" / "__main__.py").is_file() else None
 
 
-def _write_pointer(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    tmp.write_text(value + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+def _read_installs(root: Path) -> tuple[Path | None, Path | None]:
+    try:
+        lines = (root / CURRENT).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    if len(lines) == 2:
+        return _install_path(lines[0]), _install_path(lines[1])
+    if len(lines) > 2:
+        raise RuntimeError(f"invalid runtime pointer at {root / CURRENT}")
+    try:
+        previous = (root / LEGACY_PREVIOUS).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        previous = ""
+    return _install_path(lines[0] if lines else ""), _install_path(previous)
+
+
+def _switch_installs(root: Path, install: Path, previous: Path | None) -> None:
+    pointer = root / CURRENT
+    tmp = pointer.with_name(f"{pointer.name}.tmp-{os.getpid()}")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(f"{install}\n{previous or ''}\n")
+        os.replace(tmp, pointer)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def current_install(root: Path | None = None) -> Path | None:
-    root = Path(root) if root is not None else runtime_root()
-    value = _read_pointer(root / CURRENT)
-    if value is None:
-        return None
-    path = Path(value)
-    return path if (path / "hx" / "__main__.py").is_file() else None
+    return _read_installs(Path(root) if root is not None else runtime_root())[0]
 
 
 def previous_install(root: Path | None = None) -> Path | None:
-    root = Path(root) if root is not None else runtime_root()
-    value = _read_pointer(root / PREVIOUS)
-    if value is None:
-        return None
-    path = Path(value)
-    return path if (path / "hx" / "__main__.py").is_file() else None
+    return _read_installs(Path(root) if root is not None else runtime_root())[1]
 
 
 def read_build(install: Path) -> dict[str, Any] | None:
@@ -137,13 +147,16 @@ def dirty_hx_changes(repo: Path) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
-def _read_state_format(install: Path) -> int | None:
+def _read_state_format(install: Path) -> int:
     try:
-        text = (Path(install) / "hx" / "__init__.py").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    match = re.search(r"^STATE_FORMAT\s*=\s*(\d+)", text, re.MULTILINE)
-    return int(match.group(1)) if match else None
+        text = (install / "hx" / "__init__.py").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        text = ""
+    matches = re.findall(r"^STATE_FORMAT[ \t]*=[ \t]*([0-9]+)[ \t]*(?:#[^\n]*)?$",
+                         text, re.MULTILINE)
+    if len(matches) != 1:
+        raise RuntimeError(f"refusing: unknown state format in {install}")
+    return int(matches[0])
 
 
 def _self_check(install: Path, cwd: Path) -> None:
@@ -162,7 +175,7 @@ def _self_check(install: Path, cwd: Path) -> None:
         "print(hx.__version__)\n"
     )
     proc = subprocess.run(
-        [sys.executable, "-I", "-c", code], cwd=str(cwd), env=env,
+        [sys.executable, "-I", "-B", "-c", code], cwd=str(cwd), env=env,
         capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -182,16 +195,54 @@ def _export(repo: Path, commit: str, staging: Path, root: Path) -> None:
         archive.unlink(missing_ok=True)
 
 
+def _export_files(directory: Path) -> dict[str, tuple[str, str]]:
+    """Inventory the export without following symlinks or directory junctions."""
+    files = {}
+    for path in directory.iterdir():
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            files[path.name] = ("link", os.readlink(path))
+        elif getattr(info, "st_reparse_tag", 0):
+            raise RuntimeError(f"refusing: unexpected reparse point in export: {path}")
+        elif stat.S_ISDIR(info.st_mode):
+            files[path.name] = ("directory", "")
+            files.update((f"{path.name}/{name}", entry)
+                         for name, entry in _export_files(path).items())
+        elif stat.S_ISREG(info.st_mode):
+            files[path.name] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+        else:
+            raise RuntimeError(f"refusing: unexpected file type in export: {path}")
+    return files
+
+
+def _verify_export(install: Path, reviewed: Path) -> None:
+    if install.is_symlink() or getattr(install.lstat(), "st_reparse_tag", 0):
+        raise RuntimeError(f"refusing: export {install} differs from the reviewed commit")
+    actual = _export_files(install)
+    # Activation generates this metadata after exporting the commit.
+    metadata = actual.pop(BUILD_FILE, None)
+    if (metadata is None or metadata[0] != "file"
+            or actual != _export_files(reviewed)):
+        raise RuntimeError(f"refusing: export {install} differs from the reviewed commit")
+
+
+def _require_reviewed_commit(source: Path, full: str) -> None:
+    if not _is_ancestor(source, full, RELEASE_REF):
+        raise RuntimeError(
+            f"refusing: {full[:12]} is not on main. Activate only a reviewed commit.")
+
+
 def activate(commit: str | None = None, root: str | Path | None = None,
              repo: str | Path | None = None, release: str | None = None,
              allow_state_change: bool = False) -> dict[str, Any]:
-    root_path = Path(root) if root is not None else runtime_root()
+    root_path = (Path(root) if root is not None else runtime_root()).resolve()
+    ref = release if release is not None else os.environ.get("HX_RELEASE_REF", "main")
+    if ref not in ("main", RELEASE_REF):
+        raise RuntimeError(f"refusing: reviewed release ref is main, got {ref!r}")
     source = source_repo(repo)
-    ref = release or release_ref()
-    full = _git(source, "rev-parse", "--verify", f"{commit or ref}^{{commit}}")
-    if not _is_ancestor(source, full, ref):
-        raise RuntimeError(
-            f"refusing: {full[:12]} is not on {ref}; activate only a reviewed commit")
+    full = _git(source, "rev-parse", "--verify", "--end-of-options",
+                f"{commit or RELEASE_REF}^{{commit}}")
+    _require_reviewed_commit(source, full)
     dirty = dirty_hx_changes(source)
     if dirty:
         raise RuntimeError(
@@ -199,58 +250,44 @@ def activate(commit: str | None = None, root: str | Path | None = None,
 
     short = full[:12]
     install = root_path / short
-    root_path.mkdir(parents=True, exist_ok=True)
-    current = current_install(root_path)
-
-    staging: Path | None = None
-    if install.exists():
-        build = read_build(install)
-        if not build or build.get("commit") != full:
-            raise RuntimeError(f"refusing: {install} holds a different build")
-        candidate_format = build.get("state_format")
-    else:
-        staging = root_path / f".staging-{short}-{os.getpid()}"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
-        try:
+    with LeaseLock(root_path / "activation.lock"):
+        current, _ = _read_installs(root_path)
+        with tempfile.TemporaryDirectory(prefix=".staging-", dir=root_path) as scratch:
+            staging = Path(scratch) / "export"
+            staging.mkdir()
             _export(source, full, staging, root_path)
             candidate_format = _read_state_format(staging)
-            build = {
-                "commit": full,
-                "short": short,
-                "source_repo": str(source),
-                "release_ref": ref,
-                "state_format": candidate_format,
-                "created": dt.datetime.now(dt.timezone.utc).isoformat(),
-            }
-            (staging / BUILD_FILE).write_text(
-                json.dumps(build, indent=2) + "\n", encoding="utf-8")
-            _self_check(staging, root_path)
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+            if current is not None:
+                current_format = _read_state_format(current)
+                if current_format != candidate_format and not allow_state_change:
+                    raise RuntimeError(
+                        f"refusing: state format changes {current_format}->{candidate_format}. "
+                        "Review state compatibility, then pass --allow-state-change.")
 
-    if current is not None and current.resolve() != install.resolve():
-        current_format = (read_build(current) or {}).get("state_format")
-        if (isinstance(current_format, int) and isinstance(candidate_format, int)
-                and current_format != candidate_format and not allow_state_change):
-            if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
-            raise RuntimeError(
-                f"refusing: state format changes {current_format}->{candidate_format}; "
-                "review state compatibility, then pass --allow-state-change")
+            created = not install.exists()
+            if created:
+                build = {
+                    "commit": full,
+                    "short": short,
+                    "source_repo": str(source),
+                    "release_ref": "main",
+                    "state_format": candidate_format,
+                    "created": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+                (staging / BUILD_FILE).write_text(
+                    json.dumps(build, indent=2) + "\n", encoding="utf-8")
+                _self_check(staging, root_path)
+                os.replace(staging, install)
+            else:
+                _verify_export(install, staging)
+                build = read_build(install)
+                if (not build or build.get("commit") != full
+                        or build.get("state_format") != candidate_format):
+                    raise RuntimeError(f"refusing: {install} holds a different build")
 
-    created = staging is not None
-    if staging is not None:
-        os.replace(staging, install)
-
-    switched = False
-    if current is None or current.resolve() != install.resolve():
-        if current is not None:
-            _write_pointer(root_path / PREVIOUS, str(current))
-        _write_pointer(root_path / CURRENT, str(install))
-        switched = True
+            switched = current is None or current.resolve() != install.resolve()
+            if switched:
+                _switch_installs(root_path, install, current)
 
     return {
         "activated": str(install),
@@ -264,29 +301,40 @@ def activate(commit: str | None = None, root: str | Path | None = None,
 
 
 def rollback(root: str | Path | None = None) -> dict[str, Any]:
-    root_path = Path(root) if root is not None else runtime_root()
-    current = current_install(root_path)
-    previous = previous_install(root_path)
-    if previous is None:
-        raise RuntimeError("refusing: no previous build recorded in the runtime root")
-    if current is not None:
-        _write_pointer(root_path / PREVIOUS, str(current))
-    _write_pointer(root_path / CURRENT, str(previous))
-    build = read_build(previous) or {}
+    root_path = (Path(root) if root is not None else runtime_root()).resolve()
+    with LeaseLock(root_path / "activation.lock"):
+        current, previous = _read_installs(root_path)
+        if previous is None:
+            raise RuntimeError("refusing: no previous build recorded in the runtime root")
+
+        current_format = _read_state_format(current) if current else None
+        previous_format = _read_state_format(previous)
+        build = read_build(previous) or {}
+        full = build.get("commit")
+        origin = build.get("source_repo")
+        if (not isinstance(full, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", full)
+                or not isinstance(origin, str) or not origin):
+            raise RuntimeError(f"refusing: missing build identity in {previous}")
+        source = Path(origin)
+        _require_reviewed_commit(source, full)
+        with tempfile.TemporaryDirectory(prefix=".staging-", dir=root_path) as scratch:
+            reviewed = Path(scratch) / "export"
+            reviewed.mkdir()
+            _export(source, full, reviewed, root_path)
+            _verify_export(previous, reviewed)
+        _switch_installs(root_path, previous, current)
+
     result = {
         "activated": str(previous),
-        "commit": build.get("commit"),
-        "short": build.get("short"),
-        "state_format": build.get("state_format"),
+        "commit": full,
+        "short": full[:12],
+        "state_format": previous_format,
         "previous": str(current) if current is not None else None,
     }
-    current_format = (read_build(current) or {}).get("state_format") if current else None
-    previous_format = build.get("state_format")
-    if (isinstance(current_format, int) and isinstance(previous_format, int)
-            and current_format != previous_format):
+    if current_format is not None and current_format != previous_format:
         result["warning"] = (
-            f"state format changes {current_format}->{previous_format} on rollback; "
-            "review state compatibility")
+            f"state format changes {current_format}->{previous_format} on rollback. "
+            "Review state compatibility.")
     return result
 
 
@@ -304,11 +352,11 @@ def status(package_root: str | Path | None = None) -> dict[str, Any]:
         repo = str(build["source_repo"])
     elif (pkg / ".git").exists():
         repo = str(pkg)
-    ref = str((build or {}).get("release_ref") or release_ref())
+    ref = "main"
     head: str | None = None
     if repo:
         try:
-            head = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+            head = _git(repo, "rev-parse", "--verify", f"{RELEASE_REF}^{{commit}}")
         except Exception:
             head = None
         if loaded is None:

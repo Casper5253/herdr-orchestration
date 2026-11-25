@@ -143,7 +143,7 @@ def _add_activate_parser(subparsers: argparse._SubParsersAction) -> None:
                           help="switch the pointer back to the previous build")
     activate.add_argument("--runtime-root", help="runtime root (default: ~/.hx-runtime)")
     activate.add_argument("--source", help="source checkout (default: this checkout or the recorded origin)")
-    activate.add_argument("--release-ref", help="protected ref the commit must be on (default: main)")
+    activate.add_argument("--release-ref", help="reviewed ref (only main is accepted)")
     activate.add_argument("--allow-state-change", action="store_true",
                           help="allow activating across a state-format change after review")
     activate.set_defaults(func=_activate)
