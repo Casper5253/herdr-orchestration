@@ -108,6 +108,12 @@ HOUSEKEEPING = (
 )
 
 _NEXT_ACTION_RE = re.compile(r"^## Next action\n(.*?)\n(?:## |\Z)", re.MULTILINE | re.DOTALL)
+_CREATOR_NEED_RE = re.compile(
+    r"\b(?:ask|confirm|check|wait|speak|talk|discuss|consult)\b[^.\n]{0,60}\bcreator\b"
+    r"|\bcreator\b[^.\n]{0,40}\b(?:confirm|decide|answer|choose|approve)\b",
+    re.IGNORECASE,
+)
+_DECLINE_RE = re.compile(r"^(?:no|do not|not now|skip|drop)\b")
 _UNSET = object()
 
 
@@ -270,37 +276,66 @@ def _chosen_card(activity: dict[str, Any], item: dict[str, Any]) -> dict[str, An
     return last
 
 
-def _answer_text(activity: dict[str, Any], item: dict[str, Any]) -> str:
-    """The creator's chosen option key and label, plus any answer comment."""
-    texts: list[str] = []
+def _has_word(text: str, word: str) -> bool:
+    return re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", text) is not None
+
+
+def _says_do_now(label: str) -> bool:
+    """True when a label asks to build or do it now rather than postpone."""
+    lowered = label.lower()
+    if _has_word(lowered, "build") or _has_word(lowered, "do"):
+        return True
+    without_not_now = re.sub(r"(?<!\w)not now(?!\w)", " ", lowered)
+    return _has_word(without_not_now, "now")
+
+
+def _phrase_set(words: list[Any]) -> set[str]:
+    return {
+        " ".join(str(raw).lower().split())
+        for raw in words
+        if isinstance(raw, str) and raw.strip()
+    }
+
+
+def _chosen_option(
+    activity: dict[str, Any], item: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The option dict the creator chose, when the answer names one."""
+    card = _chosen_card(activity, item)
+    if card is None and activity.get("command") == "resolveRequest":
+        acceptance = item.get("acceptance")
+        if isinstance(acceptance, dict):
+            card = acceptance
+    if card is None:
+        return None
+    choice = card.get("choice")
+    request = card.get("request")
+    options = request.get("options") if isinstance(request, dict) else None
+    for option in options if isinstance(options, list) else []:
+        if isinstance(option, dict) and option.get("key") == choice:
+            return option
+    return None
+
+
+def _postpones(
+    activity: dict[str, Any], item: dict[str, Any], words: list[Any]
+) -> bool:
+    """Recognize explicit declines before interpreting positive action words."""
     acceptance = item.get("acceptance")
-    if isinstance(acceptance, dict):
-        texts.append(str(acceptance.get("choice") or ""))
-        texts.append(str(acceptance.get("comment") or ""))
+    key = str(acceptance.get("choice") or "") if isinstance(acceptance, dict) else ""
     card = _chosen_card(activity, item)
     if card is not None:
-        choice = card.get("choice")
-        texts.append(str(choice or ""))
-        texts.append(str(card.get("comment") or ""))
-        request = card.get("request")
-        options = request.get("options") if isinstance(request, dict) else None
-        for option in options if isinstance(options, list) else []:
-            if isinstance(option, dict) and option.get("key") == choice:
-                texts.append(str(option.get("label") or ""))
-                break
-    return " ".join(texts)
-
-
-def _postpones(text: str, words: list[Any]) -> bool:
-    """True when the answer text names a postpone word from policy."""
-    lowered = text.lower()
-    for raw in words:
-        word = str(raw).strip().lower() if isinstance(raw, str) else ""
-        if not word:
-            continue
-        if re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", lowered):
-            return True
-    return False
+        key = str(card.get("choice") or "") or key
+    option = _chosen_option(activity, item)
+    label = str(option.get("label") or "") if option is not None else ""
+    key = " ".join(key.lower().split())
+    label = " ".join(label.lower().split())
+    if _DECLINE_RE.match(re.sub(r"[-_]+", " ", key)) or _DECLINE_RE.match(label):
+        return True
+    if label and _says_do_now(label):
+        return False
+    phrases = _phrase_set(words)
+    return (key in phrases) or (label in phrases)
 
 
 def _acted_after(activity: dict[str, Any], item: dict[str, Any]) -> bool:
@@ -331,6 +366,41 @@ def _acted_after(activity: dict[str, Any], item: dict[str, Any]) -> bool:
     return False
 
 
+def _answer_is_suppressed(
+    activity: dict[str, Any], item: dict[str, Any], postpone_words: list[Any]
+) -> bool:
+    return _acted_after(activity, item) or _postpones(activity, item, postpone_words)
+
+
+def _latest_human_activity(
+    item: dict[str, Any], answer: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    latest = answer or {}
+    latest_at = _instant(latest.get("createdAt"))
+    for field, actor_field in (("activity", "actor"), ("comments", "author")):
+        events = item.get(field)
+        for event in events if isinstance(events, list) else []:
+            if not isinstance(event, dict) or event.get(actor_field) != "human":
+                continue
+            at = _instant(event.get("createdAt"))
+            if at is not None and (latest_at is None or at > latest_at):
+                latest = event
+                latest_at = at
+    return latest
+
+
+def _item_with_history(detail: Any) -> dict[str, Any] | None:
+    item = detail.get("item") if isinstance(detail, dict) else None
+    if not isinstance(item, dict):
+        return None
+    history = {
+        field: detail[field]
+        for field in ("activity", "comments")
+        if isinstance(detail.get(field), list)
+    }
+    return {**item, **history}
+
+
 def _checkpoint_next_action(task: dict[str, Any], repo_root: Path) -> str:
     raw = task.get("checkpoint")
     path = (
@@ -347,6 +417,11 @@ def _checkpoint_next_action(task: dict[str, Any], repo_root: Path) -> str:
         return ""
     value = match.group(1).strip()
     return "" if value.lower() in EMPTY_NEXT else value
+
+
+def _needs_creator(text: str) -> bool:
+    """True when a checkpoint next action asks the creator to decide."""
+    return _CREATOR_NEED_RE.search(text) is not None
 
 
 def _follow_up_covered(task: dict[str, Any], open_tasks: list[dict[str, Any]]) -> bool:
@@ -370,7 +445,8 @@ def _rotate(
     entries: tuple[dict[str, str], ...],
     now: dt.datetime,
 ) -> list[Unit]:
-    start = now.toordinal() % len(entries) if entries else 0
+    # The fallback sources take turns, so each source advances every two days.
+    start = (now.toordinal() // 2) % len(entries) if entries else 0
     ordered = list(entries[start:]) + list(entries[:start])
     return [
         _unit(
@@ -406,6 +482,15 @@ class Sources:
         self.live = list(live or [])
         self.errors: list[str] = []
         self._open_refs: set[str] | None = None
+        config = self.policy.get("next") or {}
+        self._postpone_words = config.get("postpone_words") or []
+        names = _phrase_set(config.get("creator_names") or []) | {"creator"}
+        alternatives = "|".join(re.escape(name) for name in sorted(names))
+        self._creator_action = re.compile(
+            rf"(?:^|[;:!?\.\n]|\s[-–—]\s)\s*(?:{alternatives})"
+            r"\s+(?:edits|decides|reviews|checks|picks)\b",
+            re.IGNORECASE,
+        )
 
     def safe_units(self, method: str) -> list[Unit]:
         try:
@@ -416,9 +501,21 @@ class Sources:
                 self.errors.append(message)
             return []
 
+    def _ladder(self) -> tuple[tuple[str, str], ...]:
+        """The ladder for today, with audits and housekeeping alternating first."""
+        if self.now.toordinal() % 2 == 0:
+            return LADDER
+        rungs = list(LADDER)
+        audit = next(i for i, (name, _method) in enumerate(rungs) if name == "audit")
+        house = next(
+            i for i, (name, _method) in enumerate(rungs) if name == "housekeeping"
+        )
+        rungs[audit], rungs[house] = rungs[house], rungs[audit]
+        return tuple(rungs)
+
     def next_unit(self, weight: str | None = None, running_heavy: int = 0) -> Unit:
         at_cap = running_heavy >= self.heavy_cap()
-        for _source, method in LADDER:
+        for _source, method in self._ladder():
             units = self.safe_units(method)
             if at_cap:
                 units = [unit for unit in units if unit["weight"] == "light"]
@@ -476,7 +573,6 @@ class Sources:
     def creator_answers(self) -> list[Unit]:
         config = self.policy.get("next") or {}
         days = _int(config.get("answer_window_days"), 14)
-        postpone_words = config.get("postpone_words") or []
         since = (
             (self.now - dt.timedelta(days=days))
             .isoformat(timespec="milliseconds")
@@ -503,22 +599,25 @@ class Sources:
             detail = self.query(
                 "getItem", {"ref": ref, "include": ["comments", "activity"]}
             )
-            item = detail.get("item") if isinstance(detail, dict) else None
-            if not isinstance(item, dict):
+            item = _item_with_history(detail)
+            if item is None:
+                continue
+            title = str(item.get("title") or "")
+            if self._creator_action.search(title):
                 continue
             activity = entry.get("activity") or {}
+            if _latest_human_activity(item, activity) is not activity:
+                continue
             verdict = _answer_verdict(activity, item)
             if verdict is None or self._covered(ref, item):
                 continue
-            if _acted_after(activity, item):
-                continue
-            if _postpones(_answer_text(activity, item), postpone_words):
+            if _answer_is_suppressed(activity, item, self._postpone_words):
                 continue
             units.append(
                 _unit(
                     "creator-answer",
                     ref,
-                    str(item.get("title") or ""),
+                    title,
                     "light",
                     _worker_for("creator-answer", "light"),
                     f"creator {verdict}; answer starts light: record it, then plan "
@@ -554,9 +653,9 @@ class Sources:
         units: list[Unit] = []
         for summary in rows:
             ref = summary["ref"]
-            detail = self.query("getItem", {"ref": ref})
-            item = detail.get("item") if isinstance(detail, dict) else None
-            if not isinstance(item, dict):
+            detail = self.query("getItem", {"ref": ref, "include": ["comments", "activity"]})
+            item = _item_with_history(detail)
+            if item is None:
                 continue
             if item.get("status") not in {"todo", "in_progress"}:
                 continue
@@ -572,12 +671,20 @@ class Sources:
                 continue
             if jotarium.live_worker(item.get("assignee"), self.live) is not None:
                 continue
+            title = str(item.get("title") or summary.get("title") or "")
+            if self._creator_action.search(title):
+                continue
+            activity = _latest_human_activity(item)
+            if _answer_verdict(activity, item) and _answer_is_suppressed(
+                activity, item, self._postpone_words
+            ):
+                continue
             weight = _item_weight(item)
             units.append(
                 _unit(
                     "open-item",
                     ref,
-                    str(item.get("title") or summary.get("title") or ""),
+                    title,
                     weight,
                     _worker_for("open-item", weight),
                     f"{item.get('status')} item with no pending request and no owner",
@@ -601,6 +708,8 @@ class Sources:
                 continue
             text = _checkpoint_next_action(task, Path(self.ledger.repo_root))
             if not text:
+                continue
+            if _needs_creator(text) or self._creator_action.search(text):
                 continue
             if _follow_up_covered(task, open_tasks):
                 continue

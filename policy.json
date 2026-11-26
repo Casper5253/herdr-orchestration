@@ -122,7 +122,8 @@
     "free_memory_gb_threshold": 6.0,
     "answer_window_days": 14,
     "postpone_words": ["after", "later", "park", "not now", "wait", "keep", "no"],
-    "note": "I-132 / Q-1014. One heavy unit runs at a time; a second is allowed only when hx usage reads at least free_memory_gb_threshold GiB free. At the cap hx next returns light units only. answer_window_days bounds how far back creator answers are looked for. postpone_words are matched as whole words in the creator's chosen option key or label and in the answer comment; a match means the answer parked the item and hx next yields no unit for it. A creator answer the lead already acted on (an agent comment or setStatus after it) is not work either."
+    "creator_names": ["Casper", "creator"],
+    "note": "I-132 / Q-1014. One heavy unit runs at a time. A second is allowed when free memory meets free_memory_gb_threshold. At the cap hx next returns light units only. answer_window_days limits suggestions from the creator-answer source. Open items stay suppressed while their latest human activity is an answer that parked the work or that an agent already acted on. Explicit declines are always treated as postponements. Configured postpone_words match the whole chosen key or label. creator_names identifies explicit creator actions at the start of a clause."
   },
   "say": {
     "work_ttl_seconds": 86400,

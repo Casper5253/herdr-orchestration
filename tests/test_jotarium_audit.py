@@ -552,7 +552,32 @@ def test_a_refused_query_never_echoes_the_token(monkeypatch: pytest.MonkeyPatch)
     with pytest.raises(jotarium.JotariumError) as caught:
         client.query("listItems", {})
     assert "top-secret-token" not in str(caught.value)
-    assert "forbidden" in str(caught.value)
+    assert "forbidden" not in str(caught.value)
+    assert "listItems" in str(caught.value)
+
+
+def test_an_http_error_does_not_echo_the_server_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise jotarium.urllib.error.HTTPError(request.full_url, 418, "teapot", {}, None)
+
+    monkeypatch.setattr(jotarium.urllib.request, "urlopen", fake_urlopen)
+    client = jotarium.JotariumClient("http://127.0.0.1:4180", "secret-token")
+    with pytest.raises(jotarium.JotariumError) as caught:
+        client.query("listItems", {})
+    assert "418" not in str(caught.value)
+    assert "listItems" in str(caught.value)
+
+
+def test_an_unreachable_jotarium_does_not_echo_the_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise jotarium.urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(jotarium.urllib.request, "urlopen", fake_urlopen)
+    client = jotarium.JotariumClient("http://127.0.0.1:4180", "secret-token")
+    with pytest.raises(jotarium.JotariumError) as caught:
+        client.query("listItems", {})
+    assert "127.0.0.1" not in str(caught.value)
+    assert "listItems" in str(caught.value)
 
 
 def _patch_team(monkeypatch: pytest.MonkeyPatch, live: list[dict], tasks: list[dict]) -> None:
