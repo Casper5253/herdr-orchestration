@@ -30,7 +30,7 @@ def _policy() -> dict:
         "claude": {"strong_model": "sonnet"},
         "codex": {"strong_model": "gpt-6.1-sol"},
         "persistent_opencode_model": "deepseek-v4.1-flash",
-        "devin": {"models": {"medium": "swe-2-high"}},
+        "devin": {"models": {"medium": "swe-2-1-xhigh"}},
         "context_limits": {"deepseek-v4.1-flash": 200000},
     }
 
@@ -57,7 +57,7 @@ def _roots(tmp_path: Path) -> dict:
     pane.write_text(
         json.dumps(
             {
-                "agent": {"model": "swe-2-high"},
+                "agent": {"model": "swe-2-1-xhigh"},
                 "permissions": {
                     "allow": [],
                     "deny": [
@@ -443,34 +443,40 @@ def _devin_member(created_ms: int | None = None, sid: str = "devin-pane:t9") -> 
     return member
 
 
+def test_devin_model_id_normalises_swe21_labels():
+    """The live pane footer reads "SWE-2.1 XHigh"; its label maps to the policy id."""
+    assert doctor._devin_model_id("SWE-2.1 XHigh") == "swe-2-1-xhigh"
+    assert doctor._devin_model_id("SWE-2.1 Max") == "swe-2-1-max"
+
+
 def test_member_model_devin_reads_the_export_transcript(tmp_path):
-    """The pane's --export transcript records agent.model_name ("SWE-2 High")."""
+    """The pane's --export transcript records agent.model_name ("SWE-2.1 XHigh")."""
     roots = _devin_pane(tmp_path, transcript={
         "session_id": "fierce-sprout",
-        "agent": {"model_name": "SWE-2 High"},
+        "agent": {"model_name": "SWE-2.1 XHigh"},
         "steps": [],
     })
     now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
     model = doctor._member_model(_devin_member(created_ms=1), roots, _policy(), now)
     assert model["status"] == "ok"
-    assert model["observed"] == "swe-2-high"
+    assert model["observed"] == "swe-2-1-xhigh"
     assert "transcript" in model["source"]
 
 
 def test_member_model_devin_stale_generation_falls_back_to_the_footer(tmp_path, monkeypatch):
     """An export older than this terminal's created_ms is a previous generation:
-    its model must never stand in for the live pane's (Codex's stale-SWE-2-High case)."""
+    its model must never stand in for the live pane's (Codex's stale-SWE-2.1-XHigh case)."""
     now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
     created_ms = int(now.timestamp() * 1000)
     roots = _devin_pane(tmp_path, transcript={
         "session_id": "obsolete-session",
-        "agent": {"model_name": "SWE-2 High"},
+        "agent": {"model_name": "SWE-2.1 XHigh"},
         "steps": [],
     }, transcript_age_ms=created_ms - 60000)
     monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
-        "SWE-2 Max · bypass                  Context: 118k / 262k tokens (45%)\n")
+        "SWE-2.1 Max · bypass                  Context: 118k / 262k tokens (45%)\n")
     model = doctor._member_model(_devin_member(created_ms=created_ms), roots, _policy(), now)
-    assert model["observed"] == "swe-2-max"
+    assert model["observed"] == "swe-2-1-max"
     assert "footer" in model["source"]
 
 
@@ -478,22 +484,22 @@ def test_member_model_devin_transcript_session_mismatch_falls_back(tmp_path, mon
     """A transcript naming a different bound session is not this pane's model."""
     roots = _devin_pane(tmp_path, transcript={
         "session_id": "ses-old",
-        "agent": {"model_name": "SWE-2 Max"},
+        "agent": {"model_name": "SWE-2.1 Max"},
         "steps": [],
     })
     monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
-        "SWE-2 High · bypass                  Context: 118k / 262k tokens (45%)\n")
+        "SWE-2.1 XHigh · bypass                  Context: 118k / 262k tokens (45%)\n")
     now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
     model = doctor._member_model(
         _devin_member(created_ms=1, sid="ses-live"), roots, _policy(), now)
-    assert model["observed"] == "swe-2-high"
+    assert model["observed"] == "swe-2-1-xhigh"
     assert "footer" in model["source"]
 
 
 @pytest.mark.parametrize("transcript", [
     {"agent": ["malformed"]},
     {"agent": "malformed"},
-    {"session_id": 7, "agent": {"model_name": "SWE-2 High"}},
+    {"session_id": 7, "agent": {"model_name": "SWE-2.1 XHigh"}},
     ["not", "a", "dict"],
     "just a string",
 ])
@@ -510,14 +516,14 @@ def test_member_model_devin_malformed_transcript_is_unknown_never_a_crash(
 
 
 def test_member_model_devin_falls_back_to_the_footer_label(tmp_path, monkeypatch):
-    """No transcript: the footer's `SWE-2 Max · …` label normalizes to the id."""
+    """No transcript: the footer's `SWE-2.1 Max · …` label normalizes to the id."""
     roots = _devin_pane(tmp_path)
     monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
-        "SWE-2 Max · bypass                  Context: 118k / 262k tokens (45%)\n")
+        "SWE-2.1 Max · bypass                  Context: 118k / 262k tokens (45%)\n")
     now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
     model = doctor._member_model(_devin_member(), roots, _policy(), now)
     assert model["status"] == "ok"
-    assert model["observed"] == "swe-2-max"
+    assert model["observed"] == "swe-2-1-max"
     assert "footer" in model["source"]
 
 
@@ -525,11 +531,11 @@ def test_member_model_devin_footer_label_on_the_narrow_two_line_footer(tmp_path,
     """The narrow footer carries the label on the model line above a bare usage line."""
     roots = _devin_pane(tmp_path)
     monkeypatch.setattr(doctor.context, "_herdr_read", lambda name, lines=200:
-        "SWE-2 High · bypass\n44k / 262k (16%)\n")
+        "SWE-2.1 XHigh · bypass\n44k / 262k (16%)\n")
     now = doctor.dt.datetime.now(doctor.dt.timezone.utc)
     model = doctor._member_model(_devin_member(), roots, _policy(), now)
     assert model["status"] == "ok"
-    assert model["observed"] == "swe-2-high"
+    assert model["observed"] == "swe-2-1-xhigh"
     assert "footer" in model["source"]
 
 

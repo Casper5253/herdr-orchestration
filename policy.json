@@ -88,10 +88,10 @@
       "devin",
       "opencode"
     ],
-    "until": "2026-11-30T10:00:00Z",
+    "until": "2026-12-10T10:00:00Z",
     "then": "opencode",
     "window_seconds": 86400,
-    "note": "2026-11-06 creator correction: leverage Devin and OpenCode equally while free SWE-2 lasts (Devin is free this month and disappears next month). Both idle -> the worker with fewer decision lines in the recent .hx/routing.jsonl wins, so over a day the split is about 50/50; one busy or unavailable -> the other. After until, OpenCode on the ladder (deepseek-v4.1-flash first) is the default and Devin is not routed."
+    "note": "2026-11-26 creator correction: Devin moved to SWE-2.1, which is free for about two weeks; leverage Devin SWE-2.1 and OpenCode equally until 2026-12-10T10:00Z. Both idle -> the worker with fewer decision lines in the recent .hx/routing.jsonl wins, so over a day the split is about 50/50; one busy or unavailable -> the other. After until, OpenCode on the ladder (deepseek-v4.1-flash first) is the default and Devin is not routed."
   },
   "ladders": {
     "economy": [
@@ -164,7 +164,7 @@
   },
   "opencode_variants_note": "Declared --variant choices per model from opencode models --verbose (2026-10-16). glm-5.3-flash ignores an effort that is not one of these; route/ocrun must not send it.",
   "excluded_models": {
-    "kimi-k2.7-code": "Creator, 19 Nov 2026: 'kimi? nono. we use deepseek. If u want kimi, use devin max'. Strong work climbs to Devin swe-2-max (hx route), never to another OpenCode model.",
+    "kimi-k2.7-code": "Creator, 19 Nov 2026: 'kimi? nono. we use deepseek. If u want kimi, use devin max'. Strong work climbs to Devin swe-2-1-max (hx route), never to another OpenCode model.",
     "deepseek-v4-pro": "untested; Global regions are now enabled (2026-11-06), benchmark before use",
     "minimax-m3": "Exhausts its fixed 32K reasoning budget with ~no output on multi-file edits after ~35K context: 4 of 6 real tasks on 2026-10-16 (docs/FINDINGS.md 7, 9). No variants to lower it."
   },
@@ -180,11 +180,10 @@
     "gpt-6-luna": 200000,
     "gpt-6.2-sol": 200000,
     "gpt-6.1-sol": 200000,
-    "swe-2-medium": 200000,
-    "swe-2-high": 200000,
-    "swe-2-max": 200000
+    "swe-2-1-xhigh": 200000,
+    "swe-2-1-max": 200000
   },
-  "context_limits_note": "Effective worker limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code). DeepSeek v4.1 Flash native context is 1000000 per OpenCode models.json opencode-go metadata (models.dev, verified 2026-11-08); its effective budget follows the same 200K cap. gpt-6.1-sol native context is 475000 measured in the live usage event model_context_window (docs/audit/codex.md:52; a cached record read 500000). The swe-2 ids show a 262144 denominator on the dev-devin pane footer (docs/audit/devin.md:67). Both take the same 200K effective cap.",
+  "context_limits_note": "Effective worker limits for compaction decisions, capped at 200K: every call re-sends the context as cached input, so cost pressure arrives long before the native window (opencode models --verbose, 2026-10-16: 1M for most, 262144 for kimi-k2.7-code). DeepSeek v4.1 Flash native context is 1000000 per OpenCode models.json opencode-go metadata (models.dev, verified 2026-11-08); its effective budget follows the same 200K cap. gpt-6.1-sol native context is 475000 measured in the live usage event model_context_window (docs/audit/codex.md:52; a cached record read 500000). The swe-2-1 ids show a 262144 native window in devin models list (26 Nov 2026). Both take the same 200K effective cap.",
   "context": {
     "boundary_threshold": 0.4,
     "pressure_threshold": 0.75,
@@ -211,26 +210,25 @@
       "test"
     ],
     "models": {
-      "low": "swe-2-high",
-      "medium": "swe-2-high",
-      "high": "swe-2-max",
-      "max": "swe-2-max"
+      "low": "swe-2-1-xhigh",
+      "medium": "swe-2-1-xhigh",
+      "high": "swe-2-1-xhigh",
+      "max": "swe-2-1-max"
     },
     "allowed_models": [
-      "swe-2-medium",
-      "swe-2-high",
-      "swe-2-max"
+      "swe-2-1-xhigh",
+      "swe-2-1-max"
     ],
     "permission_mode": "accept-edits",
     "max_concurrent": 2,
     "promo": {
-      "ends_at": "2026-11-30T10:00:00Z",
-      "verified_at": "2026-10-31",
-      "source": "https://docs.devin.ai/desktop/models: 'SWE-2 is free for self-serve plans in Devin Desktop and Devin CLI through November 30, 2026; it does not apply to Devin cloud sessions.' devin models list tags swe-2-medium/high/max cost_tier Free (Devin Pro, CLI 3000.11.234).",
-      "note": "No timezone is published, so free routing ends at the end of 30 Nov in UTC+14 (the earliest reading). After that, or if the live model list stops tagging the model Free, hx refuses Devin runs. Extending ends_at needs renewed pricing verification and the user's approval."
+      "ends_at": "2026-12-10T10:00:00Z",
+      "verified_at": "2026-11-26",
+      "source": "Creator, 26 Nov 2026: 'devin has swapped to SWE-2.1 since that model is free for the next 2 weeks. use xhigh for everything and max for deeper thinking and review tasks'. devin models list on Devin CLI v3000.11.234 tags swe-2-1-xhigh and swe-2-1-max cost_tier Free (Lightning variants of SWE-2.1 are paid).",
+      "note": "The creator said two weeks from 26 Nov 2026, so free routing ends at 2026-12-10T10:00:00Z. After that, or if the live model list stops tagging the model Free, hx refuses Devin runs. Extending ends_at needs renewed pricing verification and the user's approval."
     },
-    "note": "2026-11-06 creator correction: leverage free Devin SWE-2 and OpenCode equally while the promotion lasts, then OpenCode with deepseek-v4.1-flash first is the default and Devin is not routed. routing_balance holds the rule; Lightning variants are paid and never allowed. models maps hx effort to a SWE-2 id: high by default, max for hard work; dispatch swe-2-medium by hand when latency matters.",
-    "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-high, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees.",
+    "note": "2026-11-26 creator correction: Devin moved to SWE-2.1, free for about two weeks, so leverage Devin SWE-2.1 and OpenCode equally while the promotion lasts, then OpenCode with deepseek-v4.1-flash first is the default and Devin is not routed. routing_balance holds the rule; Lightning variants are paid and never allowed. models maps effort low/medium/high to swe-2-1-xhigh and max to swe-2-1-max (xhigh for everything, max for deeper thinking and review).",
+    "max_concurrent_note": "2026-10-31: two concurrent runs measured (separate repos, both ok on swe-2-1-xhigh, no throttling); a third was refused busy. Raise only after measuring; parallel runs still need disjoint files or worktrees.",
     "compact_note": "2026-11-09 live-verified on the worker pane: /compact drops the footer 63% to 7% and keeps the session's brief; it needs a second Enter when the command menu stages it, which hx send_slash now handles. /compact is the recovery command for every provider; /clear stays a manual reset through context.reset_commands."
   },
   "profiles": {

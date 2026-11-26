@@ -21,7 +21,7 @@ Detected silent failures and their classification (shared by both modes):
 - final step finish reason ``length`` with zero output tokens -> ``capability``
   (reasoning budget exhausted, no output).
 
-``--worker devin`` runs ``devin -p`` on a pinned SWE-2 id instead (both
+``--worker devin`` runs ``devin -p`` on a pinned SWE-2.1 id instead (both
 modes); its guards, export checks and failure kinds live in ``hx.devin``.
 
 Every run appends one outcome line to ``<repo>/.hx/routing.jsonl``.
@@ -1371,7 +1371,7 @@ def run_devin(
     models_lister=None,
     profile: str | None = None,
 ) -> dict[str, Any]:
-    """One Devin SWE-2 run; fails closed on any policy, price or model doubt."""
+    """One Devin SWE-2.1 run; fails closed on any policy, price or model doubt."""
     from hx.usage import load_policy
 
     policy = policy if policy is not None else load_policy()
@@ -1740,7 +1740,7 @@ def main(argv: list[str] | None = None) -> int:
         "--worker",
         default="opencode",
         choices=["opencode", "codex", "devin"],
-        help="which worker runs the task (codex requires visible mode; devin runs SWE-2 only)",
+        help="which worker runs the task (codex requires visible mode; devin runs SWE-2.1 only)",
     )
     parser.add_argument("--cwd", default=None, help="directory to run in")
     parser.add_argument("--timeout", type=float, default=1800.0)

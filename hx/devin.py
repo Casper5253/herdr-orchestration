@@ -1,8 +1,8 @@
-"""hx.devin: Devin CLI (Cognition SWE-2) as a one-off local worker.
+"""hx.devin: Devin CLI (Cognition SWE-2.1) as a one-off local worker.
 
-Facts measured on Devin CLI 3000.11.234 (2026-10-31, docs/audit/devin.md):
+Facts measured on Devin CLI 3000.11.234 (2026-11-26, docs/audit/devin.md):
 
-- Effort is part of the model id: ``swe-2-medium``, ``swe-2-high``, ``swe-2-max``
+- Effort is part of the model id: ``swe-2-1-xhigh``, ``swe-2-1-max``
   (``devin models list --format json`` tags them ``cost_tier: Free``). The
   ``-lightning`` variants are billed ("High cost") and never allowed here.
 - ``devin -p`` exits 0 even when a tool call was rejected: the run just stops.
@@ -13,11 +13,11 @@ Facts measured on Devin CLI 3000.11.234 (2026-10-31, docs/audit/devin.md):
   into it, so each run gets its own copy of ``team/devin-worker.config.json``.
 - Print mode ignores the config's ``permission_mode``; it is passed as a flag.
 
-The SWE-2 promotion ("free for self-serve plans in Devin Desktop and Devin CLI
-through November 30, 2026") is a time-limited price, not a contract. Free
-routing stops at ``policy.devin.promo.ends_at`` (end of 30 Nov in UTC+14, the
-earliest reading) and whenever the live model list stops tagging the model
-Free. Either way the worker fails closed and hx routes to the other pools.
+The SWE-2.1 promotion (creator, 26 Nov 2026: free "for the next 2 weeks") is
+a time-limited price, not a contract. Free routing stops at
+``policy.devin.promo.ends_at`` (2026-12-10T10:00:00Z) and whenever the live
+model list stops tagging the model Free. Either way the worker fails closed
+and hx routes to the other pools.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from hx import host, paths, spawn
 PROVIDER = "devin"
 FREE_TIER = "Free"
 DEFAULT_KINDS = ("routine", "investigate", "feature", "debug", "refactor", "test")
-DEFAULT_MODELS = {"low": "swe-2-high", "medium": "swe-2-high", "high": "swe-2-max", "max": "swe-2-max"}
+DEFAULT_MODELS = {"low": "swe-2-1-xhigh", "medium": "swe-2-1-xhigh", "high": "swe-2-1-xhigh", "max": "swe-2-1-max"}
 KNOWN_TOOLS = ("webfetch", "websearch", "browser", "notebook", "ask_user", "upload_secrets")
 CONFIG_FILE = "devin-config.json"
 EXPORT_FILE = "export.json"
@@ -121,7 +121,7 @@ def _parse_ts(text: Any) -> datetime.datetime | None:
 
 
 def promo_status(policy: dict[str, Any], now: datetime.datetime | None = None) -> dict[str, Any]:
-    """Whether free SWE-2 routing is allowed right now.
+    """Whether free SWE-2.1 routing is allowed right now.
 
     A missing or unparseable end date counts as expired: renewed pricing
     verification and the user's approval are needed to set a new one.
@@ -135,7 +135,7 @@ def promo_status(policy: dict[str, Any], now: datetime.datetime | None = None) -
         return {
             "active": False,
             "ends_at": ends_at.isoformat(),
-            "reason": "SWE-2 promotion ended; re-verify pricing and get the user's approval before re-enabling",
+            "reason": "SWE-2.1 promotion ended; re-verify pricing and get the user's approval before re-enabling",
         }
     return {
         "active": True,
@@ -699,7 +699,7 @@ def _usage(
             reason = f"{len(slots)}/{max_concurrent} run slots in use"
         status = "busy"
     else:
-        status, reason = "available", "free SWE-2 promotion active"
+        status, reason = "available", "free SWE-2.1 promotion active"
     return {
         "provider": PROVIDER,
         "status": status,

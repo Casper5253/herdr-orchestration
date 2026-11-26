@@ -12,7 +12,7 @@ import pytest
 from hx import devin as devin_mod
 from hx import ocrun
 
-MODEL = "swe-2-high"
+MODEL = "swe-2-1-xhigh"
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +24,7 @@ def _export_doc(model: str) -> dict:
     """A small synthetic ATIF export: one exec step plus a final answer."""
     return {
         "session_id": "ses_devin_1",
-        "agent": {"model_name": "SWE-2 High", "extra": {"permission_mode": "accept-edits"}},
+        "agent": {"model_name": "SWE-2.1 XHigh", "extra": {"permission_mode": "accept-edits"}},
         "steps": [
             {
                 "source": "agent",
@@ -66,7 +66,7 @@ def _export_doc(model: str) -> dict:
 
 def _free_lister(bin_path):  # noqa: ARG001
     return (
-        {m: {"model_uid": m, "cost_tier": "Free"} for m in ("swe-2-medium", "swe-2-high", "swe-2-max")},
+        {m: {"model_uid": m, "cost_tier": "Free"} for m in ("swe-2-1-xhigh", "swe-2-1-max")},
         None,
     )
 
@@ -86,7 +86,7 @@ def devin_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, li
             "worker_config": str(config),
             "kinds": list(devin_mod.DEFAULT_KINDS),
             "models": dict(devin_mod.DEFAULT_MODELS),
-            "allowed_models": ["swe-2-medium", "swe-2-high", "swe-2-max"],
+            "allowed_models": ["swe-2-1-xhigh", "swe-2-1-max"],
             "permission_mode": "accept-edits",
             "max_concurrent": 1,
             "promo": {"ends_at": "2099-01-01T00:00:00Z"},
@@ -126,7 +126,7 @@ def test_devin_headless_ok(devin_run: tuple[dict, list], tmp_path: Path) -> None
     assert result["worker"] == "devin"
     assert result["provider"] == "devin"
     assert result["model"] == MODEL
-    assert result["effort"] == "high"
+    assert result["effort"] == "xhigh"
     assert result["models_seen"] == [MODEL]
     assert result["session_id"] == "ses_devin_1"
     assert result["final_message"] == "[team report from ocrun-devin-dv-ok]\ndone: wrote the tests"
@@ -228,7 +228,7 @@ def test_devin_scrubs_inherited_env(
     devin_run: tuple[dict, list], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     policy, calls = devin_run
-    monkeypatch.setenv("DEVIN_MODEL", "swe-2-max")
+    monkeypatch.setenv("DEVIN_MODEL", "swe-2-1-max")
     monkeypatch.setenv("DEVIN_PERMISSION_MODE", "yolo")
     monkeypatch.setenv("HC_TERMINAL_ID", "t2x")
     monkeypatch.setenv("HERDR_PANE_ID", "lead-pane")

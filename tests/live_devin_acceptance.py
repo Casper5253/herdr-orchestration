@@ -1,13 +1,13 @@
-"""Live acceptance checks for the Devin SWE-2 worker (real CLI, real model).
+"""Live acceptance checks for the Devin SWE-2.1 worker (real CLI, real model).
 
     python -I tests/live_devin_acceptance.py [--skip-live]
 
 Builds a disposable git repo under a temp dir and checks, in order: CLI
-discoverable and logged in, pinned SWE-2 ids offered as Free, paid and
-non-SWE-2 models refused before launch, an ended promotion refused by ocrun
-and skipped by route, a small task implemented and verified on swe-2-high,
+discoverable and logged in, pinned SWE-2.1 ids offered as Free, paid and
+non-SWE-2.1 models refused before launch, an ended promotion refused by ocrun
+and skipped by route, a small task implemented and verified on swe-2-1-xhigh,
 a denied git push classified as a permission failure, and a timeout that
-kills the run. Live runs use SWE-2 only (free during the promotion) and take
+kills the run. Live runs use SWE-2.1 only (free during the promotion) and take
 about a minute. Prints one PASS/FAIL line per check; exit 1 on any FAIL.
 """
 
@@ -67,10 +67,10 @@ def main() -> int:
         repo = scratch_repo(Path(tmp))
         log = Path(tmp) / "routing.jsonl"
 
-        def run(prompt: str, model: str = "swe-2-high", pol=None, timeout: float = 600, title=None):
+        def run(prompt: str, model: str = "swe-2-1-xhigh", pol=None, timeout: float = 600, title=None):
             return ocrun.run_devin(prompt, model, repo, timeout=timeout, title=title, routing_log=log, policy=pol or policy)
 
-        for model in ("swe-2-high-lightning", "swe-1-7", "claude-opus-5-5"):
+        for model in ("swe-2-1-xhigh-lightning", "swe-1-7", "claude-opus-5-5"):
             result = run("say hi", model=model)
             check(f"{model} refused before launch", result["failure"]["kind"] == "policy" and result["latency_s"] < 5)
 
@@ -96,17 +96,17 @@ def main() -> int:
         )
         verify = subprocess.run([sys.executable, "test_calc.py"], cwd=repo, capture_output=True, text=True)
         check("small task ok", result["ok"], json.dumps(result["failure"]))
-        check("model verified swe-2-high", result["models_seen"] == ["swe-2-high"], str(result["models_seen"]))
+        check("model verified swe-2-1-xhigh", result["models_seen"] == ["swe-2-1-xhigh"], str(result["models_seen"]))
         check("lead's own test run passes", verify.returncode == 0, verify.stdout.strip() or verify.stderr.strip())
         check("final message returned", bool(result.get("final_message")))
 
-        result = run("Run exactly: git push origin master. Report the result.", model="swe-2-medium", title="deny")
+        result = run("Run exactly: git push origin master. Report the result.", model="swe-2-1-xhigh", title="deny")
         failure = result["failure"] or {}
         check("git push denied and classified", "permission denied" in failure.get("reason", ""), json.dumps(failure))
 
         result = run(
             'Run: python -c "import time; time.sleep(300)" and then report done.',
-            model="swe-2-medium",
+            model="swe-2-1-xhigh",
             timeout=30,
             title="timeout",
         )

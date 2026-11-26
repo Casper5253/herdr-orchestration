@@ -39,13 +39,13 @@ def policy() -> dict:
             "enabled": True,
             "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test"],
             "models": {
-                "low": "swe-2-high",
-                "medium": "swe-2-high",
-                "high": "swe-2-max",
-                "max": "swe-2-max",
+                "low": "swe-2-1-xhigh",
+                "medium": "swe-2-1-xhigh",
+                "high": "swe-2-1-xhigh",
+                "max": "swe-2-1-max",
             },
-            "allowed_models": ["swe-2-medium", "swe-2-high", "swe-2-max"],
-            "promo": {"ends_at": "2026-11-30T10:00:00Z"},
+            "allowed_models": ["swe-2-1-xhigh", "swe-2-1-max"],
+            "promo": {"ends_at": "2026-12-10T10:00:00Z"},
         },
     }
 
@@ -106,7 +106,7 @@ def _make_usage(devin_status: str | None = "available") -> dict:
     if devin_status is not None:
         usage["devin"] = {
             "status": devin_status,
-            "promo": {"ends_at": "2026-11-30T10:00:00Z"},
+            "promo": {"ends_at": "2026-12-10T10:00:00Z"},
         }
     return usage
 
@@ -139,17 +139,17 @@ def _task(**overrides) -> dict:
     ],
 )
 def test_implementation_kinds_go_to_devin(policy: dict, kind: str, effort: str) -> None:
-    """With devin first in routing_order: low/medium -> swe-2-high."""
+    """With devin first in routing_order: low/medium -> swe-2-1-xhigh."""
     result = route(_task(kind=kind), _make_usage(), policy)
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-high"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["effort"] == effort
     assert result["method"] == "ocrun-devin"
     assert "pool:devin" in result["stages"]
 
 
-def test_high_effort_maps_to_swe2_max(policy: dict) -> None:
-    """A capability failure escalates effort medium -> high -> swe-2-max on devin."""
+def test_high_effort_maps_to_swe21_xhigh(policy: dict) -> None:
+    """A capability failure escalates effort medium -> high -> swe-2-1-xhigh on devin."""
     prev = {
         "worker": "opencode",
         "model": "minimax-m3",
@@ -160,7 +160,7 @@ def test_high_effort_maps_to_swe2_max(policy: dict) -> None:
     task = _task(attempt=2, last_failure="capability", prev=prev)
     result = route(task, _make_usage(), policy)
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-max"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["effort"] == "high"
     assert result["method"] == "ocrun-devin"
 
@@ -206,11 +206,11 @@ def test_devin_unavailable_falls_through_to_opencode(
     assert stage in result["stages"]
 
 
-def test_capability_failure_on_swe2_max_goes_codex_strong(policy: dict) -> None:
-    """A capability failure on the strongest SWE-2 model escalates to Codex."""
+def test_capability_failure_on_swe21_max_goes_codex_strong(policy: dict) -> None:
+    """A capability failure on the strongest SWE-2.1 model escalates to Codex."""
     prev = {
         "worker": "devin",
-        "model": "swe-2-max",
+        "model": "swe-2-1-max",
         "effort": "high",
         "method": "ocrun-devin",
         "capability_failures": 0,
@@ -224,11 +224,11 @@ def test_capability_failure_on_swe2_max_goes_codex_strong(policy: dict) -> None:
     assert "devin:capability-at-max" in result["stages"]
 
 
-def test_capability_failure_on_swe2_high_retries_devin_stronger(policy: dict) -> None:
+def test_capability_failure_on_swe21_xhigh_retries_devin_stronger(policy: dict) -> None:
     """A capability failure below the strongest model retries devin one step up."""
     prev = {
         "worker": "devin",
-        "model": "swe-2-high",
+        "model": "swe-2-1-xhigh",
         "effort": "medium",
         "method": "ocrun-devin",
         "capability_failures": 0,
@@ -236,7 +236,7 @@ def test_capability_failure_on_swe2_high_retries_devin_stronger(policy: dict) ->
     task = _task(attempt=2, last_failure="capability", prev=prev)
     result = route(task, _make_usage(), policy)
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-max"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["effort"] == "high"
     assert result["method"] == "ocrun-devin"
 
@@ -245,7 +245,7 @@ def test_fix_input_retry_keeps_devin(policy: dict) -> None:
     """missing-context reuses the prior devin decision unchanged."""
     prev = {
         "worker": "devin",
-        "model": "swe-2-high",
+        "model": "swe-2-1-xhigh",
         "effort": "medium",
         "method": "ocrun-devin",
         "capability_failures": 0,
@@ -253,7 +253,7 @@ def test_fix_input_retry_keeps_devin(policy: dict) -> None:
     task = _task(attempt=2, last_failure="missing-context", prev=prev)
     result = route(task, _make_usage(), policy)
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-high"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["effort"] == "medium"
     assert result["method"] == "ocrun-devin"
     assert "fix the input" in result["reason"].lower()
@@ -263,7 +263,7 @@ def test_fix_input_retry_reselects_when_devin_exhausted(policy: dict) -> None:
     """_prev_model_exhausted treats a devin status outside available/busy as gone."""
     prev = {
         "worker": "devin",
-        "model": "swe-2-high",
+        "model": "swe-2-1-xhigh",
         "effort": "medium",
         "method": "ocrun-devin",
         "capability_failures": 0,
@@ -279,7 +279,7 @@ def test_fix_input_retry_reselects_when_devin_busy(policy: dict) -> None:
     counts anything but available as gone, so the task re-dispatches."""
     prev = {
         "worker": "devin",
-        "model": "swe-2-high",
+        "model": "swe-2-1-xhigh",
         "effort": "medium",
         "method": "ocrun-devin",
         "capability_failures": 0,
@@ -319,7 +319,7 @@ def test_devin_chosen_when_opencode_exhausted(policy: dict) -> None:
     usage["opencode"]["pool"]["windows"]["7d"]["utilisation"] = 0.9
     result = route(_task(kind="feature"), usage, _with_order(policy, ["opencode", "devin"]))
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-high"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["method"] == "ocrun-devin"
     assert "pool:opencode" in result["stages"]
 
@@ -336,7 +336,7 @@ def test_routing_order_read_from_policy(policy: dict) -> None:
     assert opencode_first["worker"] == "opencode"
     assert opencode_first["model"] == "deepseek-v4.1-flash"
     assert devin_first["worker"] == "devin"
-    assert devin_first["model"] == "swe-2-high"
+    assert devin_first["model"] == "swe-2-1-xhigh"
 
 
 # ---------- routing_balance: Devin and OpenCode equally until the promo ends ----------
@@ -376,7 +376,7 @@ def test_balance_both_idle_more_opencode_routes_picks_devin(policy: dict) -> Non
     usage = _with_counts(_make_usage(), devin=1, opencode=5)
     result = route(_task(kind="feature"), usage, _with_balance(policy))
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-high"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["method"] == "ocrun-devin"
     assert "fewer recent routes" in result["reason"]
     assert "devin" in result["reason"]
@@ -398,7 +398,7 @@ def test_balance_opencode_unavailable_picks_devin(policy: dict) -> None:
     usage = _with_counts(usage, devin=9, opencode=0)
     result = route(_task(kind="feature"), usage, _with_balance(policy))
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-high"
+    assert result["model"] == "swe-2-1-xhigh"
     assert "opencode busy or unavailable" in result["reason"]
 
 
@@ -440,7 +440,7 @@ def test_balance_keeps_capability_escalation_to_codex(policy: dict) -> None:
     """Balancing does not swallow the SWE-2 max capability escalation."""
     prev = {
         "worker": "devin",
-        "model": "swe-2-max",
+        "model": "swe-2-1-max",
         "effort": "high",
         "method": "ocrun-devin",
         "capability_failures": 0,
@@ -454,17 +454,17 @@ def test_balance_keeps_capability_escalation_to_codex(policy: dict) -> None:
 
 
 def test_balance_keeps_capability_retry_on_devin_before_max(policy: dict) -> None:
-    prev = {"worker": "devin", "model": "swe-2-high", "effort": "medium"}
+    prev = {"worker": "devin", "model": "swe-2-1-xhigh", "effort": "medium"}
     result = route(
         _task(kind="feature", attempt=1, last_failure="capability", prev=prev),
         _with_counts(_make_usage(), devin=9, opencode=0),
         _with_balance(policy),
     )
-    assert (result["worker"], result["model"]) == ("devin", "swe-2-max")
+    assert (result["worker"], result["model"]) == ("devin", "swe-2-1-xhigh")
 
 
 def test_balance_end_blocks_input_retry_with_pre_cutoff_snapshot(policy: dict) -> None:
-    prev = {"worker": "devin", "model": "swe-2-high", "effort": "medium"}
+    prev = {"worker": "devin", "model": "swe-2-1-xhigh", "effort": "medium"}
     result = route(
         _task(kind="feature", attempt=1, last_failure="tool", prev=prev),
         _make_usage(),
@@ -495,12 +495,12 @@ def test_balance_opencode_capability_failure_climbs_to_devin_max(policy: dict) -
         _with_counts(_make_usage(), devin=9, opencode=0),
         _with_balance(policy),
     )
-    assert (result["worker"], result["model"]) == ("devin", "swe-2-max")
+    assert (result["worker"], result["model"]) == ("devin", "swe-2-1-max")
     assert "capability failure on opencode" in result["reason"]
 
 
 def test_balance_end_keeps_max_capability_escalation(policy: dict) -> None:
-    prev = {"worker": "devin", "model": "swe-2-max", "effort": "high"}
+    prev = {"worker": "devin", "model": "swe-2-1-max", "effort": "high"}
     result = route(
         _task(kind="feature", attempt=1, last_failure="capability", prev=prev),
         _make_usage(devin_status="expired"),

@@ -18,8 +18,8 @@ POLICY = {
     "codex_bin_dir": "~/Documents/Codex/CLI/codex/0.167.0/bin",
     "devin": {
         "enabled": True,
-        "allowed_models": ["swe-2-high"],
-        "models": {"medium": "swe-2-high"},
+        "allowed_models": ["swe-2-1-xhigh"],
+        "models": {"medium": "swe-2-1-xhigh"},
         "promo": {"ends_at": "2099-11-30T10:00:00Z"},
     },
 }
@@ -153,7 +153,7 @@ class Stage:
         self.fault = tmp_path / "fault.json"
         self.models = tmp_path / "models.json"
         self.models.write_text(json.dumps({"families": [{"variants": [
-            {"model_uid": "swe-2-high", "cost_tier": "Free"}]}]}))
+            {"model_uid": "swe-2-1-xhigh", "cost_tier": "Free"}]}]}))
         self._args = [
             _powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(runner),
             str(project), str(self.home), str(policy), str(launcher), str(self._recording),
@@ -217,7 +217,7 @@ def test_dry_run_no_team_starts_all_three(stage):
     assert "opencode -m opencode-go/deepseek-v4.1-flash" in proc.stdout
     assert "OPENCODE_CONFIG=" in proc.stdout
     devin = next(line for line in runs if "dev-devin" in line)
-    assert "-- devin --model swe-2-high" in devin
+    assert "-- devin --model swe-2-1-xhigh" in devin
     assert "--permission-mode dangerous" in devin
     keeps = [line for line in lines if line.startswith("herdr-app do terminal.keep")]
     assert [line.rsplit(" ", 1)[-1] for line in keeps] == ["right", "down", "tab"]
@@ -316,12 +316,12 @@ def test_devin_admission_refuses_before_any_mutation(stage, change):
     if change == "disabled":
         policy["devin"]["enabled"] = False
     elif change == "disallowed":
-        policy["devin"]["models"]["medium"] = "swe-2-high-lightning"
+        policy["devin"]["models"]["medium"] = "swe-2-1-xhigh-lightning"
     elif change == "expired":
         policy["devin"]["promo"]["ends_at"] = "2000-01-01T00:00:00Z"
     else:
         stage.models.write_text(json.dumps({"families": [{"variants": [] if change == "unavailable" else [
-            {"model_uid": "swe-2-high", "cost_tier": "Paid"}]}]}))
+            {"model_uid": "swe-2-1-xhigh", "cost_tier": "Paid"}]}]}))
     stage.policy.write_text(json.dumps(policy))
     proc, calls = stage.run(_hc_ls(), dry=False)
     assert proc.returncode != 0, proc.stdout

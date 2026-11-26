@@ -207,7 +207,7 @@ def _member_model(member: dict[str, Any], roots: dict[str, Path],
 
 
 def _devin_model_id(label: Any) -> str | None:
-    """A Devin model label ("SWE-2 High") normalized to the policy id ("swe-2-high")."""
+    """A Devin model label ("SWE-2.1 XHigh") normalized to the policy id ("swe-2-1-xhigh")."""
     if not isinstance(label, str) or not label.strip():
         return None
     return re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-") or None

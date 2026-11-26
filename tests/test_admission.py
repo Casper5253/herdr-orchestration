@@ -133,8 +133,8 @@ def _route_policy() -> dict:
         "devin": {
             "enabled": True,
             "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test"],
-            "models": {"medium": "swe-2-high", "high": "swe-2-max", "max": "swe-2-max"},
-            "allowed_models": ["swe-2-medium", "swe-2-high", "swe-2-max"],
+            "models": {"medium": "swe-2-1-xhigh", "high": "swe-2-1-xhigh", "max": "swe-2-1-max"},
+            "allowed_models": ["swe-2-1-xhigh", "swe-2-1-max"],
             "promo": {"ends_at": "2099-01-01T00:00:00Z"},
         },
     }
@@ -368,7 +368,7 @@ def test_ocrun_devin_refuses_q196_before_launch(tmp_path: Path, monkeypatch: pyt
     routing_log = tmp_path / "routing.jsonl"
     result = ocrun.run(
         Q196_BRIEF,
-        "swe-2-high",
+        "swe-2-1-xhigh",
         cwd=tmp_path,
         worker="devin",
         title="q196-setup",
@@ -392,7 +392,7 @@ def test_ocrun_refuses_checkout_brief_before_launch(tmp_path: Path, monkeypatch:
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")),
     )
     result = ocrun.run(
-        CHECKOUT_BRIEF, "swe-2-high", cwd=tmp_path, worker="devin",
+        CHECKOUT_BRIEF, "swe-2-1-xhigh", cwd=tmp_path, worker="devin",
         routing_log=tmp_path / "routing.jsonl",
     )
     assert result["ok"] is False
@@ -417,7 +417,7 @@ def test_ocrun_main_returns_2_with_named_fixes(
             "--worker",
             "devin",
             "--model",
-            "swe-2-high",
+            "swe-2-1-xhigh",
             "--cwd",
             str(tmp_path),
         ]

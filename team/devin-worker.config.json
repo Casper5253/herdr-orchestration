@@ -5,7 +5,7 @@
 {
   "agent": {
     // ocrun always passes --model too; this pin only guards a run that forgets it.
-    "model": "swe-2-high"
+    "model": "swe-2-1-xhigh"
   },
   // Print mode ignores this key (export shows Normal); ocrun also passes --permission-mode.
   "permission_mode": "accept-edits",

@@ -3,7 +3,7 @@
 #   & "$env:USERPROFILE\.herdr-team\Start-HerdrTeam.ps1" C:\path\to\repo [-Team <name>, default dev] [-NoOpenCode]
 #   Add -LeadPane <pane-id> to keep an already-running Claude as the lead: it is renamed <team>-claude and the
 #   other two agents open beside it in that pane's workspace instead of a new workspace.
-#   Add -Devin to open <team>-devin as well: a SWE-2 pane split down from the codex pane. It refuses to
+#   Add -Devin to open <team>-devin as well: a SWE-2.1 pane split down from the codex pane. It refuses to
 #   start once the free promotion in policy.json devin.promo.ends_at has passed.
 param([Parameter(Mandatory)][string]$Project, [ValidatePattern('^[a-z0-9][a-z0-9-]*$')][string]$Team = 'dev', [string]$LeadPane, [switch]$NoOpenCode, [switch]$Devin)
 
@@ -44,7 +44,7 @@ if ($Devin) {
     $promoEnd = $null
     try { $promoEnd = [DateTimeOffset]::Parse($policy.devin.promo.ends_at) } catch {}
     if (-not $promoEnd -or [DateTimeOffset]::UtcNow -ge $promoEnd) {
-        throw 'SWE-2 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before re-enabling.'
+        throw 'SWE-2.1 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before re-enabling.'
     }
     $devinModel = $policy.devin.models.medium
     if (-not $devinModel) { throw 'policy.devin.models.medium is not set.' }

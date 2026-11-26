@@ -16,8 +16,8 @@ from hx import devin, host
 from hx import usage as hx_usage
 from hx.route import route
 
-MODEL = "swe-2-high"
-ENDS_AT = "2026-11-30T10:00:00Z"
+MODEL = "swe-2-1-xhigh"
+ENDS_AT = "2026-12-10T10:00:00Z"
 NOW = datetime.datetime(2026, 11, 1, tzinfo=datetime.timezone.utc)
 REAL_LIVE_MEMBERS = hx_usage.live_members
 
@@ -38,7 +38,7 @@ def _policy(tmp_path: Path, **overrides) -> dict:
         "worker_config": str(config),
         "kinds": list(devin.DEFAULT_KINDS),
         "models": dict(devin.DEFAULT_MODELS),
-        "allowed_models": ["swe-2-medium", "swe-2-high", "swe-2-max"],
+        "allowed_models": ["swe-2-1-xhigh", "swe-2-1-max"],
         "permission_mode": "accept-edits",
         "max_concurrent": 2,
         "promo": {"ends_at": ENDS_AT},
@@ -199,12 +199,12 @@ def route_policy() -> dict:
             "enabled": True,
             "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test"],
             "models": {
-                "low": "swe-2-high",
-                "medium": "swe-2-high",
-                "high": "swe-2-max",
-                "max": "swe-2-max",
+                "low": "swe-2-1-xhigh",
+                "medium": "swe-2-1-xhigh",
+                "high": "swe-2-1-xhigh",
+                "max": "swe-2-1-max",
             },
-            "allowed_models": ["swe-2-medium", "swe-2-high", "swe-2-max"],
+            "allowed_models": ["swe-2-1-xhigh", "swe-2-1-max"],
             "promo": {"ends_at": ENDS_AT},
         },
     }
@@ -344,7 +344,7 @@ def test_pane_reuse_obeys_pool_guards(tmp_path, monkeypatch, route_policy, guard
     elif guard == "expired":
         policy["devin"]["promo"] = {"ends_at": "2020-01-01T00:00:00Z"}
     elif guard == "model":
-        policy["devin"]["allowed_models"] = ["swe-2-medium"]
+        policy["devin"]["allowed_models"] = ["swe-2-1-max"]
     else:
         devin.record_error({"kind": "quota", "reason": "429"}, MODEL, now=NOW)
     snapshot = _route_usage()
@@ -358,7 +358,7 @@ def test_iterative_task_routes_persistent_devin(route_policy: dict) -> None:
     assert result["worker"] == "devin"
     assert result["method"] == "persistent-devin"
     assert result["agent"] == "dev-devin"
-    assert result["model"] == "swe-2-high"
+    assert result["model"] == "swe-2-1-xhigh"
     assert result["effort"] == "medium"
     assert "pool:devin" in result["stages"]
 

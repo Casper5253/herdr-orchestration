@@ -552,7 +552,7 @@ def _devin_idle(
 def _devin_capability_escalation(
     task: dict[str, Any], policy: dict[str, Any], stages: list[str]
 ) -> dict[str, Any] | None:
-    """A capability failure on the strongest SWE-2 model still goes to Codex."""
+    """A capability failure on the strongest SWE-2.1 model still goes to Codex."""
     prev = task.get("prev") or {}
     strongest = hx_devin.model_for_effort("max", policy)
     if (
@@ -605,7 +605,7 @@ def _balanced_decision(
     workers = list(plan["workers"])
     previous_worker = (task.get("prev") or {}).get("worker")
     # Creator, 19 Nov: "we use deepseek. If u want kimi, use devin max". A capability
-    # failure on OpenCode climbs to SWE-2 at max effort, not to a stronger OpenCode model.
+    # failure on OpenCode climbs to SWE-2.1 at max effort, not to a stronger OpenCode model.
     if capability_failure and previous_worker == "opencode" and "devin" in workers:
         climb = _dispatch_worker("devin", task, usage, policy, "max", stages, capability_failure)
         if climb is not None:
@@ -717,12 +717,12 @@ def _devin_decision(
     stages: list[str],
     capability_failure: bool,
 ) -> dict[str, Any] | None:
-    """Free SWE-2 first for implementation work; None hands over to OpenCode.
+    """Free SWE-2.1 first for implementation work; None hands over to OpenCode.
 
     A ready pane can be reused when new sessions are capped. Unknown pane
     data, quota errors, disabled policy and ended promotions fall through
     to the unchanged OpenCode ladder. A capability
-    failure on the strongest SWE-2 model escalates to Codex instead of
+    failure on the strongest SWE-2.1 model escalates to Codex instead of
     retrying Devin.
     """
     conf = hx_devin.settings(policy)
@@ -761,7 +761,7 @@ def _devin_decision(
         "effort": effort,
         "method": method,
         "reason": (
-            f"free SWE-2 promotion until {usage['devin'].get('promo', {}).get('ends_at')} -> devin {model}"
+            f"free SWE-2.1 promotion until {usage['devin'].get('promo', {}).get('ends_at')} -> devin {model}"
             + (f" via idle pane {pane}" if method == "persistent-devin" else "")
         ),
         "stages": stages,
@@ -959,7 +959,7 @@ def _route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) 
     elif _devin_covers(kind, policy):
         plan = _balance_plan(policy)
         if plan is not None and plan["mode"] == "balanced":
-            # While free SWE-2 lasts, keep Devin and OpenCode about even.
+            # While free SWE-2.1 lasts, keep Devin and OpenCode about even.
             decision = _balanced_decision(
                 task, usage, policy, effort, stages, capability_failure, plan
             )

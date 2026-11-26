@@ -13,8 +13,8 @@ import pytest
 from hx import devin
 from hx import ocrun
 
-MODEL = "swe-2-high"
-ENDS_AT = "2026-11-30T10:00:00Z"
+MODEL = "swe-2-1-xhigh"
+ENDS_AT = "2026-12-10T10:00:00Z"
 NOW = datetime.datetime(2026, 11, 1, tzinfo=datetime.timezone.utc)
 
 
@@ -35,7 +35,7 @@ def _policy(tmp_path: Path, **overrides) -> dict:
         "worker_config": str(config),
         "kinds": list(devin.DEFAULT_KINDS),
         "models": dict(devin.DEFAULT_MODELS),
-        "allowed_models": ["swe-2-medium", "swe-2-high", "swe-2-max"],
+        "allowed_models": ["swe-2-1-xhigh", "swe-2-1-max"],
         "permission_mode": "accept-edits",
         "max_concurrent": 1,
         "promo": {"ends_at": ENDS_AT},
@@ -47,10 +47,9 @@ def _policy(tmp_path: Path, **overrides) -> dict:
 def _free_lister(bin_path):  # noqa: ARG001
     return (
         {
-            "swe-2-medium": {"model_uid": "swe-2-medium", "cost_tier": "Free"},
-            "swe-2-high": {"model_uid": "swe-2-high", "cost_tier": "Free"},
-            "swe-2-max": {"model_uid": "swe-2-max", "cost_tier": "Free"},
-            "swe-2-high-lightning": {"model_uid": "swe-2-high-lightning", "cost_tier": "High cost"},
+            "swe-2-1-xhigh": {"model_uid": "swe-2-1-xhigh", "cost_tier": "Free"},
+            "swe-2-1-max": {"model_uid": "swe-2-1-max", "cost_tier": "Free"},
+            "swe-2-1-xhigh-lightning": {"model_uid": "swe-2-1-xhigh-lightning", "cost_tier": "High cost"},
         },
         None,
     )
@@ -67,14 +66,14 @@ def test_promo_active(tmp_path: Path) -> None:
 
 
 def test_promo_inactive_exactly_at_ends_at(tmp_path: Path) -> None:
-    ends = datetime.datetime(2026, 11, 30, 10, 0, tzinfo=datetime.timezone.utc)
+    ends = datetime.datetime(2026, 12, 10, 10, 0, tzinfo=datetime.timezone.utc)
     status = devin.promo_status(_policy(tmp_path), now=ends)
     assert status["active"] is False
     assert "promotion ended" in status["reason"]
 
 
 def test_promo_inactive_after_ends_at(tmp_path: Path) -> None:
-    after = datetime.datetime(2026, 12, 1, tzinfo=datetime.timezone.utc)
+    after = datetime.datetime(2026, 12, 11, tzinfo=datetime.timezone.utc)
     status = devin.promo_status(_policy(tmp_path), now=after)
     assert status["active"] is False
     assert "promotion ended" in status["reason"]
@@ -109,17 +108,24 @@ def test_preflight_refuses_model_outside_allowed_models(tmp_path: Path) -> None:
     assert "not in policy.devin.allowed_models" in failure["reason"]
 
 
-def test_preflight_refuses_lightning_id(tmp_path: Path) -> None:
-    """A lightning id is refused twice over: it is never in allowed_models, and
-    even if someone adds it the live list tags it High cost."""
-    failure = devin.preflight(_policy(tmp_path), "swe-2-high-lightning", now=NOW, models_lister=_free_lister)
+def test_preflight_refuses_lightning_swe21_id(tmp_path: Path) -> None:
+    """A SWE-2.1 lightning id is refused twice over: it is never in allowed_models,
+    and even if someone adds it the live list tags it High cost."""
+    failure = devin.preflight(_policy(tmp_path), "swe-2-1-xhigh-lightning", now=NOW, models_lister=_free_lister)
     assert failure["kind"] == "policy"
     assert "not in policy.devin.allowed_models" in failure["reason"]
 
-    policy = _policy(tmp_path, allowed_models=["swe-2-high", "swe-2-high-lightning"])
-    failure = devin.preflight(policy, "swe-2-high-lightning", now=NOW, models_lister=_free_lister)
+    policy = _policy(tmp_path, allowed_models=["swe-2-1-xhigh", "swe-2-1-xhigh-lightning"])
+    failure = devin.preflight(policy, "swe-2-1-xhigh-lightning", now=NOW, models_lister=_free_lister)
     assert failure["kind"] == "policy"
     assert "refusing a paid run" in failure["reason"]
+
+
+def test_preflight_refuses_old_swe2_id(tmp_path: Path) -> None:
+    """The old SWE-2 ids left the allowlist when Devin moved to SWE-2.1."""
+    failure = devin.preflight(_policy(tmp_path), "swe-2-high", now=NOW, models_lister=_free_lister)
+    assert failure["kind"] == "policy"
+    assert "not in policy.devin.allowed_models" in failure["reason"]
 
 
 def test_preflight_refuses_non_free_cost_tier(tmp_path: Path) -> None:
@@ -133,10 +139,10 @@ def test_preflight_refuses_non_free_cost_tier(tmp_path: Path) -> None:
 
 def test_preflight_refuses_model_not_offered(tmp_path: Path) -> None:
     def lister(bin_path):  # noqa: ARG001
-        return ({"swe-2-medium": {"model_uid": "swe-2-medium", "cost_tier": "Free"}}, None)
+        return ({"swe-2-1-max": {"model_uid": "swe-2-1-max", "cost_tier": "Free"}}, None)
 
     failure = devin.preflight(_policy(tmp_path), MODEL, now=NOW, models_lister=lister)
-    assert failure == {"kind": "policy", "reason": "swe-2-high is not offered to this account"}
+    assert failure == {"kind": "policy", "reason": "swe-2-1-xhigh is not offered to this account"}
 
 
 def test_preflight_lister_error_is_tool_failure(tmp_path: Path) -> None:
@@ -191,7 +197,7 @@ def _exec_step(model: str = MODEL, output: str = "Output from command `ls`: file
 def _export_doc(steps: list, **overrides) -> dict:
     doc = {
         "session_id": "ses_devin_1",
-        "agent": {"model_name": "SWE-2 High", "extra": {"permission_mode": "accept-edits"}},
+        "agent": {"model_name": "SWE-2.1 XHigh", "extra": {"permission_mode": "accept-edits"}},
         "steps": steps,
         "final_metrics": {
             "total_prompt_tokens": 120,
@@ -240,15 +246,15 @@ def test_detect_failure_model_mismatch_on_any_step(tmp_path: Path) -> None:
         _export_doc(
             [
                 _agent_step(message="working", model=MODEL),
-                _agent_step(message="done", model="swe-2-max"),
+                _agent_step(message="done", model="swe-2-1-max"),
             ]
         ),
     )
     parsed = devin.parse_export(path)
-    assert parsed["models"] == ["swe-2-high", "swe-2-max"]
+    assert parsed["models"] == ["swe-2-1-max", "swe-2-1-xhigh"]
     failure = devin.detect_failure(parsed, MODEL, 0, False, True)
     assert failure["kind"] == "model-mismatch"
-    assert "swe-2-max" in failure["reason"]
+    assert "swe-2-1-max" in failure["reason"]
 
 
 REJECTION_WORDINGS = [
@@ -553,7 +559,7 @@ def test_acquire_slot_reclaims_unreadable_slot_file(
 
 def test_scrubbed_env_names_drops_secrets_keeps_questlog() -> None:
     environ = {
-        "DEVIN_MODEL": "swe-2-max",
+        "DEVIN_MODEL": "swe-2-1-max",
         "GH_TOKEN": "ghp_x",
         "OPENAI_API_KEY": "sk-x",
         "MY_SECRET": "x",
@@ -630,11 +636,11 @@ def test_usage_models_map_outside_allowed_models_disabled(
     """An effort mapping pointing at a non-allowed id fails closed."""
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
     models = dict(devin.DEFAULT_MODELS)
-    models["medium"] = "swe-2-high-lightning"
+    models["medium"] = "swe-2-1-xhigh-lightning"
     status = devin.usage(_policy(tmp_path, models=models), now=NOW)
     assert status["status"] == "disabled"
     assert "allowed_models" in status["reason"]
-    assert "swe-2-high-lightning" in status["reason"]
+    assert "swe-2-1-xhigh-lightning" in status["reason"]
 
 
 @pytest.mark.parametrize("override", [{"max_concurrent": "abc"}, {"bin": 5}])

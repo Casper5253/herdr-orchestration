@@ -252,7 +252,7 @@ if (-not $live.ContainsKey('devin')) {
     $promoEnd = $null
     try { $promoEnd = [DateTimeOffset]::Parse($policy.devin.promo.ends_at) } catch {}
     if (-not $promoEnd -or [DateTimeOffset]::UtcNow -ge $promoEnd) {
-        throw 'SWE-2 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before starting a Devin pane.'
+        throw 'SWE-2.1 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before starting a Devin pane.'
     }
     $modelOut = devin models list --format json | Out-String
     if ($LASTEXITCODE -ne 0) { throw 'devin models list failed.' }

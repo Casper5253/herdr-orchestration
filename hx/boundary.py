@@ -43,7 +43,7 @@ _DEVIN_READ_CONFIG_FROM = {
     "zed": False,
     "cloud": False,
 }
-_DEVIN_MODEL = "swe-2-high"
+_DEVIN_MODEL = "swe-2-1-xhigh"
 
 _POLICY_FILE = "policy.json"
 _OPENCODE_OVERLAY = "team/opencode-trusted-dev.jsonc"

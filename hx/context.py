@@ -206,7 +206,7 @@ def _devin_footer_lines(pane_text: str) -> list[str]:
 
 
 def _devin_footer_label(pane_text: str) -> str | None:
-    """The footer block's model label ("SWE-2 High"), or None when absent.
+    """The footer block's model label ("SWE-2.1 XHigh"), or None when absent.
 
     Wide footers put the label on the Context line itself; the narrow two-line
     footer carries it on the model/mode line beside a bare usage line.
