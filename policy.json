@@ -143,13 +143,23 @@
             "why_contains": "failed task"
           },
           {
-            "title_contains_any": [
+            "kind_in": [
               "security",
-              "token"
+              "token",
+              "security-check",
+              "token-check"
+            ]
+          },
+          {
+            "label_in": [
+              "security",
+              "token",
+              "security-check",
+              "token-check"
             ]
           }
         ],
-        "note": "2026-11-26 creator: manage Codex tokens tighter. Balance gives Codex only fixes after another worker failed, or security/token checks."
+        "note": "2026-11-26 creator: manage Codex tokens tighter. Balance gives Codex only fixes after another worker failed, or checks whose item kind or label is named here; free title text does not qualify."
       }
     }
   },

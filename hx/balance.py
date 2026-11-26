@@ -181,6 +181,14 @@ def _assignment_allowed(worker_role: str, unit: dict[str, Any], policy: dict[str
         words = clause.get("title_contains_any")
         if isinstance(words, list) and not any(str(word).lower() in title for word in words):
             continue
+        kinds = clause.get("kind_in")
+        if isinstance(kinds, list) and str(unit.get("kind") or "").lower() not in {str(kind).lower() for kind in kinds}:
+            continue
+        wanted_labels = clause.get("label_in")
+        if isinstance(wanted_labels, list):
+            labels = {str(label).lower() for label in (unit.get("labels") or [])}
+            if not labels.intersection(str(label).lower() for label in wanted_labels):
+                continue
         return True
     return False
 

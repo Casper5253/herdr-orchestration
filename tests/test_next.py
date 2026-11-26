@@ -725,7 +725,7 @@ def test_next_command_prints_a_unit_as_json(tmp_path: Path, capsys: pytest.Captu
 
     assert rc == 0
     unit = json.loads(capsys.readouterr().out)
-    assert set(unit) == {"source", "ref", "title", "weight", "worker_hint", "why"}
+    assert {"source", "ref", "title", "weight", "worker_hint", "why"}.issubset(set(unit))
     assert unit["ref"] == "Q-2"
 
 
@@ -765,3 +765,34 @@ def test_help_lists_next(capsys: pytest.CaptureFixture) -> None:
 
     assert exc.value.code == 0
     assert "next" in capsys.readouterr().out
+
+
+def test_finished_project_container_without_a_next_step_is_not_a_unit(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["P-2"] = {
+        "ref": "P-2", "kind": "project", "title": "Trading Algorithm", "status": "todo",
+        "children": {"open": 0, "done": 4, "cancelled": 1}, "notes": None,
+    }
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+    assert "P-2" not in refs
+
+
+def test_finished_project_container_with_notes_naming_a_next_step_is_a_unit(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["P-2"] = {
+        "ref": "P-2", "kind": "project", "title": "Trading Algorithm", "status": "todo",
+        "children": {"open": 0, "done": 4, "cancelled": 1},
+        "notes": [{"text": "Next step: design the paper-trading slice"}],
+    }
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+    assert "P-2" in refs
+
+
+def test_childless_project_stays_eligible(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["P-3"] = {
+        "ref": "P-3", "kind": "project", "title": "Trading Algorithm", "status": "todo",
+        "children": {"open": 0, "done": 0}, "notes": None,
+    }
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+    assert "P-3" in refs

@@ -182,3 +182,34 @@ def test_codex_rule_allows_failed_followups_and_security_or_token_checks(tmp_pat
         next_unit=lambda weight=None, running_heavy=0, worker=None, exclude_refs=None: follow,
         read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / "state.json")
     assert len(rows["assignments"]) == 1
+
+
+def test_codex_rule_does_not_match_security_in_free_title_text(tmp_path):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {"codex": {"allow_if_any": [
+        {"source": "follow-up", "why_contains": "failed task"},
+        {"kind_in": ["security", "token"]},
+        {"label_in": ["security", "token"]}]}}
+    offered = unit("heavy", "codex", "ordinary")
+    offered["title"] = "hx route: send reviews to Devin max; Codex only for a security check"
+    offered["kind"] = "task"
+    rows = balance.snapshot(ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+        policy=policy, now=NOW, free_gb=32, oneoff_count=0,
+        next_unit=lambda **kw: offered,
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / "state.json")
+    assert rows["assignments"] == []
+
+
+def test_codex_rule_matches_policy_named_kind_or_label(tmp_path):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {"codex": {"allow_if_any": [
+        {"kind_in": ["security", "token"]},
+        {"label_in": ["security", "token"]}]}}
+    for extra in ({"kind": "security"}, {"kind": "task", "labels": ["token"]}):
+        offered = unit("heavy", "codex", "check")
+        offered.update(extra)
+        rows = balance.snapshot(ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+            policy=policy, now=NOW, free_gb=32, oneoff_count=0,
+            next_unit=lambda **kw: offered,
+            read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / ("s" + str(len(rows0 := [])) + ".json"))
+        assert len(rows["assignments"]) == 1

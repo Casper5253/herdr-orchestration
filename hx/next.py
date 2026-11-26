@@ -17,7 +17,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, NotRequired, TypedDict
 
 from hx import jotarium, ledger as ledger_mod, usage
 
@@ -138,6 +138,8 @@ class Unit(TypedDict):
     weight: str
     worker_hint: str
     why: str
+    kind: NotRequired[str]
+    labels: NotRequired[list[str]]
 
 
 class NextError(RuntimeError):
@@ -178,6 +180,54 @@ def _truthy(value: Any) -> bool:
 def _ref_number(ref: Any) -> int:
     match = re.search(r"(\d+)$", str(ref or ""))
     return int(match.group(1)) if match else 0
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _note_texts(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [str(value.get(key) or "") for key in ("title", "text", "body", "note") if value.get(key)]
+    if isinstance(value, list):
+        rows: list[str] = []
+        for entry in value:
+            rows.extend(_note_texts(entry))
+        return rows
+    return []
+
+
+def _notes_name_next_step(item: dict[str, Any]) -> bool:
+    pattern = re.compile(r"next\s+(step|action|stage)|next\s*:", re.IGNORECASE)
+    return any(pattern.search(text) for text in _note_texts(item.get("notes")))
+
+def _finished_container_without_next_step(item: dict[str, Any]) -> bool:
+    if str(item.get("kind") or "").lower() not in {"project", "feature"}:
+        return False
+    children = item.get("children")
+    if not isinstance(children, dict):
+        return False
+    if _count(children.get("open")) > 0:
+        return False
+    total = sum(_count(children.get(key)) for key in ("open", "done", "cancelled"))
+    return total > 0 and not _notes_name_next_step(item)
+
+
+def _labels(item: dict[str, Any]) -> list[str]:
+    raw = item.get("labels")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    labels: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            labels.append(entry.lower())
+        elif isinstance(entry, dict) and entry.get("name"):
+            labels.append(str(entry["name"]).lower())
+    return labels
 
 
 def _acceptance_status(value: Any) -> str:
@@ -760,17 +810,22 @@ class Sources:
                 continue
             if self._blocked_by_phase_or_date(summary, title):
                 continue
+            if _finished_container_without_next_step(item):
+                continue
             weight = _item_weight(item)
-            units.append(
-                _unit(
-                    "open-item",
-                    ref,
-                    title,
-                    weight,
-                    _worker_for("open-item", weight),
-                    f"{item.get('status')} item with no pending request and no owner",
-                )
+            unit = _unit(
+                "open-item",
+                ref,
+                title,
+                weight,
+                _worker_for("open-item", weight),
+                f"{item.get('status')} item with no pending request and no owner",
             )
+            unit["kind"] = str(item.get("kind") or "").lower()
+            labels = _labels(item)
+            if labels:
+                unit["labels"] = labels
+            units.append(unit)
         return units
 
     def follow_ups(self) -> list[Unit]:
