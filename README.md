@@ -3,7 +3,7 @@
 `hx`: a small control plane for a three-agent coding team (Claude Code as lead, Codex, OpenCode) running side by side in Herdr panes. It routes work by subscription headroom, picks model and effort, tracks task ownership, and compacts agent context at task boundaries. It is standard-library Python plus a few hooks and skills, with no server or database.
 
 ## What's here
-- `hx/`: the CLI. `hx usage` (budget per pool), `hx route` (worker, model, effort), `hx task` and `hx checkpoint` (ledger and handoff state), `hx context` and `hx compact` (protected compaction), `hx ocrun` (one-off OpenCode, Codex or Devin SWE-2.1 worker in a visible window).
+- `hx/`: the CLI. `hx usage` (budget per pool), `hx route` (worker, model, effort), `hx task` and `hx checkpoint` (ledger and handoff state), `hx context` and `hx compact` (protected compaction), `hx ocrun` (one-off OpenCode, Codex or Devin SWE-2.1 worker in a visible window), `hx next` (the next unit of work that does not need the creator).
 - Devin SWE-2.1 worker (free until 10 Dec 2026): `hx ocrun --worker devin --model swe-2-1-xhigh --cwd <repo> --prompt-file brief.md`. Design in `docs/ARCHITECTURE.md` (Devin section), evidence in `docs/audit/devin.md`, worker permissions in `team/devin-worker.config.json`, live check `python -I tests/live_devin_acceptance.py`.
 - `hooks/`: Claude Code status line, PreCompact and SessionStart(compact) hooks.
 - `skills/`: `herdr-team` (collaboration contract) and `hx-router` (lead playbook), shared by all three agents.
@@ -23,6 +23,7 @@ Windows, Python 3.11+, Herdr 0.9, and the three agent CLIs.
     powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
     hx usage
     hx route --kind feature --size medium
+    hx next --weight light
 
 `install.ps1` backs up every file it replaces as `*.bak-<timestamp>`. Paths in `team/claude-settings.json` point at this repo's location on the author's machine; adjust them for yours.
 

@@ -1,0 +1,242 @@
+{
+  "activity": [
+    {
+      "activity": {"id": "a-1", "actor": "human", "command": "resolveRequest", "createdAt": "2026-11-25T10:00:00.000Z"},
+      "item": {"ref": "Q-2", "title": "Hidden features inventory"}
+    },
+    {
+      "activity": {"id": "a-2", "actor": "human", "command": "resolveRequest", "createdAt": "2026-11-25T09:00:00.000Z"},
+      "item": {"ref": "Q-1", "title": "Merge the duplicate project copies"}
+    },
+    {
+      "activity": {"id": "a-3", "actor": "agent:dev-claude", "command": "resolveRequest", "createdAt": "2026-11-25T08:00:00.000Z"},
+      "item": {"ref": "Q-3", "title": "Fix the empty save crash"}
+    },
+    {
+      "activity": {"id": "a-4", "actor": "human", "command": "resolveRequest", "createdAt": "2026-11-25T07:00:00.000Z"},
+      "item": {"ref": "Q-9", "title": "Follow-up created inside a resolve"}
+    },
+    {
+      "activity": {"id": "a-5", "actor": "human", "command": "resolveBlocker", "createdAt": "2026-11-24T10:00:00.000Z"},
+      "item": {"ref": "Q-851", "title": "Outfits for the five new pet lines, for 1.0 or after?"}
+    },
+    {
+      "activity": {"id": "a-6", "actor": "human", "command": "resolveBlocker", "createdAt": "2026-11-24T09:00:00.000Z"},
+      "item": {"ref": "Q-852", "title": "Adopt the shared parser module now"}
+    }
+  ],
+  "items": {
+    "Q-1": {
+      "ref": "Q-1",
+      "kind": "task",
+      "status": "todo",
+      "title": "Merge the duplicate project copies",
+      "questType": "work",
+      "duration": "dayPlus",
+      "complexity": "complex",
+      "impact": "major",
+      "assignee": null,
+      "acceptance": {"status": "accepted", "choice": "merge", "comment": "Yes, merge into one"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0},
+      "comments": [
+        {"id": "c-1", "author": "human", "kind": "decision", "body": "chose merge: Yes, merge into one"}
+      ]
+    },
+    "Q-2": {
+      "ref": "Q-2",
+      "kind": "task",
+      "status": "in_progress",
+      "title": "Hidden features inventory",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "rejected", "comment": "Not the bundle I asked for"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0},
+      "comments": [
+        {"id": "c-2", "author": "human", "kind": "decision", "body": "Not the bundle I asked for"}
+      ]
+    },
+    "Q-3": {
+      "ref": "Q-3",
+      "kind": "task",
+      "status": "todo",
+      "title": "Fix the empty save crash",
+      "questType": "work",
+      "duration": "short",
+      "complexity": "simple",
+      "impact": "normal",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-4": {
+      "ref": "Q-4",
+      "kind": "task",
+      "status": "todo",
+      "title": "Waiting on a decision",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "pending"},
+      "blockers": {"open": {"kind": "decide"}, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-5": {
+      "ref": "Q-5",
+      "kind": "task",
+      "status": "in_progress",
+      "title": "Already held by an hx task",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-6": {
+      "ref": "Q-6",
+      "kind": "feature",
+      "status": "todo",
+      "title": "A parent feature with open children",
+      "questType": "project",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 2, "done": 0}
+    },
+    "Q-7": {
+      "ref": "Q-7",
+      "kind": "task",
+      "status": "in_progress",
+      "title": "Held by a live worker",
+      "questType": "work",
+      "assignee": "agent:dev-claude",
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-9": {
+      "ref": "Q-9",
+      "kind": "task",
+      "status": "todo",
+      "title": "Follow-up created inside a resolve",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-851": {
+      "ref": "Q-851",
+      "kind": "subtask",
+      "status": "backlog",
+      "title": "Outfits for the five new pet lines: a mastery outfit line and studio page, for 1.0 or after?",
+      "assignee": null,
+      "acceptance": {"status": "none", "revision": 1},
+      "children": {"open": 0, "done": 0},
+      "blockers": {
+        "open": null,
+        "resolved": [
+          {
+            "request": {
+              "kind": "decide",
+              "question": "The five new pet lines have their badges and crowns, but no outfits: do you want a mastery outfit line for them?",
+              "options": [
+                {"key": "now", "label": "Yes, for 1.0 (27 Nov)", "detail": "Build the studio page today or tomorrow."},
+                {"key": "after", "label": "Yes, after 1.0", "detail": "Same work, in the first update after the release."},
+                {"key": "no", "label": "No outfits for these lines", "detail": "Keep it as it is."}
+              ],
+              "recommended": "after",
+              "minutes": 2
+            },
+            "revision": 1,
+            "openedAt": "2026-11-21T09:04:32.809Z",
+            "openedBy": "agent:Claude",
+            "resolvedAt": "2026-11-24T10:00:00.000Z",
+            "localDay": "2026-11-24",
+            "action": "choose",
+            "choice": "after"
+          }
+        ]
+      },
+      "comments": [
+        {"id": "c-851-h", "author": "human", "kind": "decision", "body": "Decide: outfits for the five new pet lines — chose after: Yes, after 1.0", "createdAt": "2026-11-24T10:00:00.000Z"},
+        {"id": "c-851-a", "author": "agent:Claude", "kind": "note", "body": "Creator chose Yes, after 1.0. Parked in backlog until the first update after the release.", "createdAt": "2026-11-24T11:00:00.000Z"}
+      ],
+      "activity": [
+        {"id": "a-851-status", "actor": "agent:Claude", "command": "setStatus", "createdAt": "2026-11-24T11:00:00.000Z"},
+        {"id": "a-851-resolve", "actor": "human", "command": "resolveBlocker", "createdAt": "2026-11-24T10:00:00.000Z"}
+      ]
+    },
+    "Q-852": {
+      "ref": "Q-852",
+      "kind": "subtask",
+      "status": "backlog",
+      "title": "Adopt the shared parser module now",
+      "assignee": null,
+      "acceptance": {"status": "none", "revision": 1},
+      "children": {"open": 0, "done": 0},
+      "blockers": {
+        "open": null,
+        "resolved": [
+          {
+            "request": {
+              "kind": "decide",
+              "question": "Adopt the shared parser module now or later?",
+              "options": [
+                {"key": "now", "label": "Yes, for 1.0 (27 Nov)", "detail": "Ship it this week."},
+                {"key": "after", "label": "Yes, after 1.0", "detail": "Same work, after the release."}
+              ],
+              "recommended": "now",
+              "minutes": 2
+            },
+            "revision": 1,
+            "openedAt": "2026-11-21T09:04:32.809Z",
+            "openedBy": "agent:Claude",
+            "resolvedAt": "2026-11-24T09:00:00.000Z",
+            "localDay": "2026-11-24",
+            "action": "choose",
+            "choice": "now"
+          }
+        ]
+      },
+      "comments": [
+        {"id": "c-852-h", "author": "human", "kind": "decision", "body": "Decide: adopt the shared parser module — chose now: Yes, for 1.0", "createdAt": "2026-11-24T09:00:00.000Z"},
+        {"id": "c-852-a", "author": "agent:Claude", "kind": "note", "body": "Picked this up and planned the parser work.", "createdAt": "2026-11-24T10:30:00.000Z"}
+      ],
+      "activity": [
+        {"id": "a-852-status", "actor": "agent:Claude", "command": "setStatus", "createdAt": "2026-11-24T10:30:00.000Z"},
+        {"id": "a-852-resolve", "actor": "human", "command": "resolveBlocker", "createdAt": "2026-11-24T09:00:00.000Z"}
+      ]
+    }
+  },
+  "ideas": [
+    {
+      "id": "I-1",
+      "text": "Research whether the team should adopt a shared parser module and return a verdict.",
+      "createdAt": "2026-11-20T08:00:00.000Z",
+      "createdBy": "human",
+      "status": "open",
+      "plannedInto": [],
+      "stage": "open"
+    },
+    {
+      "id": "I-2",
+      "text": "Already planned into work, so the ladder must skip it.",
+      "createdAt": "2026-11-21T08:00:00.000Z",
+      "createdBy": "human",
+      "status": "open",
+      "plannedInto": ["Q-3"],
+      "stage": "planned"
+    },
+    {
+      "id": "I-3",
+      "text": "A planned idea that is not open.",
+      "createdAt": "2026-11-22T08:00:00.000Z",
+      "createdBy": "human",
+      "status": "planned",
+      "plannedInto": ["Q-3"],
+      "stage": "planned"
+    }
+  ]
+}

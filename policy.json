@@ -116,6 +116,14 @@
     "stale_seconds": 3600,
     "pool_soft_limit_note": "2026-10-17 owner directive: spend all OpenCode allowance before falling back to Codex (was 0.85); 0.98 keeps a margin because spend is estimated."
   },
+  "next": {
+    "heavy_cap": 1,
+    "heavy_cap_when_memory_ok": 2,
+    "free_memory_gb_threshold": 6.0,
+    "answer_window_days": 14,
+    "postpone_words": ["after", "later", "park", "not now", "wait", "keep", "no"],
+    "note": "I-132 / Q-1014. One heavy unit runs at a time; a second is allowed only when hx usage reads at least free_memory_gb_threshold GiB free. At the cap hx next returns light units only. answer_window_days bounds how far back creator answers are looked for. postpone_words are matched as whole words in the creator's chosen option key or label and in the answer comment; a match means the answer parked the item and hx next yields no unit for it. A creator answer the lead already acted on (an agent comment or setStatus after it) is not work either."
+  },
   "say": {
     "work_ttl_seconds": 86400,
     "work_ttl_note": "Ordinary worker briefs expire one day after creation when hx say gets no --ttl. Lead reports are durable and never expire through this guard."

@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, ocrun, profile, review, route, say, team_stalls, team_watch, usage
+from hx import boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, say, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -164,6 +164,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "ocrun",
         help="Headless OpenCode worker wrapper with silent-failure detection.",
+    )
+    subparsers.add_parser(
+        "next",
+        help="Print the next unit of work that does not need the creator.",
     )
     subparsers.add_parser("doctor", help="Read-only drift report: policy vs live adapters.")
     subparsers.add_parser("handoff", help="Write a portable handoff file and print its re-brief line.")
@@ -374,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"hx: {exc}", file=sys.stderr)
             return 1
-    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile", "check"}:
+    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile", "check", "next"}:
         handler = {
             "route": route.main,
             "ocrun": ocrun.main,
@@ -383,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             "review": review.main,
             "profile": profile.main,
             "check": check.main,
+            "next": next_mod.main,
         }[args_list[0]]
         try:
             return int(handler(args_list[1:]) or 0)
