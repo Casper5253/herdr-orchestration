@@ -364,7 +364,9 @@ def _prev_model_exhausted(
     return True
 
 
-def _idle_devin_pane(usage: dict[str, Any], policy: dict[str, Any]) -> str | None:
+def _idle_devin_pane(
+    usage: dict[str, Any], policy: dict[str, Any], required_model: str | None = None
+) -> str | None:
     """The team's ``<team>-devin`` pane when it is idle, allowed, and Free now.
 
     Reuse hands new work to whatever model the pane runs, so its observed footer
@@ -382,6 +384,7 @@ def _idle_devin_pane(usage: dict[str, Any], policy: dict[str, Any]) -> str | Non
             and session.get("name") == pane
             and session.get("status") in hx_usage.READY
             and session.get("model") in allowed
+            and (required_model is None or session["model"] == required_model)
             and hx_devin.preflight(policy, session["model"]) is None
         ):
             return pane
@@ -743,26 +746,12 @@ def _devin_decision(
     if plan is not None and plan["mode"] == "single" and plan["then"] != "devin":
         stages.append("devin:balance-period-ended")
         return None
-    status = (usage.get("devin") or {}).get("status")
-    pane = _idle_devin_pane(usage, policy)
-    reuse = pane and _devin_persistent_eligible(task, pane) and (
-        (usage.get("devin") or {}).get("reuse_available", status == "available")
-    )
-    if status != "available" and not reuse:
-        stages.append(f"devin:{status or 'absent'}")
-        return None
     prev = task.get("prev") or {}
     strongest = hx_devin.model_for_effort("max", policy)
-    if capability_failure and prev.get("worker") == "devin" and prev.get("model") == strongest:
-        stages.append("devin:capability-at-max")
-        return {
-            "worker": "codex",
-            "model": _codex_strong_model(policy),
-            "effort": "high",
-            "method": "ocrun-codex",
-            "reason": f"capability failure on {strongest} -> codex strong",
-            "stages": stages + ["pool:codex"],
-        }
+    if capability_failure:
+        escalation = _devin_capability_escalation(task, policy, stages)
+        if escalation is not None:
+            return escalation
     # A retry never steps down from the strongest model it already ran on.
     if prev.get("worker") == "devin" and prev.get("model") == strongest:
         effort = "max"
@@ -772,6 +761,15 @@ def _devin_decision(
         stages.append("devin:capability-climb-max")
         effort = "max"
     model = hx_devin.model_for_effort(effort, policy)
+    block = usage.get("devin") or {}
+    status = block.get("status")
+    pane = _idle_devin_pane(usage, policy, required_model=strongest if effort == "max" else None)
+    reuse = pane and _devin_persistent_eligible(task, pane) and (
+        block.get("reuse_available", status == "available")
+    )
+    if status != "available" and not reuse:
+        stages.append(f"devin:{status or 'absent'}")
+        return None
     method = "persistent-devin" if reuse else "ocrun-devin"
     stages.append("pool:devin")
     decision = {

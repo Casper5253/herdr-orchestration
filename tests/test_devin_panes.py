@@ -330,6 +330,22 @@ def test_idle_pane_reuse_when_the_live_preflight_passes(route_policy, monkeypatc
     assert decision["agent"] == "dev-devin"
 
 
+@pytest.mark.parametrize("pane_model,method", [
+    (MODEL, "ocrun-devin"),
+    ("swe-2-1-max", "persistent-devin"),
+])
+def test_max_input_retry_reuses_only_a_max_pane(route_policy, pane_model, method):
+    previous = {"worker": "devin", "model": "swe-2-1-max", "effort": "high",
+                "method": "ocrun-devin"}
+    sessions = [{**IDLE_DEVIN[0], "model": pane_model}]
+    task = _task(attempt=2, iterative=True, last_failure="missing-context", prev=previous)
+    decision = route(task, _route_usage(sessions), route_policy)
+    assert decision["model"] == "swe-2-1-max"
+    assert decision["effort"] == "max"
+    assert decision["method"] == method
+    assert decision.get("agent") == ("dev-devin" if method == "persistent-devin" else None)
+
+
 def test_r1_input_repair_keeps_persistent_pane(route_policy):
     previous = {"worker": "devin", "model": MODEL, "effort": "medium",
                 "method": "persistent-devin", "agent": "dev-devin"}

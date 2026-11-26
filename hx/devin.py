@@ -120,7 +120,7 @@ def pane_model(name: str | None, reader=None) -> str | None:
 
     Reuses the footer parser in ``hx.context``, the same source ``hx doctor``
     reads. A missing pane, an unreadable screen, a screen the host did not
-    prove complete, or a footer without a model is None: a caller must treat
+    prove complete, or a missing or malformed footer is None: a caller must treat
     the model as unknown, never assume an allowed one.
     """
     if not name:
@@ -176,9 +176,10 @@ def promo_status(policy: dict[str, Any], now: datetime.datetime | None = None) -
 def list_models(bin_path: Path, timeout: float = 60.0) -> tuple[dict[str, Any] | None, str | None]:
     """``devin models list --format json`` as {model_uid: variant}.
 
-    A partial or timed-out read, and any catalog row without a model id and a
-    cost tier, is incomplete. Return ``None`` so every caller refuses: a
-    missing tier must never read as free.
+    Refuse partial reads and malformed catalog structure. Untiered models
+    (such as adaptive) are valid entries, but only an explicit Free tier
+    passes preflight. A duplicate with any other tier, including no tier,
+    takes precedence over a Free row for that model.
     """
     try:
         result = spawn.run(
@@ -206,10 +207,10 @@ def list_models(bin_path: Path, timeout: float = 60.0) -> tuple[dict[str, Any] |
             return None, "devin models list returned an incomplete catalog"
         for variant in family["variants"]:
             uid = variant.get("model_uid") if isinstance(variant, dict) else None
-            tier = variant.get("cost_tier") if isinstance(variant, dict) else None
-            if not isinstance(uid, str) or not uid or not isinstance(tier, str) or not tier:
+            if not isinstance(uid, str) or not uid:
                 return None, "devin models list returned an incomplete catalog"
-            variants[uid] = variant
+            if uid not in variants or variants[uid].get("cost_tier") == FREE_TIER:
+                variants[uid] = variant
     return variants, None
 
 

@@ -206,24 +206,28 @@ def _devin_footer_lines(pane_text: str) -> list[str]:
 
 
 def _devin_footer_label(pane_text: str) -> str | None:
-    """The footer block's model label ("SWE-2.1 XHigh"), or None when absent.
+    """The footer block's model label, or None when missing or malformed.
 
     Wide footers put the label on the Context line itself; the narrow two-line
     footer carries it on the model/mode line beside a bare usage line.
     """
+    label = None
     for line in _devin_footer_lines(pane_text):
-        if "Context:" in line:
-            prefix = line.rsplit("Context:", 1)[0].strip()
-        elif re.match(r"^SWE-2\b", line):
-            prefix = line
-        else:
+        prefix, marker, usage = line.partition("Context:")
+        if marker or _DEVIN_USAGE.fullmatch(line):
+            if "Context:" in usage or _parse_devin_footer(line) is None:
+                return None
+        prefix = prefix.strip()
+        if not re.match(r"^SWE-2\b", prefix):
             continue
-        if not prefix:
-            continue
-        label = re.split(r"[·|]", prefix, maxsplit=1)[0].strip()
-        if label:
-            return label
-    return None
+        parts = re.split(r"[·|]", prefix, maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            return None
+        candidate = parts[0].strip()
+        if label is not None and candidate != label:
+            return None
+        label = candidate
+    return label
 
 
 def _parse_devin_footer(pane_text: str) -> tuple[float, float] | None:

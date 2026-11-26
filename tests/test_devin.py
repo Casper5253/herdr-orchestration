@@ -173,32 +173,47 @@ def _models_run(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess
     return subprocess.CompletedProcess(["devin"], returncode, stdout, "")
 
 
-def test_list_models_refuses_a_catalog_row_without_a_tier(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("untiered_uid,expect_free", [("adaptive", True), (MODEL, False)])
+def test_preflight_checks_the_tier_of_the_requested_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, untiered_uid: str, expect_free: bool,
 ) -> None:
-    """A row missing its tier makes the catalog incomplete; never drop it silently."""
     stdout = json.dumps({"families": [{"variants": [
         {"model_uid": MODEL, "cost_tier": "Free"},
-        {"model_uid": "mystery-model"},
+        {"model_uid": untiered_uid, "cost_summary": "Varies by model"},
     ]}]})
     monkeypatch.setattr(devin.spawn, "run", lambda *a, **k: _models_run(stdout))
-    variants, error = devin.list_models(tmp_path / "devin.exe")
-    assert variants is None
-    assert "incomplete" in error.lower()
+    failure = devin.preflight(_policy(tmp_path), MODEL, now=NOW)
+    if expect_free:
+        assert failure is None
+    else:
+        assert failure is not None
+        assert failure["kind"] == "policy"
 
 
-def test_preflight_refuses_a_catalog_with_an_incomplete_row(
+def test_preflight_refuses_a_catalog_with_a_row_missing_its_model_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The launch gate must not allow because the target row happened to be Free."""
     stdout = json.dumps({"families": [{"variants": [
         {"model_uid": MODEL, "cost_tier": "Free"},
-        {"model_uid": "mystery-model"},
+        {"cost_tier": "Paid"},
     ]}]})
     monkeypatch.setattr(devin.spawn, "run", lambda *a, **k: _models_run(stdout))
     failure = devin.preflight(_policy(tmp_path), MODEL, now=NOW)
     assert failure is not None
     assert "incomplete" in failure["reason"].lower()
+
+
+@pytest.mark.parametrize("tiers", [("Paid", "Free"), ("Free", "Paid")])
+def test_preflight_refuses_conflicting_catalog_tiers(tmp_path, monkeypatch, tiers):
+    stdout = json.dumps({"families": [
+        {"variants": [{"model_uid": MODEL, "cost_tier": tier}]} for tier in tiers
+    ]})
+    monkeypatch.setattr(devin.spawn, "run", lambda *a, **k: _models_run(stdout))
+    failure = devin.preflight(_policy(tmp_path), MODEL, now=NOW)
+    assert failure is not None
+    assert failure["kind"] == "policy"
+    assert "cost_tier is 'Paid'" in failure["reason"]
 
 
 @pytest.mark.parametrize(
@@ -241,11 +256,29 @@ def test_pane_model_refuses_a_screen_without_completeness() -> None:
     assert devin.pane_model("dev-devin", reader=lambda name, lines=8: screen) is None
 
 
-def test_pane_model_reads_a_complete_screen() -> None:
+@pytest.mark.parametrize("footer", [
+    "SWE-2.1 XHigh · accept edits\n",
+    "SWE-2.1 XHigh · bypass Context: 118k / 262k tokens (45%)\n",
+    "SWE-2.1 XHigh | bypass\n44k / 262k (16%)\n",
+])
+def test_pane_model_reads_a_complete_screen(footer: str) -> None:
     from hx import host
 
-    screen = host.ReadText("SWE-2.1 XHigh · accept edits\n", complete=True)
+    screen = host.ReadText(footer, complete=True)
     assert devin.pane_model("dev-devin", reader=lambda name, lines=8: screen) == MODEL
+
+
+@pytest.mark.parametrize("footer", [
+    "SWE-2.1 XHigh Context: invalid usage",
+    "SWE-2.1 XHigh · bypass Context: 118k / 262k tokens (5%)",
+    "SWE-2.1 Max · bypass\nSWE-2.1 XHigh · accept edits",
+    "SWE-2.1 XHigh ·",
+])
+def test_pane_model_refuses_a_malformed_footer(footer):
+    from hx import host
+
+    screen = host.ReadText(footer, complete=True)
+    assert devin.pane_model("dev-devin", reader=lambda name, lines=8: screen) is None
 
 
 # ---------- parse_export + detect_failure ----------
