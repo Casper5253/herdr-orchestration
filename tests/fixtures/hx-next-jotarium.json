@@ -208,6 +208,77 @@
         {"id": "a-852-status", "actor": "agent:Claude", "command": "setStatus", "createdAt": "2026-11-24T10:30:00.000Z"},
         {"id": "a-852-resolve", "actor": "human", "command": "resolveBlocker", "createdAt": "2026-11-24T09:00:00.000Z"}
       ]
+    },
+    "Q-30": {
+      "ref": "Q-30",
+      "kind": "feature",
+      "status": "todo",
+      "title": "Rain rewrite rollout",
+      "questType": "project",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 3, "done": 2}
+    },
+    "Q-31": {
+      "ref": "Q-31",
+      "kind": "task",
+      "status": "done",
+      "title": "Phase 1 Plan the rollout",
+      "parent": "Q-30",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-32": {
+      "ref": "Q-32",
+      "kind": "task",
+      "status": "done",
+      "title": "Phase 2 Build the first slice",
+      "parent": "Q-30",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-33": {
+      "ref": "Q-33",
+      "kind": "task",
+      "status": "todo",
+      "title": "Phase 3 Apply the changes",
+      "parent": "Q-30",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-34": {
+      "ref": "Q-34",
+      "kind": "task",
+      "status": "todo",
+      "title": "Phase 4 Evaluate same questions",
+      "parent": "Q-30",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
+    },
+    "Q-35": {
+      "ref": "Q-35",
+      "kind": "task",
+      "status": "todo",
+      "title": "Phase 5 Ship and announce",
+      "parent": "Q-30",
+      "questType": "work",
+      "assignee": null,
+      "acceptance": {"status": "none"},
+      "blockers": {"open": null, "resolved": []},
+      "children": {"open": 0, "done": 0}
     }
   },
   "ideas": [

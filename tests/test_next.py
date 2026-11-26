@@ -29,7 +29,22 @@ def _data() -> dict[str, Any]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
-def _summary(item: dict[str, Any]) -> dict[str, Any]:
+def _summary(item: dict[str, Any], data: dict[str, Any] | None = None) -> dict[str, Any]:
+    path: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    parent_ref = item.get("parent")
+    items = data.get("items", {}) if isinstance(data, dict) else {}
+    while isinstance(parent_ref, str) and parent_ref not in seen:
+        seen.add(parent_ref)
+        parent = items.get(parent_ref)
+        if not isinstance(parent, dict):
+            break
+        path.insert(0, {
+            "ref": parent.get("ref"),
+            "kind": parent.get("kind"),
+            "title": parent.get("title"),
+        })
+        parent_ref = parent.get("parent")
     acceptance = item.get("acceptance")
     return {
         "ref": item.get("ref"),
@@ -40,6 +55,7 @@ def _summary(item: dict[str, Any]) -> dict[str, Any]:
         "children": item.get("children"),
         "acceptance": acceptance.get("status") if isinstance(acceptance, dict) else acceptance,
         "questType": item.get("questType"),
+        "path": path,
     }
 
 
@@ -69,10 +85,12 @@ class FakeJotarium:
             return {"item": item, "comments": item.get("comments", [])}
         if name == "listItems":
             statuses = payload.get("status")
+            parent = payload.get("parent")
             rows = [
-                _summary(item)
+                _summary(item, self.data)
                 for item in self.data["items"].values()
-                if not statuses or item.get("status") in statuses
+                if (not statuses or item.get("status") in statuses)
+                and (parent is None or item.get("parent") == parent)
             ]
             return {"items": rows, "nextCursor": None}
         if name == "listIdeas":
@@ -396,6 +414,99 @@ def test_open_item_title_filters_explicit_creator_actions(tmp_path: Path) -> Non
 
     refs = {unit["ref"] for unit in sources.open_items()}
     assert refs.intersection(titles) == {"Q-28", "Q-29"}
+
+
+def _sources_from(data: dict[str, Any], tmp_path: Path, *, now: dt.datetime = NOW):
+    return next_mod.Sources(
+        FakeJotarium(data),
+        FakeLedger(tmp_path, []),
+        policy=POLICY,
+        now=now,
+        free_gb=32.0,
+        live=[],
+    )
+
+
+def test_a_later_phase_waits_for_an_earlier_open_phase(tmp_path: Path) -> None:
+    refs = {unit["ref"] for unit in _sources_from(_data(), tmp_path).open_items()}
+
+    assert "Q-33" in refs
+    assert "Q-34" not in refs
+    assert "Q-35" not in refs
+
+
+def test_a_phase_opens_once_every_earlier_phase_is_done(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-33"]["status"] = "done"
+
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+
+    assert "Q-34" in refs
+    assert "Q-35" not in refs
+
+
+def test_a_cancelled_lower_phase_does_not_block(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-33"]["status"] = "cancelled"
+
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+
+    assert "Q-34" in refs
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Phase 4 Apply (after 27 Nov)",
+        "Phase 4 Apply (after 27 Nov 2026)",
+        "Phase 4 Apply (after 27 November)",
+        "Phase 4 Apply (after 2026-11-27)",
+    ],
+)
+def test_an_after_date_title_waits_for_its_day(tmp_path: Path, title: str) -> None:
+    data = _data()
+    data["items"]["Q-33"]["status"] = "done"
+    data["items"]["Q-34"]["title"] = title
+
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+
+    assert "Q-34" not in refs
+
+
+def test_an_after_date_title_opens_on_the_day(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-33"]["status"] = "done"
+    data["items"]["Q-34"]["title"] = "Phase 4 Apply (after 27 Nov)"
+
+    refs = {
+        unit["ref"]
+        for unit in _sources_from(
+            data, tmp_path, now=NOW + dt.timedelta(days=1)
+        ).open_items()
+    }
+
+    assert "Q-34" in refs
+
+
+def test_a_past_after_date_does_not_gate(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-33"]["status"] = "done"
+    data["items"]["Q-34"]["title"] = "Phase 4 Apply (after 25 Nov)"
+
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+
+    assert "Q-34" in refs
+
+
+def test_a_parent_phase_date_gates_its_children(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-30"]["title"] = "Rain rewrite (after 27 Nov)"
+    data["items"]["Q-33"]["status"] = "done"
+    data["items"]["Q-34"]["title"] = "Phase 4 Evaluate"
+
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+
+    assert "Q-34" not in refs
 
 
 def test_follow_up_from_a_done_task_checkpoint(tmp_path: Path) -> None:

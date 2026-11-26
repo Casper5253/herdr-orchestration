@@ -114,6 +114,18 @@ _CREATOR_NEED_RE = re.compile(
     re.IGNORECASE,
 )
 _DECLINE_RE = re.compile(r"^(?:no|do not|not now|skip|drop)\b")
+_PHASE_RE = re.compile(r"^\s*phase\s+(\d+)\b", re.IGNORECASE)
+_AFTER_ISO_RE = re.compile(r"\bafter\s+(\d{4})-(\d{1,2})-(\d{1,2})\b", re.IGNORECASE)
+_AFTER_DAY_RE = re.compile(
+    r"\bafter\s+(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\b\.?(?:\s+(\d{4}))?",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+    "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
 _UNSET = object()
 
 
@@ -219,6 +231,32 @@ def _item_weight(item: dict[str, Any]) -> str:
     if any(word in title for word in LIGHT_WORDS):
         return "light"
     return "heavy"
+
+
+def _phase_number(title: Any) -> int | None:
+    match = _PHASE_RE.match(str(title or ""))
+    return int(match.group(1)) if match else None
+
+
+def _after_date(text: Any, year: int) -> dt.date | None:
+    """The date a title gates on, from "after 27 Nov" or "after 2026-11-27"."""
+    value = str(text or "")
+    match = _AFTER_ISO_RE.search(value)
+    if match:
+        try:
+            return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+    match = _AFTER_DAY_RE.search(value)
+    if not match:
+        return None
+    month = _MONTHS.get(match.group(2).lower())
+    if month is None:
+        return None
+    try:
+        return dt.date(int(match.group(3) or year), month, int(match.group(1)))
+    except ValueError:
+        return None
 
 
 def _follow_up_weight(task: dict[str, Any]) -> str:
@@ -482,6 +520,7 @@ class Sources:
         self.live = list(live or [])
         self.errors: list[str] = []
         self._open_refs: set[str] | None = None
+        self._siblings: dict[str, list[dict[str, Any]]] = {}
         config = self.policy.get("next") or {}
         self._postpone_words = config.get("postpone_words") or []
         names = _phrase_set(config.get("creator_names") or []) | {"creator"}
@@ -629,6 +668,41 @@ class Sources:
             )
         return units
 
+    def _sibling_summaries(self, parent_ref: str) -> list[dict[str, Any]]:
+        if parent_ref not in self._siblings:
+            self._siblings[parent_ref] = _pages(
+                self.query, "listItems", {"parent": parent_ref}, "items"
+            )
+        return self._siblings[parent_ref]
+
+    def _blocked_by_phase_or_date(
+        self, summary: dict[str, Any], title: str
+    ) -> bool:
+        """A later phase waits for earlier ones, and a dated item waits for its day."""
+        path = summary.get("path")
+        parent = (
+            path[-1]
+            if isinstance(path, list) and path and isinstance(path[-1], dict)
+            else None
+        )
+        parent_title = str(parent.get("title") or "") if parent else ""
+        today = self.now.date()
+        for text in (title, parent_title):
+            gate = _after_date(text, today.year)
+            if gate is not None and today < gate:
+                return True
+        phase = _phase_number(title)
+        parent_ref = parent.get("ref") if parent else None
+        if phase is None or not isinstance(parent_ref, str) or not parent_ref:
+            return False
+        for sibling in self._sibling_summaries(parent_ref):
+            number = _phase_number(sibling.get("title"))
+            if number is None or number >= phase:
+                continue
+            if sibling.get("status") not in {"done", "cancelled"}:
+                return True
+        return False
+
     def open_items(self) -> list[Unit]:
         summaries = _pages(
             self.query,
@@ -680,6 +754,8 @@ class Sources:
             if _answer_verdict(activity, item) and _answer_is_suppressed(
                 activity, item, self._postpone_words
             ):
+                continue
+            if self._blocked_by_phase_or_date(summary, title):
                 continue
             weight = _item_weight(item)
             units.append(
