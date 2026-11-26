@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from hx import host, jotarium, ledger as ledger_mod, next as next_mod, paths, say, team_stalls, usage, context
+from hx import host, jotarium, ledger as ledger_mod, next as next_mod, paths, say, task_index, team_stalls, usage, context
 
 ACTIVE_STATUSES = {"assigned", "in_progress", "review"}
 WEIGHTS = {"heavy", "light"}
@@ -193,12 +193,34 @@ def _assignment_allowed(worker_role: str, unit: dict[str, Any], policy: dict[str
     return False
 
 
+def _combined_tasks(local_tasks: list[dict[str, Any]], external_tasks: list[dict[str, Any]], repo_root: Any) -> list[dict[str, Any]]:
+    """Local ledger tasks plus indexed cross-repo tasks, local truth winning collisions."""
+    combined: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    local_root = ledger_mod._canonical_path(Path(str(repo_root or ".")))
+    for task in local_tasks:
+        row = dict(task)
+        row.setdefault("repo_root", local_root)
+        key = (str(row.get("repo_root") or local_root), str(row.get("id") or ""))
+        seen.add(key)
+        combined.append(row)
+    for task in external_tasks:
+        row = dict(task)
+        key = (str(row.get("repo_root") or ""), str(row.get("id") or ""))
+        if key in seen or not key[1]:
+            continue
+        seen.add(key)
+        combined.append(row)
+    return combined
+
+
 def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
              now: dt.datetime | None = None, free_gb: float | None = None,
              oneoff_count: int = 0, next_unit: Callable[..., dict[str, Any]] | None = None,
              read_screen: Callable[[str, int], str] | None = None,
              report_time: Callable[[str, str], dt.datetime | None] | None = None,
-             state_path: Path | None = None) -> dict[str, Any]:
+             state_path: Path | None = None,
+             external_tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """One balanced dispatch snapshot. It never sends, types, kills or restarts."""
     now = now or _utcnow()
     prefix = usage.team_prefix(policy)
@@ -209,7 +231,10 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
     previous = stored.get("workers") or {}
     current_state: dict[str, Any] = {}
     warnings: list[str] = []
-    tasks = list(ledger.list_tasks()) if ledger is not None else []
+    local_tasks = list(ledger.list_tasks()) if ledger is not None else []
+    if external_tasks is None:
+        external_tasks = task_index.open_entries()
+    tasks = _combined_tasks(local_tasks, external_tasks, getattr(ledger, "repo_root", "."))
     active = _active_tasks(tasks)
     running_heavy = sum(1 for task in active.values() if _weight(task) == "heavy") + max(0, int(oneoff_count))
 
@@ -276,6 +301,7 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
         is_stuck = min(status_age, output_age, report_age) >= threshold
         state = "stuck" if is_stuck else weight
         slot = {"worker": name, "state": state, "task_id": str(owned.get("id") or ""),
+                "repo_root": str(owned.get("repo_root") or ""),
                 "since": str(owned.get("updated") or _iso(updated)), "live_status": live_status,
                 "minutes_stuck": round(min(status_age, output_age, report_age), 1) if is_stuck else 0.0}
         slots.append(slot)

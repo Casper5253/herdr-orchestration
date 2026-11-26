@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, NotRequired, TypedDict
 
-from hx import jotarium, ledger as ledger_mod, usage
+from hx import jotarium, ledger as ledger_mod, task_index, usage
 
 LADDER = (
     ("creator-answer", "creator_answers"),
@@ -648,6 +648,8 @@ class Sources:
                 for task in self.ledger.list_tasks():
                     if task.get("status") in ledger_mod.Ledger.OPEN_STATUSES:
                         refs |= jotarium.refs_for_task(task)
+            for task in task_index.open_entries():
+                refs |= jotarium.refs_for_task(task)
             self._open_refs = refs
         return self._open_refs
 

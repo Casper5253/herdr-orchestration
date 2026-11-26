@@ -534,6 +534,14 @@ class Ledger:
         self._ensure_dirs()
         _atomic_write_json(self.ledger_path, ledger)
         _atomic_write_json(self.leases_path, leases)
+        from hx import task_index
+
+        task_index.sync_repo(
+            repo_root=self.repo_root,
+            ledger_path=self.ledger_path,
+            tasks=list(ledger.get("tasks", {}).values()),
+            open_statuses=self.OPEN_STATUSES,
+        )
 
     def _save_leases(self, leases: dict[str, Any]) -> None:
         self.leases_path.parent.mkdir(parents=True, exist_ok=True)

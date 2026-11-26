@@ -44,3 +44,5 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("HX_CONTEXT_RESETS_PATH", str(tmp_path / "context-resets.json"))
     monkeypatch.setenv("HX_LEASES_PATH", str(tmp_path / "leases.json"))
     monkeypatch.setenv("HX_LEASES_LOCK_PATH", str(tmp_path / "leases.lock"))
+    monkeypatch.setenv("HX_TASK_INDEX_PATH", str(tmp_path / "task-index.json"))
+    monkeypatch.setenv("HX_TASK_INDEX_LOCK_PATH", str(tmp_path / "task-index.lock"))

@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, say, team_stalls, team_watch, usage
+from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, say, task_index, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -105,6 +105,9 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     show = task_sub.add_parser("show", help="Show one task.")
     show.add_argument("id")
     show.set_defaults(func=_task_show)
+
+    index = task_sub.add_parser("index", help="Sync this repo's open tasks into the user-level cross-repo index.")
+    index.set_defaults(func=_task_index)
 
 
 def _add_checkpoint_flags(parser: argparse.ArgumentParser) -> None:
@@ -265,6 +268,17 @@ def _task_add(args: argparse.Namespace) -> None:
         weight=args.weight or next_mod._follow_up_weight({"effort": args.effort}),
     )
     print(json.dumps(task, indent=2))
+
+
+def _task_index(args: argparse.Namespace) -> None:
+    led = ledger.default_ledger()
+    count = task_index.sync_repo(
+        repo_root=led.repo_root,
+        ledger_path=led.ledger_path,
+        tasks=led.list_tasks(),
+        open_statuses=ledger.Ledger.OPEN_STATUSES,
+    )
+    print(json.dumps({"indexed": count, "path": str(task_index.default_index_path())}, indent=2))
 
 
 def _task_assign(args: argparse.Namespace) -> None:
