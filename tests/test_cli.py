@@ -330,3 +330,17 @@ def test_task_add_records_its_jotarium_item(
     ]) == 0
     data = json.loads((cli_repo / ".hx" / "ledger.json").read_text(encoding="utf-8"))
     assert data["tasks"]["t1"]["jotarium"] == "Q-412"
+
+
+def test_task_add_weight_defaults_from_next_rule(cli_repo, capsys):
+    assert cli.main(["task", "add", "heavy", "--title", "Build", "--owner", "w", "--files", "owned.py"]) == 0
+    heavy = json.loads(capsys.readouterr().out)
+    assert heavy["weight"] == "heavy"
+    assert cli.main(["task", "add", "light", "--title", "Write", "--owner", "w", "--files", "other.py", "--effort", "low"]) == 0
+    light = json.loads(capsys.readouterr().out)
+    assert light["weight"] == "light"
+
+
+def test_task_add_explicit_weight_wins(cli_repo, capsys):
+    assert cli.main(["task", "add", "explicit", "--title", "Build", "--owner", "w", "--files", "owned.py", "--effort", "low", "--weight", "heavy"]) == 0
+    assert json.loads(capsys.readouterr().out)["weight"] == "heavy"

@@ -513,7 +513,7 @@ class Sources:
         rungs[audit], rungs[house] = rungs[house], rungs[audit]
         return tuple(rungs)
 
-    def next_unit(self, weight: str | None = None, running_heavy: int = 0) -> Unit:
+    def next_unit(self, weight: str | None = None, running_heavy: int = 0, worker: str | None = None) -> Unit:
         at_cap = running_heavy >= self.heavy_cap()
         for _source, method in self._ladder():
             units = self.safe_units(method)
@@ -525,6 +525,8 @@ class Sources:
                 units = [unit for unit in units if unit["weight"] == "heavy"] + [
                     unit for unit in units if unit["weight"] == "light"
                 ]
+            if worker:
+                units = sorted(units, key=lambda unit: 0 if unit["worker_hint"] == worker else 1)
             if units:
                 return units[0]
         raise NextError("no unit could be produced; the audit and housekeeping rungs failed")
@@ -831,8 +833,9 @@ def select_next(
     sources: Sources,
     weight: str | None = None,
     running_heavy: int = 0,
+    worker: str | None = None,
 ) -> Unit:
-    return sources.next_unit(weight=weight, running_heavy=running_heavy)
+    return sources.next_unit(weight=weight, running_heavy=running_heavy, worker=worker)
 
 
 def format_unit(unit: Unit) -> str:

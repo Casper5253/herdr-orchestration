@@ -642,6 +642,7 @@ class Ledger:
         method: str | None = None,
         review_required: bool = False,
         jotarium: str | None = None,
+        weight: str | None = None,
     ) -> dict[str, Any]:
         with self._dual_lock():
             ledger = self._load_ledger()
@@ -673,6 +674,11 @@ class Ledger:
                 "worktree": worktree,
                 "rev": 1,
             }
+            if weight is not None:
+                weight = weight.strip().lower()
+                if weight not in {"heavy", "light"}:
+                    raise ValueError("weight must be heavy or light")
+                task["weight"] = weight
             if jotarium is not None:
                 value = jotarium.strip().upper()
                 if (len(value) < 3 or value[0] not in "PFQ"
