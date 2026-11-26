@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from hx import host, jotarium, ledger as ledger_mod, next as next_mod, pace, paths, say, task_index, team_stalls, usage, context
+from hx import context, devin, host, jotarium, ledger as ledger_mod, next as next_mod, pace, paths, say, task_index, team_stalls, usage
 
 ACTIVE_STATUSES = {"assigned", "in_progress", "review"}
 WEIGHTS = {"heavy", "light"}
@@ -145,16 +145,12 @@ def _weight(task: dict[str, Any]) -> str:
     return weight if weight in WEIGHTS else "heavy"
 
 
-def _pace_status(pace_report: dict[str, Any] | None, worker: Any) -> str:
-    return pace.status_for(pace_report, worker) if pace_report else "on_pace"
-
-
-def _pace_detail(pace_report: dict[str, Any] | None, worker: Any) -> dict[str, Any]:
-    pool = pace.pool_for_worker(worker)
+def _pace_detail(pace_report: dict[str, Any] | None, worker: host.Member) -> dict[str, Any]:
+    pool = pace.pool_for_worker(worker["name"], worker.get("kind"))
     entry = ((pace_report or {}).get("pools") or {}).get(pool) if pool else None
     return {
         "pool": pool,
-        "status": _pace_status(pace_report, worker),
+        "status": pace.status_for(pace_report, worker["name"], worker.get("kind")),
         "reason": str((entry or {}).get("reason") or ""),
     }
 
@@ -166,21 +162,32 @@ def _stuck_minutes(policy: dict[str, Any]) -> float:
     return float(value)
 
 
-def _default_next_unit(policy: dict[str, Any], query=None, ledger_obj=None, live=None, free_gb: float | None | object = next_mod._UNSET):
+def _default_next_unit(policy: dict[str, Any], query=None, ledger_obj=None, live=None,
+                       free_gb: float | None | object = next_mod._UNSET, now=None):
     if query is None:
         query = jotarium.JotariumClient().query
     if ledger_obj is None:
         ledger_obj = ledger_mod.default_ledger()
-    sources = next_mod.Sources(query, ledger_obj, policy=policy, live=live or [], free_gb=free_gb)
-    def choose(weight: str | None = None, running_heavy: int = 0, worker: str | None = None, exclude_refs: set[str] | None = None):
-        return sources.next_unit(weight=weight, running_heavy=running_heavy, worker=worker, exclude_refs=exclude_refs)
-    return choose
+    sources = next_mod.Sources(query, ledger_obj, policy=policy, live=live or [], free_gb=free_gb, now=now)
+    return sources.next_unit
 
 
-def _assignment_allowed(worker_role: str, unit: dict[str, Any], policy: dict[str, Any]) -> bool:
+def _search_next_unit(next_unit, *, eligible, weight, running_heavy, worker, exclude_refs):
+    rejected = set(exclude_refs)
+    while True:
+        unit = next_unit(weight=weight, running_heavy=running_heavy, worker=worker, exclude_refs=rejected)
+        ref = str(unit.get("ref") or "")
+        if not ref or ref in rejected:
+            raise NextUnitUnavailable("no distinct unit")
+        if eligible(unit):
+            return unit
+        rejected.add(ref)
+
+
+def _assignment_allowed(worker_role: str, unit: dict[str, Any], policy: dict[str, Any], pool: str | None) -> bool:
     """The policy-driven worker restriction check; no rule means unrestricted."""
     rules = ((policy.get("next") or {}).get("worker_assignment_rules") or {})
-    rule = rules.get(worker_role)
+    rule = rules.get(worker_role, rules.get(pool))
     if not isinstance(rule, dict):
         return True
     clauses = rule.get("allow_if_any")
@@ -262,11 +269,15 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
     sources = next_mod.Sources(lambda name, payload: {}, None, policy=policy, free_gb=free_gb)
     heavy_cap = max(1, sources.heavy_cap())
     if next_unit is None:
-        next_unit = _default_next_unit(policy, ledger_obj=ledger, live=members, free_gb=free_gb)
+        choose_unit = _default_next_unit(policy, ledger_obj=ledger, live=members, free_gb=free_gb, now=now)
+    else:
+        def choose_unit(**kwargs):
+            return _search_next_unit(next_unit, **kwargs)
     if report_time is None:
         report_time = latest_report_time
 
     slots: list[dict[str, Any]] = []
+    idle_workers: list[host.Member] = []
     stuck: list[dict[str, Any]] = []
     for member in sorted(members, key=lambda row: str(row.get("name") or "")):
         name = str(member.get("name") or "")
@@ -277,6 +288,7 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
         if owned is None:
             if live_status in {"idle", "done", "unknown"}:
                 state = "idle"
+                idle_workers.append(member)
             else:
                 # Untracked work is treated conservatively as heavy; it must not be hidden.
                 state = "heavy"
@@ -335,33 +347,43 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
     assignments: list[dict[str, Any]] = []
     assigned_refs: set[str] = set()
     planned_heavy = running_heavy
-    idle_slots = [slot for slot in slots if slot["state"] == "idle"]
-    idle_slots.sort(key=lambda slot: (
-        PACE_ORDER.get(_pace_status(pace_report, slot["worker"]), 2),
-        str(slot["worker"]),
-    ))
-    for slot in idle_slots:
-        worker = str(slot["worker"]).rsplit("-", 1)[-1]
-        status = _pace_status(pace_report, slot["worker"])
-        if status == "ahead":
+    devin_active = bool(devin.settings(policy).get("enabled")) and devin.promo_status(policy, now)["active"]
+    idle = []
+    for member in idle_workers:
+        detail = _pace_detail(pace_report, member)
+        if detail["pool"] == "devin" and not devin_active:
             continue
-        wanted = "heavy" if planned_heavy < heavy_cap else "light"
-        try:
-            chosen = next_unit(weight=wanted, running_heavy=planned_heavy, worker=worker, exclude_refs=assigned_refs)
-        except NextUnitUnavailable:
-            continue
-        except Exception as exc:
-            warnings.append(f"{slot['worker']}: hx next failed: {exc}")
-            continue
-        if not _assignment_allowed(worker, chosen, policy):
-            continue
-        actual = str(chosen.get("weight") or wanted)
-        assignments.append({"worker": slot["worker"], "weight": actual, "unit": chosen,
-                            "hint": "matched" if chosen.get("worker_hint") == worker else "fallback",
-                            "pace": _pace_detail(pace_report, slot["worker"])})
-        assigned_refs.add(str(chosen.get("ref") or ""))
-        if actual == "heavy":
-            planned_heavy += 1
+        role = member.get("role") or member["name"].rsplit("-", 1)[-1]
+        idle.append((member["name"], role, detail))
+    idle.sort(key=lambda worker: (PACE_ORDER.get(worker[2]["status"], 2), worker[0]))
+
+    for index, (name, role, detail) in enumerate(idle):
+        alternatives = idle[index + 1:] if detail["status"] == "ahead" else []
+
+        def eligible(unit):
+            return _assignment_allowed(role, unit, policy, detail["pool"]) and not any(
+                _assignment_allowed(other_role, unit, policy, other_detail["pool"])
+                for _, other_role, other_detail in alternatives
+            )
+
+        weights = ("heavy", "light") if planned_heavy < heavy_cap else ("light",)
+        for wanted in weights:
+            try:
+                chosen = choose_unit(weight=wanted, running_heavy=planned_heavy, worker=role,
+                                     exclude_refs=assigned_refs, eligible=eligible)
+            except (NextUnitUnavailable, next_mod.NextError, StopIteration):
+                continue
+            except Exception as exc:
+                warnings.append(f"{name}: hx next failed: {exc}")
+                break
+            actual = str(chosen.get("weight") or wanted)
+            assignments.append({"worker": name, "weight": actual, "unit": chosen,
+                                "hint": "matched" if chosen.get("worker_hint") == role else "fallback",
+                                "pace": detail})
+            assigned_refs.add(str(chosen.get("ref") or ""))
+            if actual == "heavy":
+                planned_heavy += 1
+            break
 
     _save_state(state_file, {"version": STATE_VERSION, "workers": current_state})
     return {"heavy_cap": heavy_cap, "running_heavy": running_heavy,

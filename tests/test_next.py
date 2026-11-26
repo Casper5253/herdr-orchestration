@@ -721,6 +721,14 @@ def test_asking_for_light_walks_the_ladder_for_light(tmp_path: Path) -> None:
     assert unit["ref"] == "Q-3"
 
 
+def test_q1086_next_walks_past_ineligible_rungs(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+
+    unit = sources.next_unit(weight="light", eligible=lambda unit: unit["ref"] == "Q-3")
+
+    assert (unit["source"], unit["ref"]) == ("open-item", "Q-3")
+
+
 def test_next_command_prints_a_unit_as_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     rc = next_mod.next_command(
         as_json=True,

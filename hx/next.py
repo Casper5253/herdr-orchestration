@@ -620,7 +620,15 @@ class Sources:
         rungs[audit], rungs[house] = rungs[house], rungs[audit]
         return tuple(rungs)
 
-    def next_unit(self, weight: str | None = None, running_heavy: int = 0, worker: str | None = None, exclude_refs: set[str] | None = None) -> Unit:
+    def next_unit(
+        self,
+        weight: str | None = None,
+        running_heavy: int = 0,
+        worker: str | None = None,
+        exclude_refs: set[str] | None = None,
+        *,
+        eligible: Callable[[Unit], bool] | None = None,
+    ) -> Unit:
         at_cap = running_heavy >= self.heavy_cap()
         excluded = set(exclude_refs or set())
         for _source, method in self._ladder():
@@ -635,6 +643,8 @@ class Sources:
                 ]
             if excluded:
                 units = [unit for unit in units if unit["ref"] not in excluded]
+            if eligible is not None:
+                units = [unit for unit in units if eligible(unit)]
             if worker:
                 units = sorted(units, key=lambda unit: 0 if unit["worker_hint"] == worker else 1)
             if units:

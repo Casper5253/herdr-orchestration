@@ -36,7 +36,7 @@ import datetime as dt
 import json
 from typing import Any
 
-from hx import usage
+from hx import devin, usage
 
 POOL_ORDER = ("claude", "codex", "opencode", "devin")
 POOL_LABELS = {
@@ -59,6 +59,7 @@ WINDOW_SECONDS = {
 CODEX_WINDOWS = (("primary", "5h", 300), ("secondary", "7d", 10080))
 CLAUDE_WINDOWS = (("five_hour", "5h"), ("seven_day", "7d"))
 OPENCODE_WINDOWS = ("5h", "7d", "30d")
+UNTRUSTED_TAGS = ("unknown", "stale", "partial")
 
 
 def _utcnow() -> dt.datetime:
@@ -125,15 +126,18 @@ def _window(
     length_seconds: float,
     now: dt.datetime,
     thresholds: dict[str, float],
+    *,
+    trusted: bool,
 ) -> dict[str, Any]:
     used_share = _share(used)
     reset = _instant(reset_at)
     remaining: float | None = None
     elapsed: float | None = None
-    if reset is not None:
-        remaining = max(0.0, (reset - now).total_seconds())
-        if length_seconds > 0:
-            elapsed = max(0.0, min(1.0, 1.0 - remaining / length_seconds))
+    if trusted and reset is not None and length_seconds > 0:
+        seconds_to_reset = (reset - now).total_seconds()
+        if 0 <= seconds_to_reset <= length_seconds:
+            remaining = seconds_to_reset
+            elapsed = 1.0 - remaining / length_seconds
     pace = (
         used_share - elapsed
         if used_share is not None and elapsed is not None
@@ -170,8 +174,10 @@ def _windows(
     now: dt.datetime,
     thresholds: dict[str, float],
 ) -> list[dict[str, Any]]:
+    sample = snapshot.get(pool) or {}
+    trusted = sample.get("tag") not in UNTRUSTED_TAGS
     if pool == "codex":
-        limits = (snapshot.get("codex") or {}).get("rate_limits") or {}
+        limits = sample.get("rate_limits") or {}
         rows = []
         for key, name, minutes in CODEX_WINDOWS:
             win = limits.get(key)
@@ -185,11 +191,12 @@ def _windows(
                     _minutes_seconds(win.get("window_minutes"), minutes),
                     now,
                     thresholds,
+                    trusted=trusted and win.get("tag") not in UNTRUSTED_TAGS,
                 )
             )
         return rows
     if pool == "claude":
-        limits = (snapshot.get("claude") or {}).get("rate_limits") or {}
+        limits = sample.get("rate_limits") or {}
         rows = []
         for key, name in CLAUDE_WINDOWS:
             win = limits.get(key)
@@ -212,11 +219,14 @@ def _windows(
                     WINDOW_SECONDS["claude"][name],
                     now,
                     thresholds,
+                    trusted=trusted and win.get("tag") not in UNTRUSTED_TAGS,
                 )
             )
         return rows
     if pool == "opencode":
-        windows = ((snapshot.get("opencode") or {}).get("pool") or {}).get("windows") or {}
+        shared_pool = sample.get("pool") or {}
+        trusted = trusted and shared_pool.get("tag") not in UNTRUSTED_TAGS
+        windows = shared_pool.get("windows") or {}
         rows = []
         for name in OPENCODE_WINDOWS:
             win = windows.get(name)
@@ -230,6 +240,7 @@ def _windows(
                     WINDOW_SECONDS["opencode"][name],
                     now,
                     thresholds,
+                    trusted=trusted and win.get("tag") not in UNTRUSTED_TAGS,
                 )
             )
         return rows
@@ -242,7 +253,7 @@ def _reason(status: str, windows: list[dict[str, Any]]) -> str:
         return f"underused on {names}: give it work"
     if status == "ahead":
         names = ", ".join(w["name"] for w in windows if w["status"] == "ahead")
-        return f"ahead on {names}: hold back"
+        return f"ahead on {names}: defer optional work"
     if status == "on_pace":
         return "on pace"
     return "usage unknown; not treated as exhausted"
@@ -272,25 +283,27 @@ def _pool(
     }
 
 
-def _devin(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _devin(
+    snapshot: dict[str, Any], policy: dict[str, Any], now: dt.datetime
+) -> dict[str, Any]:
     block = snapshot.get("devin") or {}
     promo = block.get("promo") or {}
-    if promo.get("active"):
-        return {
-            "pool": "devin",
-            "label": POOL_LABELS["devin"],
-            "source": block.get("tag"),
-            "status": "free",
-            "reason": "free SWE-2.1 promotion active",
-            "windows": [],
-        }
-    if not block or block.get("tag") == "unknown":
+    if not block or block.get("tag") in UNTRUSTED_TAGS:
         return {
             "pool": "devin",
             "label": POOL_LABELS["devin"],
             "source": block.get("tag"),
             "status": "unknown",
             "reason": "usage unknown; not treated as exhausted",
+            "windows": [],
+        }
+    if promo.get("active") and devin.promo_status(policy, now)["active"]:
+        return {
+            "pool": "devin",
+            "label": POOL_LABELS["devin"],
+            "source": block.get("tag"),
+            "status": "free",
+            "reason": "free SWE-2.1 promotion active",
             "windows": [],
         }
     return {
@@ -353,14 +366,14 @@ def build(
 ) -> dict[str, Any]:
     """The pace report from one usage snapshot; no measurement here."""
     snapshot = snapshot if isinstance(snapshot, dict) else {}
-    now = now or _instant(snapshot.get("timestamp")) or _utcnow()
+    now = now or _utcnow()
     thresholds = knobs(policy)
     pools = {}
     for name in ("claude", "codex", "opencode"):
         windows = _windows(snapshot, name, now, thresholds)
         source = (snapshot.get(name) or {}).get("tag")
         pools[name] = _pool(name, windows, source)
-    pools["devin"] = _devin(snapshot)
+    pools["devin"] = _devin(snapshot, policy or {}, now)
     report = {
         "generated_at": now.isoformat(),
         "policy": thresholds,
@@ -370,15 +383,19 @@ def build(
     return report
 
 
-def pool_for_worker(worker: Any) -> str | None:
+def pool_for_worker(worker: Any, kind: str | None = None) -> str | None:
+    if kind in POOL_ORDER:
+        return kind
     role = str(worker or "").rsplit("-", 1)[-1].lower()
     if role.startswith("devin"):
         return "devin"
+    if role == "luna":
+        return "codex"
     return role if role in ("claude", "codex", "opencode") else None
 
 
-def status_for(report: dict[str, Any] | None, worker: Any) -> str:
-    pool = pool_for_worker(worker)
+def status_for(report: dict[str, Any] | None, worker: Any, kind: str | None = None) -> str:
+    pool = pool_for_worker(worker, kind)
     if not report or not pool:
         return "on_pace"
     entry = (report.get("pools") or {}).get(pool) or {}

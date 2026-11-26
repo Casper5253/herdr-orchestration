@@ -7,10 +7,14 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from hx import balance, host
 
 NOW = dt.datetime(2026, 11, 26, 12, 0, tzinfo=dt.timezone.utc)
-POLICY = {"team_prefix": "dev-", "lead_role": "lead", "next": {
+CUTOFF = dt.datetime(2026, 12, 10, 10, tzinfo=dt.timezone.utc)
+POLICY = {"team_prefix": "dev-", "lead_role": "lead",
+    "devin": {"enabled": True, "promo": {"ends_at": CUTOFF.isoformat()}}, "next": {
     "heavy_cap": 1, "heavy_cap_when_memory_ok": 2,
     "free_memory_gb_threshold": 6.0, "stuck_minutes": 45}}
 
@@ -200,15 +204,15 @@ def test_underused_codex_gets_the_review_unit_first(tmp_path):
     assert "underused" in rows["assignments"][0]["pace"]["reason"]
 
 
-def test_over_pace_pool_is_held(tmp_path):
+def test_over_pace_pool_is_held_when_another_worker_can_take_the_unit(tmp_path):
     rows = balance.snapshot(
-        ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+        ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex"), member("dev-opencode")],
         policy=POLICY, now=NOW, free_gb=32, oneoff_count=0,
         next_unit=lambda **kw: unit("light", "codex", "review-1"),
         read_screen=lambda n, lines=240: "", report_time=lambda w, l: None,
         state_path=tmp_path / "state.json",
         pace_report=pace_report({"codex": "ahead"}))
-    assert rows["assignments"] == []
+    assert [row["worker"] for row in rows["assignments"]] == ["dev-opencode"]
 
 
 def test_unknown_pool_is_not_held(tmp_path):
@@ -300,3 +304,78 @@ def test_codex_rule_matches_policy_named_kind_or_label(tmp_path):
             next_unit=lambda **kw: offered,
             read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / ("s" + str(len(rows0 := [])) + ".json"))
         assert len(rows["assignments"]) == 1
+
+
+@pytest.mark.parametrize("status", ["ahead", "on_pace"])
+def test_q1086_balance_finds_suitable_review_below_first_unit(tmp_path, monkeypatch, capsys, status):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {
+        "codex": {"allow_if_any": [{"title_contains_any": ["review"]}]},
+    }
+    items = [
+        {"ref": "Q-11", "status": "todo", "kind": "task", "title": "Implement work"},
+        {"ref": "Q-12", "status": "todo", "kind": "task", "title": "Review work"},
+    ]
+
+    def query(name, payload):
+        if name == "listItems":
+            return {"items": items}
+        if name == "getItem":
+            return {"item": next(item for item in items if item["ref"] == payload["ref"])}
+        return {}
+
+    workers = [member("dev-codex")]
+    if status == "on_pace":
+        workers.append(member("dev-opencode"))
+    monkeypatch.setattr(balance.usage, "load_policy", lambda: policy)
+    monkeypatch.setattr(balance.usage, "usage_snapshot", lambda policy: {})
+    monkeypatch.setattr(balance.pace, "build", lambda *args: pace_report({"codex": status}))
+    monkeypatch.setattr(balance, "_utcnow", lambda: NOW)
+    monkeypatch.setattr(balance.usage, "team_agents", lambda prefix: {w["name"]: w for w in workers})
+    monkeypatch.setattr(balance.usage, "free_memory_gb", lambda: 32)
+    monkeypatch.setattr(balance.ledger_mod, "default_ledger", lambda: FakeLedger([]))
+    monkeypatch.setattr(balance.task_index, "open_entries", lambda: [])
+    monkeypatch.setattr(balance, "count_oneoff_processes", lambda: 0)
+    monkeypatch.setattr(balance, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(balance.jotarium.JotariumClient, "query", lambda self, name, payload: query(name, payload))
+
+    assert balance.command(as_json=True) == 0
+    assignments = json.loads(capsys.readouterr().out)["assignments"]
+    expected = [("dev-codex", "Q-12")]
+    if status == "on_pace":
+        expected.append(("dev-opencode", "Q-11"))
+    assert [(row["worker"], row["unit"]["ref"]) for row in assignments] == expected
+
+
+def test_q1086_ahead_worker_can_take_role_only_work(tmp_path):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {
+        "opencode": {"allow_if_any": [{"title_contains_any": ["implementation"]}]},
+    }
+    rows = balance.snapshot(
+        ledger=FakeLedger([]), members=[member("dev-opencode"), member("dev-codex")],
+        policy=policy, now=NOW, free_gb=32, next_unit=lambda **kw: unit("light", "codex", "review"),
+        state_path=tmp_path / "state.json", external_tasks=[],
+        pace_report=pace_report({"codex": "ahead", "opencode": "on_pace"}))
+
+    assert [row["worker"] for row in rows["assignments"]] == ["dev-codex"]
+
+
+def test_q1086_detected_codex_role_inherits_pool_pace(tmp_path):
+    specialist = member("dev-specialist")
+    specialist["kind"] = "codex"
+    rows = snap(tmp_path, members=[specialist, member("dev-opencode")],
+                pace_report=pace_report({"codex": "underused", "opencode": "on_pace"}))
+
+    assert [(row["worker"], row["pace"]["pool"]) for row in rows["assignments"]] == [
+        ("dev-specialist", "codex"), ("dev-opencode", "opencode"),
+    ]
+
+
+@pytest.mark.parametrize("role", ["devin", "devin2", "specialist"])
+def test_q1086_expired_devin_pane_never_gets_an_assignment(tmp_path, role):
+    worker = member(f"dev-{role}")
+    worker["kind"] = "devin"
+    rows = snap(tmp_path, members=[worker], now=CUTOFF, pace_report=pace_report({"devin": "free"}))
+
+    assert rows["assignments"] == []
