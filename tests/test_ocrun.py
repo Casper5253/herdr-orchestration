@@ -340,6 +340,95 @@ def test_main_prints_json_and_exit_code(repo: Path, routing_log: Path, monkeypat
     assert json.loads(out2)["failure"]["kind"] == "quota"
 
 
+def test_result_file_success_writes_utf8_json_after_the_run(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    result_path = tmp_path / "run-result.json"
+
+    def fake(cmd, cwd, timeout, env=None):  # noqa: ARG001
+        assert not result_path.exists(), "result file existed during the run"
+        return 0, SUCCESS_STREAM, "", False, True
+
+    monkeypatch.setattr(ocrun, "execute", fake)
+    code = ocrun.main([
+        "fix it", "--model", "qwen3.8-flash", "--cwd", str(repo),
+        "--result-file", str(result_path),
+    ])
+    out = capsys.readouterr().out
+    assert code == 0
+    raw = result_path.read_bytes()
+    file_result = json.loads(raw.decode("utf-8"))
+    assert file_result == json.loads(out)
+    assert file_result["ok"] is True
+    assert Path(file_result["run_dir"]).is_dir()
+    assert Path(file_result["final_message_file"]).is_file()
+    assert list(tmp_path.glob(f".{result_path.name}.*.tmp")) == []
+
+
+def test_result_file_writes_a_failure_classification(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    result_path = tmp_path / "quota.json"
+    monkeypatch.setattr(ocrun, "execute", _fake_execute(QUOTA_ERROR_STREAM, 0))
+    code = ocrun.main([
+        "fix it", "--model", "deepseek-v4.1-flash", "--cwd", str(repo),
+        "--result-file", str(result_path),
+    ])
+    capsys.readouterr()
+    assert code == 1
+    file_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert file_result["ok"] is False
+    assert file_result["failure"]["kind"] == "quota"
+    assert Path(file_result["run_dir"]).is_dir()
+    assert Path(file_result["final_message_file"]).is_file()
+    assert list(tmp_path.glob(f".{result_path.name}.*.tmp")) == []
+
+
+def test_result_file_records_a_refusal_before_launch(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    capture = json.loads(
+        (Path(__file__).parent / "fixtures/q421/devin-report-denied.json")
+        .read_text(encoding="utf-8")
+    )
+    result_path = tmp_path / "refused.json"
+    monkeypatch.setattr("hx.usage.load_policy", lambda: {})
+    monkeypatch.setattr(
+        ocrun, "execute", lambda *a, **k: pytest.fail("worker launched"))
+    code = ocrun.main([
+        "\n".join(capture["report_lines"]), "--model", "test-model",
+        "--cwd", str(repo), "--headless", "--result-file", str(result_path),
+    ])
+    capsys.readouterr()
+    assert code == 2
+    file_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert file_result["ok"] is False
+    assert file_result["failure"]["kind"] == "admission"
+
+
+def test_result_file_refuses_to_launch_when_stale(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    result_path = tmp_path / "stale.json"
+    result_path.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(
+        ocrun, "execute", lambda *a, **k: pytest.fail("worker launched"))
+    code = ocrun.main([
+        "fix it", "--model", "qwen3.8-flash", "--cwd", str(repo),
+        "--result-file", str(result_path),
+    ])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "already exists" in captured.err
+    assert captured.out == ""
+    assert result_path.read_text(encoding="utf-8") == "stale"
+    assert list(tmp_path.glob(f".{result_path.name}.*.tmp")) == []
+
+
 def test_default_routing_log_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HX_ROUTING_LOG", str(tmp_path / "routing.jsonl"))
     assert ocrun.default_routing_log() == tmp_path / "routing.jsonl"

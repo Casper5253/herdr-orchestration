@@ -38,6 +38,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,24 @@ def _report_prompt(prompt: str, sender: str) -> str:
 def _report_text(text: str, sender: str) -> str:
     text = re.sub(r"^\s*\[team(?: report)? from [^\]\r\n]+\]\s*", "", text).strip()
     return f"[team report from {sender}]\n{text}" if text else ""
+
+
+def _write_result_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _save_report(result: dict[str, Any], text: str, sender: str, run_dir: Path) -> None:
@@ -1764,7 +1783,18 @@ def main(argv: list[str] | None = None) -> int:
         "--profile",
         help="named execution profile (policy.json profiles): renders the worker config and preflights against it",
     )
+    parser.add_argument(
+        "--result-file",
+        default=None,
+        help="write the final JSON result to this path atomically as UTF-8",
+    )
     args = parser.parse_args(argv)
+
+    result_path = Path(args.result_file) if args.result_file else None
+    if result_path is not None and result_path.exists():
+        print(f"ocrun: result file already exists: {result_path}",
+              file=sys.stderr)
+        return 1
 
     if args.prompt_file:
         prompt = Path(args.prompt_file).read_text(encoding="utf-8")
@@ -1795,7 +1825,10 @@ def main(argv: list[str] | None = None) -> int:
         policy=load_policy(),
         profile=args.profile,
     )
-    print(json.dumps(result, indent=2))
+    payload = json.dumps(result, indent=2)
+    print(payload)
+    if result_path is not None:
+        _write_result_file(result_path, payload + "\n")
     failure = result.get("failure") or {}
     if not result["ok"]:
         print(f"ocrun failed ({failure.get('kind', 'unknown')}): {failure.get('reason') or 'no failure reason recorded'}",
