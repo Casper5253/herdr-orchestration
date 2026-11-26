@@ -203,15 +203,33 @@ def _notes_name_next_step(item: dict[str, Any]) -> bool:
     pattern = re.compile(r"next\s+(step|action|stage)|next\s*:", re.IGNORECASE)
     return any(pattern.search(text) for text in _note_texts(item.get("notes")))
 
+
+def _child_counts(value: Any) -> tuple[int, int]:
+    """Open and total child counts for Jotarium list-items dicts and get-item child lists."""
+    if isinstance(value, dict):
+        open_count = _count(value.get("open"))
+        total = sum(_count(value.get(key)) for key in ("open", "done", "cancelled"))
+        return open_count, total
+    if isinstance(value, list):
+        open_count = sum(
+            1
+            for child in value
+            if not isinstance(child, dict) or child.get("status") not in {"done", "cancelled"}
+        )
+        return open_count, len(value)
+    return 0, 0
+
+
+def _has_open_children(value: Any) -> bool:
+    return _child_counts(value)[0] > 0
+
+
 def _finished_container_without_next_step(item: dict[str, Any]) -> bool:
     if str(item.get("kind") or "").lower() not in {"project", "feature"}:
         return False
-    children = item.get("children")
-    if not isinstance(children, dict):
+    open_count, total = _child_counts(item.get("children"))
+    if open_count > 0:
         return False
-    if _count(children.get("open")) > 0:
-        return False
-    total = sum(_count(children.get(key)) for key in ("open", "done", "cancelled"))
     return total > 0 and not _notes_name_next_step(item)
 
 
@@ -483,7 +501,7 @@ def _item_with_history(detail: Any) -> dict[str, Any] | None:
         return None
     history = {
         field: detail[field]
-        for field in ("activity", "comments")
+        for field in ("activity", "comments", "children")
         if isinstance(detail.get(field), list)
     }
     return {**item, **history}
@@ -662,7 +680,7 @@ class Sources:
         if isinstance(blockers, dict) and blockers.get("open") is not None:
             return True
         children = item.get("children")
-        if isinstance(children, dict) and _truthy(children.get("open")):
+        if _has_open_children(children):
             return True
         return jotarium.live_worker(item.get("assignee"), self.live) is not None
 
@@ -773,7 +791,7 @@ class Sources:
             if summary.get("status") not in {"todo", "in_progress"}:
                 continue
             children = summary.get("children")
-            if isinstance(children, dict) and _truthy(children.get("open")):
+            if _has_open_children(children):
                 continue
             if ref in self.open_refs():
                 continue
@@ -784,7 +802,9 @@ class Sources:
         units: list[Unit] = []
         for summary in rows:
             ref = summary["ref"]
-            detail = self.query("getItem", {"ref": ref, "include": ["comments", "activity"]})
+            detail = self.query(
+                "getItem", {"ref": ref, "include": ["children", "comments", "activity"]}
+            )
             item = _item_with_history(detail)
             if item is None:
                 continue
@@ -796,7 +816,7 @@ class Sources:
             if isinstance(blockers, dict) and blockers.get("open") is not None:
                 continue
             children = item.get("children")
-            if isinstance(children, dict) and _truthy(children.get("open")):
+            if _has_open_children(children):
                 continue
             if ref in self.open_refs():
                 continue

@@ -52,7 +52,7 @@ def _summary(item: dict[str, Any], data: dict[str, Any] | None = None) -> dict[s
         "title": item.get("title"),
         "status": item.get("status"),
         "assignee": item.get("assignee"),
-        "children": item.get("children"),
+        "children": item.get("summaryChildren", item.get("children")),
         "acceptance": acceptance.get("status") if isinstance(acceptance, dict) else acceptance,
         "questType": item.get("questType"),
         "path": path,
@@ -82,7 +82,16 @@ class FakeJotarium:
             item = self.data["items"].get(ref)
             if item is None:
                 raise AssertionError(f"unexpected getItem {ref}")
-            return {"item": item, "comments": item.get("comments", [])}
+            row = dict(item)
+            detail_children = row.pop("detailChildren", None)
+            row.pop("summaryChildren", None)
+            detail = {"item": row, "comments": item.get("comments", [])}
+            if detail_children is not None:
+                include = payload.get("include") or []
+                detail["children"] = (
+                    detail_children if not include or "children" in include else []
+                )
+            return detail
         if name == "listItems":
             statuses = payload.get("status")
             parent = payload.get("parent")
@@ -772,6 +781,21 @@ def test_finished_project_container_without_a_next_step_is_not_a_unit(tmp_path: 
     data["items"]["P-2"] = {
         "ref": "P-2", "kind": "project", "title": "Trading Algorithm", "status": "todo",
         "children": {"open": 0, "done": 4, "cancelled": 1}, "notes": None,
+    }
+    refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
+    assert "P-2" not in refs
+
+
+def test_finished_project_container_in_live_getitem_shape_is_not_a_unit(tmp_path: Path) -> None:
+    data = _data()
+    child_rows = [
+        {"ref": f"Q-{140 + number}", "kind": "task", "title": f"done child {number}",
+         "status": "done", "children": {"open": 0, "done": 0}}
+        for number in range(7)
+    ]
+    data["items"]["P-2"] = {
+        "ref": "P-2", "kind": "project", "title": "Trading Algorithm", "status": "todo",
+        "summaryChildren": {"open": 0, "done": 7}, "detailChildren": child_rows, "notes": "",
     }
     refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
     assert "P-2" not in refs
