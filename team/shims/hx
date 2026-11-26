@@ -1,0 +1,18 @@
+#!/bin/sh
+# hx launcher: load hx only from the activated runtime pointer, never from the
+# source checkout. -I ignores an inherited PYTHONPATH and the cwd, so a dirty
+# source tree cannot be imported even when this runs inside it.
+root="${HX_RUNTIME_ROOT:-$HOME/.hx-runtime}"
+if [ ! -f "$root/current" ]; then
+    echo "hx: no runtime activated; run hx activate from the source checkout" >&2
+    exit 1
+fi
+IFS= read -r dir < "$root/current"
+dir=${dir%"$(printf '\r')"}
+if [ ! -f "$dir/hx/__main__.py" ]; then
+    echo "hx: activated runtime missing at $dir; run hx activate --rollback" >&2
+    exit 1
+fi
+HX_RUNTIME_DIR="$dir"
+export HX_RUNTIME_DIR
+exec "__HX_PYTHON_POSIX__" -I -B -c 'import os,sys; sys.path.insert(0, os.environ["HX_RUNTIME_DIR"]); from hx.__main__ import main; raise SystemExit(main())' "$@"

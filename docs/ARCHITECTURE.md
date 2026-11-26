@@ -6,7 +6,7 @@ Status: v1 design, 2026-10-16. Evidence for every provider fact is in `docs/audi
 
 Maximise useful work across three separate subscriptions. OpenCode Go is spent first, Claude and Codex are kept for judgment, review and escalation. Routine routing, usage checks, checkpointing and compaction run as deterministic scripts; a model is only asked when judgment is needed.
 
-Non-goals: no daemon, database, broker, dashboard or vector store. Python stdlib only. Everything is a CLI command (`python -m hx ...`) that the lead, a hook or a worker calls.
+Non-goals: no daemon, database, broker, dashboard or vector store. Python stdlib only. Everything is a CLI command (`hx ...`) that the lead, a hook or a worker calls.
 
 ## Key facts that shape the design
 
@@ -24,7 +24,7 @@ Non-goals: no daemon, database, broker, dashboard or vector store. Python stdlib
 ## Components
 
 ```
-hx/            python package, stdlib only, entry: python -m hx <command>
+hx/            python package, stdlib only, team entry: hx <command>
   usage.py     provider availability + quota snapshot (measured | estimated | unknown)
   route.py     deterministic router: task -> worker, model, effort, method
   ledger.py    task ledger, file ownership, routing log, outcomes

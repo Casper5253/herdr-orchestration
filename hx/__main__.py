@@ -6,7 +6,8 @@ import argparse
 import json
 import sys
 
-from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, say, task_index, team_stalls, team_watch, usage
+from hx import __version__
+from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, runtime, say, task_index, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -135,12 +136,31 @@ def _add_checkpoint_parser(subparsers: argparse._SubParsersAction) -> None:
     validate.set_defaults(func=_checkpoint_validate)
 
 
+def _add_activate_parser(subparsers: argparse._SubParsersAction) -> None:
+    activate = subparsers.add_parser(
+        "activate",
+        help="Pin the live hx runtime to a reviewed commit on the release ref.",
+    )
+    activate.add_argument("commit", nargs="?",
+                          help="commit to activate (default: HEAD of the release ref, main)")
+    activate.add_argument("--rollback", action="store_true",
+                          help="switch the pointer back to the previous build")
+    activate.add_argument("--runtime-root", help="runtime root (default: ~/.hx-runtime)")
+    activate.add_argument("--source", help="source checkout (default: this checkout or the recorded origin)")
+    activate.add_argument("--release-ref", help="reviewed ref (only main is accepted)")
+    activate.add_argument("--allow-state-change", action="store_true",
+                          help="allow activating across a state-format change after review")
+    activate.set_defaults(func=_activate)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hx",
         description="Herdr team CLI: usage, routing, ledger, checkpoint, context.",
     )
+    parser.add_argument("--version", action="version", version=f"hx {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_activate_parser(subparsers)
     _add_usage_parser(subparsers)
     _add_task_parser(subparsers)
     _add_say_parser(subparsers)
@@ -225,6 +245,20 @@ def _build_parser() -> argparse.ArgumentParser:
     stalls_parser.set_defaults(
         func=lambda args: team_stalls.run(args.team, dry_run=args.dry_run))
     return parser
+
+
+def _activate(args: argparse.Namespace) -> None:
+    if args.rollback:
+        result = runtime.rollback(root=args.runtime_root)
+    else:
+        result = runtime.activate(
+            args.commit,
+            root=args.runtime_root,
+            repo=args.source,
+            release=args.release_ref,
+            allow_state_change=args.allow_state_change,
+        )
+    print(json.dumps(result, indent=2))
 
 
 def _boundary(args: argparse.Namespace) -> None:
