@@ -2,8 +2,7 @@
 rem hx launcher: load hx only from the activated runtime pointer, never from the
 rem source checkout. -I ignores an inherited PYTHONPATH and the cwd.
 setlocal DisableDelayedExpansion
-set "HXROOT=%HX_RUNTIME_ROOT%"
-if "%HXROOT%"=="" set "HXROOT=%USERPROFILE%\.hx-runtime"
+set "HXROOT=%USERPROFILE%\.hx-runtime"
 if not exist "%HXROOT%\current" (
     echo hx: no runtime activated; run hx activate from the source checkout 1>&2
     exit /b 1

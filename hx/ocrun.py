@@ -1726,7 +1726,7 @@ def run(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m hx.ocrun",
+        prog="hx ocrun",
         description="Headless OpenCode worker wrapper with silent-failure detection.",
     )
     parser.add_argument("prompt", nargs="?", default=None, help="task prompt for the worker")

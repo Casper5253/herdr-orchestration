@@ -14,14 +14,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$policyPath = $env:HX_POLICY_PATH
-if (-not $policyPath) {
-    $policyPath = Join-Path (Split-Path $PSCommandPath) '..\policy.json'
-    if (-not (Test-Path $policyPath)) {
-        $hxCmd = (Get-Command hx.cmd -ErrorAction SilentlyContinue).Source
-        $hit = if ($hxCmd) { Select-String -Path $hxCmd -Pattern 'set "PYTHONPATH=([^;]+);' -List }
-        if ($hit) { $policyPath = Join-Path $hit.Matches[0].Groups[1].Value 'policy.json' }
-    }
+. (Join-Path (Split-Path $PSCommandPath) 'Resolve-HxPolicy.ps1')
+try {
+    $policyPath = Resolve-HxPolicyPath -ScriptDir (Split-Path $PSCommandPath)
+} catch {
+    $policyPath = $null
 }
 $leadRole = 'lead'
 if ($policyPath -and (Test-Path $policyPath)) {

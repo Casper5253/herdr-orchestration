@@ -23,20 +23,10 @@ if (-not (Test-Path (Join-Path $Project '.git'))) { throw "$Project is not a Git
 if (-not $DevinCwd) { $DevinCwd = $Project }
 $DevinCwd = (Resolve-Path $DevinCwd).Path
 $dir = Split-Path $PSCommandPath
+. (Join-Path $dir 'Resolve-HxPolicy.ps1')
 
 # Launch models and bin paths come from policy, regardless of stale installed overlay defaults.
-$policyPath = $env:HX_POLICY_PATH
-if (-not $policyPath) {
-    $policyPath = Join-Path $dir '..\policy.json'
-    if (-not (Test-Path $policyPath)) {
-        # Installed under ~/.herdr-team the script has no repo sibling; the hx.cmd shim install.ps1
-        # writes embeds the repo path in PYTHONPATH.
-        $hxCmd = (Get-Command hx.cmd -ErrorAction SilentlyContinue).Source
-        $hit = if ($hxCmd) { Select-String -Path $hxCmd -Pattern 'set "PYTHONPATH=([^;]+);' -List }
-        if ($hit) { $policyPath = Join-Path $hit.Matches[0].Groups[1].Value 'policy.json' }
-    }
-}
-if (-not (Test-Path $policyPath)) { throw 'policy.json not found; set HX_POLICY_PATH or run the launcher from the hx repo checkout.' }
+$policyPath = Resolve-HxPolicyPath -ScriptDir $dir
 $policy = Get-Content -Raw $policyPath | ConvertFrom-Json
 $leadRole = if ($policy.lead_role) { [string]$policy.lead_role } else { 'lead' }
 

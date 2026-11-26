@@ -2,7 +2,7 @@
 # hx launcher: load hx only from the activated runtime pointer, never from the
 # source checkout. -I ignores an inherited PYTHONPATH and the cwd, so a dirty
 # source tree cannot be imported even when this runs inside it.
-root="${HX_RUNTIME_ROOT:-$HOME/.hx-runtime}"
+root="$HOME/.hx-runtime"
 if [ ! -f "$root/current" ]; then
     echo "hx: no runtime activated; run hx activate from the source checkout" >&2
     exit 1

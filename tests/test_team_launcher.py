@@ -1,11 +1,47 @@
 """Exercise the real launcher with a recording Herdr stub and a temporary home."""
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+
+def test_team_launchers_use_the_shared_runtime_policy_resolver() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    for name in ("Start-HerdrTeam.ps1", "Start-HerdrAppTeam.ps1", "Set-HerdrLead.ps1"):
+        text = (repo / "team" / name).read_text(encoding="utf-8")
+        assert "Resolve-HxPolicy.ps1" in text
+        assert "PYTHONPATH" not in text
+
+
+def test_runtime_policy_resolver_prefers_the_activated_export(tmp_path):
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is required for the policy resolver")
+    repo = Path(__file__).resolve().parents[1]
+    home = tmp_path / "home"
+    runtime_install = home / ".hx-runtime" / "abc123"
+    runtime_install.mkdir(parents=True)
+    runtime_policy = runtime_install / "policy.json"
+    runtime_policy.write_text('{"persistent_opencode_model":"runtime-model"}', encoding="utf-8")
+    (home / ".hx-runtime" / "current").write_text(str(runtime_install) + "\n\n", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts.parent / "policy.json").write_text(
+        '{"persistent_opencode_model":"checkout-model"}', encoding="utf-8")
+    command = (
+        ". '" + str(repo / "team" / "Resolve-HxPolicy.ps1") + "'; "
+        "Resolve-HxPolicyPath -ScriptDir '" + str(scripts) + "'"
+    )
+    result = subprocess.run([
+        powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "USERPROFILE": str(home), "HX_RUNTIME_ROOT": str(tmp_path / "wrong-runtime")})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(runtime_policy)
 
 
 @pytest.mark.parametrize("model", ["deepseek-v4.1-flash", "another-policy-model", None, "opencode-go/wrong"])
@@ -22,6 +58,8 @@ def test_opencode_launch_uses_policy_over_stale_overlay(tmp_path, model):
     launcher.write_bytes((repo / "team/Start-HerdrTeam.ps1").read_bytes())
     (tmp_path / "DevinModelGate.ps1").write_bytes(
         (repo / "team/DevinModelGate.ps1").read_bytes())
+    (tmp_path / "Resolve-HxPolicy.ps1").write_bytes(
+        (repo / "team/Resolve-HxPolicy.ps1").read_bytes())
     (tmp_path / "opencode-trusted-dev.jsonc").write_text(
         '{"model":"opencode-go/qwen3.7-plus"}', encoding="utf-8")
     policy = tmp_path / "policy.json"
@@ -70,6 +108,8 @@ def test_devin_launch_refuses_a_model_outside_allowed_models(tmp_path):
     launcher.write_bytes((repo / "team/Start-HerdrTeam.ps1").read_bytes())
     (tmp_path / "DevinModelGate.ps1").write_bytes(
         (repo / "team/DevinModelGate.ps1").read_bytes())
+    (tmp_path / "Resolve-HxPolicy.ps1").write_bytes(
+        (repo / "team/Resolve-HxPolicy.ps1").read_bytes())
     (tmp_path / "opencode-trusted-dev.jsonc").write_text("{}", encoding="utf-8")
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({
@@ -118,6 +158,8 @@ def test_devin_launch_refuses_an_allowlisted_model_the_live_list_tags_paid(tmp_p
     launcher.write_bytes((repo / "team/Start-HerdrTeam.ps1").read_bytes())
     (tmp_path / "DevinModelGate.ps1").write_bytes(
         (repo / "team/DevinModelGate.ps1").read_bytes())
+    (tmp_path / "Resolve-HxPolicy.ps1").write_bytes(
+        (repo / "team/Resolve-HxPolicy.ps1").read_bytes())
     (tmp_path / "devin-pane.config.json").write_bytes(
         (repo / "team/devin-pane.config.json").read_bytes())
     (tmp_path / "opencode-trusted-dev.jsonc").write_text("{}", encoding="utf-8")

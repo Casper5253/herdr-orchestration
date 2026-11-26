@@ -1,7 +1,10 @@
 """Q-1015: heavy/light dispatch and the stuck-worker watchdog."""
 import datetime as dt
 import json
+import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from hx import balance, host
@@ -118,6 +121,25 @@ def test_output_change_and_recent_report_prevent_stuck(tmp_path):
     assert rows["slots"][0]["state"] == "heavy"
     rows = snap(tmp_path / "out", now=NOW + dt.timedelta(minutes=66), screen="same\nnew output", **args)
     assert rows["slots"][0]["state"] == "stuck"
+
+
+def test_process_scan_recognizes_the_pinned_shim_ocrun_shape():
+    baseline = balance.count_oneoff_processes()
+    proc = subprocess.Popen([
+        sys.executable, "-I", "-B", "-c",
+        "import time; time.sleep(30)", "ocrun", "--worker", "devin"])
+    try:
+        deadline = time.time() + 10
+        count = baseline
+        while time.time() < deadline:
+            count = balance.count_oneoff_processes()
+            if count >= baseline + 1:
+                break
+            time.sleep(0.1)
+        assert count >= baseline + 1
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 def test_process_scan_pattern_and_json_shape(tmp_path, monkeypatch):

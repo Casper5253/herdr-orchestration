@@ -2,7 +2,13 @@
 
 The shims used to put the source checkout on PYTHONPATH, so a worker edit
 there ran on every agent's next hx call, before review. This module owns the
-replacement boundary:
+replacement boundary.
+
+Threat model: every agent runs as one Windows user and can edit files in that
+home folder, so hx cannot stop a hostile agent. This guard is against
+accidents: a well-meaning worker's uncommitted or unreviewed edits reaching
+the team's hx. Spoofing a pane id or planting a fake hc on PATH is out of
+scope.
 
 * ``activate`` checks that the commit is on ``main`` and the checkout has no
   uncommitted tracked hx changes. It exports the commit and self-checks a new
@@ -12,8 +18,9 @@ replacement boundary:
 * ``status`` reports the loaded commit and install path for ``hx doctor``.
 
 Project state still lives in ``<repo>/.hx/`` and the shared state dirs: only
-the code location changes. The exported tree carries ``policy.json`` and
-``team/`` because ``paths.package_root()`` resolves resources against it.
+the code location changes. The exported tree carries only ``hx/``, ``policy.json`` and
+``team/``: the runtime code plus the resources ``paths.package_root()`` resolves.
+Other tracked or untracked checkout content never enters the runtime.
 """
 
 from __future__ import annotations
@@ -33,14 +40,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hx import paths
+from hx import host, paths, usage
 from hx.ledger import LeaseLock
 
 CURRENT = "current"
 LEGACY_PREVIOUS = "previous"
-RELEASE_REF = "refs/heads/main"
+RELEASE_REF = "refs/remotes/origin/main"
+RELEASE_NAME = "origin/main"
 BUILD_FILE = "runtime.json"
 HX_PATHS = ("hx", "policy.json")
+EXPORT_PATHS = ("hx", "hooks", "policy.json", "team")
 
 
 def runtime_root() -> Path:
@@ -107,12 +116,52 @@ def read_build(install: Path) -> dict[str, Any] | None:
 
 
 def _git(repo: Path | str, *args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     proc = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=60)
+        ["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=60, env=env)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise RuntimeError(f"git {' '.join(args)} failed: {detail}")
     return proc.stdout.strip()
+
+
+def _caller_member() -> host.Member | None:
+    """The verified team member running this process, or None outside a team."""
+    detected = host.detect()
+    return detected.own() if detected is not None else None
+
+
+def _require_lead_terminal(action: str, policy: dict[str, Any] | None = None) -> None:
+    lead_role = str((policy or {}).get("lead_role", "lead"))
+    try:
+        member = _caller_member()
+    except Exception as exc:
+        raise RuntimeError(
+            f"refusing: only the team lead terminal may {action} the hx runtime; "
+            "caller identity could not be verified") from exc
+    role = str(member.get("role") or "") if isinstance(member, dict) else ""
+    team = str(member.get("team") or "") if isinstance(member, dict) else ""
+    if member is None or not team:
+        raise RuntimeError(
+            f"refusing: only the team lead terminal may {action} the hx runtime; "
+            "the caller is not a team terminal")
+    if role != lead_role:
+        raise RuntimeError(
+            f"refusing: only the team lead terminal may {action} the hx runtime; "
+            f"caller role is {role or 'unknown'}")
+
+
+def _policy_from_commit(source: Path, commit: str) -> dict[str, Any]:
+    try:
+        text = _git(source, "show", f"{commit}:policy.json")
+        data = json.loads(text)
+    except Exception:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _fetch_release(source: Path) -> None:
+    _git(source, "fetch", "--no-tags", "origin", "main")
 
 
 def _is_ancestor(repo: Path | str, commit: str, ref: str) -> bool:
@@ -194,7 +243,7 @@ def _self_check(install: Path, cwd: Path) -> None:
 def _export(repo: Path, commit: str, staging: Path, root: Path) -> None:
     archive = root / f".archive-{os.getpid()}.tar"
     try:
-        _git(repo, "archive", "--format=tar", f"--output={archive}", commit)
+        _git(repo, "archive", "--format=tar", f"--output={archive}", commit, "--", *EXPORT_PATHS)
         with tarfile.open(archive) as tar:
             try:
                 tar.extractall(staging, filter="data")
@@ -250,27 +299,36 @@ def _verify_export(install: Path, reviewed: Path) -> None:
             path.unlink()
 
 
+def _release_head(repo: Path) -> str:
+    try:
+        return _git(repo, "rev-parse", "--verify", "--end-of-options",
+                    f"{RELEASE_REF}^{{commit}}")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "refusing: origin/main is not fetched. Fetch the reviewed main, "
+            "then activate.") from exc
+
+
 def _require_reviewed_commit(source: Path, full: str) -> None:
     if not _is_ancestor(source, full, RELEASE_REF):
         raise RuntimeError(
-            f"refusing: {full[:12]} is not on main. Activate only a reviewed commit.")
+            f"refusing: {full[:12]} is not on origin/main. "
+            "Activate only a reviewed commit fetched from GitHub.")
 
 
 def activate(commit: str | None = None, root: str | Path | None = None,
              repo: str | Path | None = None, release: str | None = None,
              allow_state_change: bool = False) -> dict[str, Any]:
     root_path = (Path(root) if root is not None else runtime_root()).resolve()
-    ref = release if release is not None else os.environ.get("HX_RELEASE_REF", "main")
-    if ref not in ("main", RELEASE_REF):
-        raise RuntimeError(f"refusing: reviewed release ref is main, got {ref!r}")
+    _require_lead_terminal("activate")
+    if release not in (None, RELEASE_NAME, RELEASE_REF) or os.environ.get("HX_RELEASE_REF"):
+        raise RuntimeError("refusing: reviewed release ref is fixed to origin/main")
     source = source_repo(repo)
+    _fetch_release(source)
     full = _git(source, "rev-parse", "--verify", "--end-of-options",
                 f"{commit or RELEASE_REF}^{{commit}}")
     _require_reviewed_commit(source, full)
-    dirty = dirty_hx_changes(source)
-    if dirty:
-        raise RuntimeError(
-            "refusing: uncommitted tracked hx changes in the checkout: " + ", ".join(dirty))
+    _require_lead_terminal("activate", _policy_from_commit(source, full))
 
     short = full[:12]
     install = root_path / short
@@ -294,8 +352,9 @@ def activate(commit: str | None = None, root: str | Path | None = None,
                     "commit": full,
                     "short": short,
                     "source_repo": str(source),
-                    "release_ref": "main",
+                    "release_ref": RELEASE_NAME,
                     "state_format": candidate_format,
+                    "lock_first": True,
                     "created": dt.datetime.now(dt.timezone.utc).isoformat(),
                 }
                 (staging / BUILD_FILE).write_text(
@@ -325,6 +384,7 @@ def activate(commit: str | None = None, root: str | Path | None = None,
 
 
 def rollback(root: str | Path | None = None) -> dict[str, Any]:
+    _require_lead_terminal("roll back")
     root_path = (Path(root) if root is not None else runtime_root()).resolve()
     with LeaseLock(root_path / "activation.lock"):
         current, previous = _read_installs(root_path)
@@ -340,7 +400,11 @@ def rollback(root: str | Path | None = None) -> dict[str, Any]:
                 or not isinstance(origin, str) or not origin):
             raise RuntimeError(f"refusing: missing build identity in {previous}")
         source = Path(origin)
+        if build.get("lock_first") is not True:
+            raise RuntimeError("refusing: rollback target predates the first lock-first build")
+        _fetch_release(source)
         _require_reviewed_commit(source, full)
+        _require_lead_terminal("roll back", _policy_from_commit(source, full))
         with tempfile.TemporaryDirectory(prefix=".staging-", dir=root_path) as scratch:
             reviewed = Path(scratch) / "export"
             reviewed.mkdir()
@@ -376,7 +440,7 @@ def status(package_root: str | Path | None = None) -> dict[str, Any]:
         repo = str(build["source_repo"])
     elif (pkg / ".git").exists():
         repo = str(pkg)
-    ref = "main"
+    ref = RELEASE_NAME
     head: str | None = None
     if repo:
         try:

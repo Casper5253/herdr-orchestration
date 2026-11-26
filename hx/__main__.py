@@ -1,4 +1,4 @@
-"""Entry point: python -m hx <command>."""
+"""Entry point: hx <command>."""
 
 from __future__ import annotations
 
@@ -139,15 +139,15 @@ def _add_checkpoint_parser(subparsers: argparse._SubParsersAction) -> None:
 def _add_activate_parser(subparsers: argparse._SubParsersAction) -> None:
     activate = subparsers.add_parser(
         "activate",
-        help="Pin the live hx runtime to a reviewed commit on the release ref.",
+        help="Pin the live hx runtime to a reviewed commit fetched on origin/main.",
     )
     activate.add_argument("commit", nargs="?",
-                          help="commit to activate (default: HEAD of the release ref, main)")
+                          help="commit to activate (default: HEAD of the fetched origin/main ref)")
     activate.add_argument("--rollback", action="store_true",
                           help="switch the pointer back to the previous build")
     activate.add_argument("--runtime-root", help="runtime root (default: ~/.hx-runtime)")
     activate.add_argument("--source", help="source checkout (default: this checkout or the recorded origin)")
-    activate.add_argument("--release-ref", help="reviewed ref (only main is accepted)")
+    activate.add_argument("--release-ref", help="reviewed ref (only origin/main is accepted)")
     activate.add_argument("--allow-state-change", action="store_true",
                           help="allow activating across a state-format change after review")
     activate.set_defaults(func=_activate)

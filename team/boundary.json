@@ -1,8 +1,886 @@
 {
-  "version": 1,
+  "claude": {
+    "file": "team/claude-settings.json",
+    "note": "The Claude lead's permission lists. Only the 'permissions' key is generated; statusLine and hooks in the file are kept as they are.",
+    "permissions": {
+      "allow": [
+        "Bash(herdr agent list:*)",
+        "PowerShell(herdr agent list:*)",
+        "Bash(herdr agent get:*)",
+        "PowerShell(herdr agent get:*)",
+        "Bash(herdr agent read:*)",
+        "PowerShell(herdr agent read:*)",
+        "Bash(herdr agent wait:*)",
+        "PowerShell(herdr agent wait:*)",
+        "Bash(herdr pane list:*)",
+        "PowerShell(herdr pane list:*)",
+        "Bash(herdr pane read:*)",
+        "PowerShell(herdr pane read:*)",
+        "Bash(herdr status:*)",
+        "PowerShell(herdr status:*)",
+        "Bash(herdr --skill:*)",
+        "PowerShell(herdr --skill:*)",
+        "Bash(hx:*)",
+        "PowerShell(hx:*)",
+        "Bash(herdr agent prompt hx-claude:*)",
+        "PowerShell(herdr agent prompt hx-claude:*)",
+        "Bash(herdr agent prompt hx-codex:*)",
+        "PowerShell(herdr agent prompt hx-codex:*)",
+        "Bash(herdr agent prompt hx-luna:*)",
+        "PowerShell(herdr agent prompt hx-luna:*)",
+        "Bash(herdr agent prompt hx-haiku:*)",
+        "PowerShell(herdr agent prompt hx-haiku:*)"
+      ],
+      "ask": [
+        "Bash(herdr agent send-keys:*)",
+        "PowerShell(herdr agent send-keys:*)",
+        "Bash(herdr agent start:*)",
+        "PowerShell(herdr agent start:*)",
+        "Bash(herdr pane run:*)",
+        "PowerShell(herdr pane run:*)",
+        "Bash(herdr pane send-text:*)",
+        "PowerShell(herdr pane send-text:*)",
+        "Bash(herdr pane send-keys:*)",
+        "PowerShell(herdr pane send-keys:*)",
+        "Bash(herdr pane close:*)",
+        "PowerShell(herdr pane close:*)",
+        "Bash(herdr workspace close:*)",
+        "PowerShell(herdr workspace close:*)",
+        "Bash(herdr server:*)",
+        "PowerShell(herdr server:*)"
+      ],
+      "deny": [
+        "Bash(herdr agent prompt dev-claude:*)"
+      ]
+    }
+  },
+  "codex": {
+    "file": "team/herdr-team.rules",
+    "note": "The Codex prefix_rule list, in file order. 'prompt' is Codex's ask decision; it is the hard stop because team Codex runs without a sandbox.",
+    "rules": [
+      {
+        "comments": [
+          "# Herdr trusted dev team. Rollback: delete this file.",
+          "# Read-only discovery/status: run outside the sandbox without prompting."
+        ],
+        "decision": "allow",
+        "pattern": [
+          "herdr",
+          "agent",
+          [
+            "list",
+            "get",
+            "read",
+            "wait"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "herdr",
+          "pane",
+          [
+            "list",
+            "read",
+            "current",
+            "layout",
+            "get"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "herdr",
+          [
+            "workspace",
+            "tab"
+          ],
+          "list"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "herdr",
+          "status"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "herdr",
+          "--skill"
+        ]
+      },
+      {
+        "comments": [
+          "# Team messages go through `hx say`, which only reaches the sender's own team (allowed by the hx rules below).",
+          "# A raw prompt could reach any agent, including another team's, so it asks."
+        ],
+        "decision": "prompt",
+        "pattern": [
+          "herdr",
+          "agent",
+          "prompt"
+        ]
+      },
+      {
+        "comments": [
+          "# Keyboard injection, raw pane control and agent lifecycle stay with the user."
+        ],
+        "decision": "prompt",
+        "pattern": [
+          "herdr",
+          "agent",
+          [
+            "send-keys",
+            "start",
+            "rename",
+            "focus",
+            "attach"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "herdr",
+          "pane",
+          [
+            "run",
+            "send-text",
+            "send-keys",
+            "close",
+            "split",
+            "move",
+            "input"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "herdr",
+          [
+            "workspace",
+            "tab",
+            "server",
+            "worktree"
+          ],
+          [
+            "create",
+            "close",
+            "stop"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# Herdr app (herdr-core, `hc`), added 2026-11-09 on the owner's request for one report path for every worker.",
+          "# Reads are free. Reports go through `hx say`, which enforces the team boundary and the outbox;",
+          "# a raw `hc send` could reach any terminal, so it asks. Starting, ending or typing keys asks."
+        ],
+        "decision": "allow",
+        "pattern": [
+          "hc",
+          [
+            "ls",
+            "get",
+            "read",
+            "wait",
+            "templates",
+            "schema",
+            "--help"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "hc",
+          "send"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "hc",
+          [
+            "run",
+            "kill",
+            "rm",
+            "keys",
+            "interrupt",
+            "label",
+            "keep",
+            "attach",
+            "server",
+            "exec",
+            "file",
+            "put"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# Routine in-repo dev work (added 2026-10-12 to stop repeated approval prompts).",
+          "# The project venv's base python lives under WindowsApps, which the MXC sandbox blocks, so these must run unprompted outside it.",
+          "# Only plain commands match: no pipes, ';', '&&', $env expressions or powershell -Command wrappers."
+        ],
+        "decision": "allow",
+        "pattern": [
+          [
+            "backend/.venv/Scripts/python.exe",
+            "backend\\.venv\\Scripts\\python.exe",
+            ".venv/Scripts/python.exe",
+            ".venv\\Scripts\\python.exe"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "git"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "npm",
+          "run",
+          [
+            "build",
+            "lint",
+            "test"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "npm.cmd",
+          "run",
+          [
+            "build",
+            "lint",
+            "test"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# Team Codex runs without a sandbox (owner decision 2026-10-18), so these are the hard stop for destructive git.",
+          "# The stricter decision wins over the plain git allow above."
+        ],
+        "decision": "prompt",
+        "pattern": [
+          "git",
+          [
+            "push",
+            "reset",
+            "clean",
+            "rebase",
+            "filter-branch",
+            "filter-repo",
+            "reflog",
+            "gc",
+            "prune",
+            "update-ref"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "git",
+          "branch",
+          [
+            "-D",
+            "-d",
+            "--delete",
+            "-f",
+            "--force"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "git",
+          "checkout",
+          [
+            "-f",
+            "--force",
+            "--",
+            "."
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "git",
+          "restore"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "git",
+          "worktree",
+          [
+            "remove",
+            "prune"
+          ]
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "prompt",
+        "pattern": [
+          "git",
+          "stash",
+          [
+            "drop",
+            "clear"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# pytest still runs through python; hx itself must run through the pinned shim."
+        ],
+        "decision": "allow",
+        "pattern": [
+          "python",
+          "-m",
+          "pytest"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "hx"
+        ]
+      },
+      {
+        "comments": [
+          "# Absolute path to the Personal Finance Dashboard venv, used from worktrees (added 2026-10-16)."
+        ],
+        "decision": "allow",
+        "pattern": [
+          [
+            "C:/Users/caspe/Documents/Projects/Personal Finance Dashboard/backend/.venv/Scripts/python.exe",
+            "C:\\Users\\caspe\\Documents\\Projects\\Personal Finance Dashboard\\backend\\.venv\\Scripts\\python.exe",
+            "../../backend/.venv/Scripts/python.exe",
+            "..\\..\\backend\\.venv\\Scripts\\python.exe"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# QuantLab venv, used from the main checkout and from worktrees (added 2026-10-17, owner request)."
+        ],
+        "decision": "allow",
+        "pattern": [
+          [
+            "C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe",
+            "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe",
+            "../../quantlab/.venv/Scripts/python.exe",
+            "..\\..\\quantlab\\.venv\\Scripts\\python.exe",
+            "../quantlab/.venv/Scripts/python.exe",
+            "..\\quantlab\\.venv\\Scripts\\python.exe"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request)."
+        ],
+        "decision": "allow",
+        "pattern": [
+          [
+            "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+            "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+            "msedge",
+            "msedge.exe"
+          ]
+        ]
+      },
+      {
+        "comments": [
+          "# Lead compaction by Codex (15 Nov): only these exact commands against the lead terminal t2x."
+        ],
+        "decision": "allow",
+        "pattern": [
+          "C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "-Command",
+          "hc keys t2x enter"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "hc",
+          "keys",
+          "t2x",
+          "enter"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "-Command",
+          "hc keys t2x / c o m p a c t"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "hc",
+          "keys",
+          "t2x",
+          "/",
+          "c",
+          "o",
+          "m",
+          "p",
+          "a",
+          "c",
+          "t"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "-Command",
+          "hc wait t2x --timeout 900"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "hc",
+          "wait",
+          "t2x",
+          "--timeout",
+          "900"
+        ]
+      },
+      {
+        "comments": [],
+        "decision": "allow",
+        "pattern": [
+          "hc",
+          "send",
+          "t2x"
+        ]
+      }
+    ]
+  },
+  "devin": {
+    "note": "The two Devin JSONC config templates. Non-permission fields (model pin, permission_mode, read_config_from, subagents_enabled, attribution) are fixed by the renderer; only the deny list comes from here.",
+    "pane": {
+      "file": "team/devin-pane.config.json",
+      "hx": "narrow"
+    },
+    "worker": {
+      "file": "team/devin-worker.config.json",
+      "hx": "deny-all"
+    }
+  },
   "note": "Single source for the Herdr worker boundary (Q-649, orchestration review recommendation 3). `hx boundary gen` renders every worker config from this file; `hx boundary check` fails when one drifts. Workers named here: devin-worker and devin-pane (team/devin-*.config.json), opencode (team/opencode-trusted-dev.jsonc), codex (team/herdr-team.rules), claude (team/claude-settings.json), and the execution profiles inside policy.json.",
+  "opencode": {
+    "home_ask_dirs": [
+      ".codex",
+      ".claude",
+      ".config/opencode",
+      "APPDATA/devin",
+      ".local/share/opencode"
+    ],
+    "home_read_dirs": [
+      ".agents",
+      ".claude/skills",
+      ".codex/skills",
+      "APPDATA/devin/skills",
+      ".herdr-team",
+      ".herdr-team/state/hc-bindings",
+      ".config/herdr-app",
+      ".config/opencode/agents",
+      ".config/opencode/node_modules",
+      ".config/opencode/plugins",
+      ".local/bin",
+      "LOCALAPPDATA/herdr-core",
+      "APPDATA/herdr-core",
+      "APPDATA/herdr",
+      "LOCALAPPDATA/Programs/herdr-core",
+      "LOCALAPPDATA/Programs/herdr-app",
+      "LOCALAPPDATA/Temp",
+      "Documents/Notes/FDE Knowledge",
+      ".claude/hooks"
+    ],
+    "no_write_dirs": [
+      ".config/herdr-app",
+      "LOCALAPPDATA/herdr-core",
+      "APPDATA/herdr-core",
+      "APPDATA/herdr",
+      "LOCALAPPDATA/Programs/herdr-core",
+      "LOCALAPPDATA/Programs/herdr-app"
+    ],
+    "no_write_dirs_with_relative": [
+      ".herdr-team",
+      "Documents/Notes/FDE Knowledge"
+    ],
+    "note": "Components of the OpenCode permission boundary. Home-relative entries are expanded per machine (APPDATA/ and LOCALAPPDATA/ resolve to the user's AppData dirs; everything else is under the home dir). Directory entries render with a trailing backslash-star.",
+    "overlay_edit_extra_globs": [
+      "*\\.env*",
+      "*credentials.toml"
+    ],
+    "overlay_read_extra": [
+      ".env*"
+    ],
+    "relative_secret_globs": [
+      "*\\.env*",
+      "*\\.ssh\\*",
+      "*\\.codex\\auth.json",
+      "*\\.codex\\config.toml",
+      "*\\.codex\\*.config.toml",
+      "*\\.claude\\.credentials.json",
+      "*\\.local\\share\\opencode\\auth.json",
+      "*\\.config\\opencode\\opencode.jsonc",
+      "*credentials.toml"
+    ],
+    "run_secret_read_globs": [
+      ".env*",
+      "**\\.env*",
+      "**\\.ssh\\**",
+      "**\\credentials.toml",
+      "~\\.ssh\\**",
+      "~\\AppData\\Roaming\\devin\\credentials.toml"
+    ],
+    "run_secret_write_globs": [
+      ".env*",
+      "**\\.env*",
+      "**\\.git\\**",
+      "**\\.ssh\\**",
+      "**\\credentials.toml"
+    ],
+    "secret_dirs": [
+      ".ssh"
+    ],
+    "secret_files": [
+      ".codex/auth.json",
+      ".codex/config.toml",
+      ".codex/*.config.toml",
+      ".claude/.credentials.json",
+      ".local/share/opencode/auth.json",
+      ".config/opencode/opencode.jsonc",
+      "APPDATA/devin/credentials.toml"
+    ],
+    "skill_edit_tails": [
+      "\\.agents\\*",
+      "\\.claude\\skills\\*",
+      "\\.codex\\skills\\*",
+      "\\AppData\\Roaming\\devin\\skills\\*"
+    ],
+    "skill_roots": [
+      ".agents",
+      ".claude/skills",
+      ".codex/skills",
+      "APPDATA/devin/skills"
+    ],
+    "team_bash": [
+      [
+        "*",
+        "allow"
+      ],
+      [
+        "python -m hx*",
+        "deny"
+      ],
+      [
+        "*.env*",
+        "deny"
+      ],
+      [
+        "*auth.json*",
+        "deny"
+      ],
+      [
+        "*config.toml*",
+        "deny"
+      ],
+      [
+        "*.credentials.json*",
+        "deny"
+      ],
+      [
+        "*opencode.jsonc*",
+        "deny"
+      ],
+      [
+        "*credentials.toml*",
+        "deny"
+      ],
+      [
+        "*.ssh\\*",
+        "deny"
+      ],
+      [
+        "herdr *",
+        "deny"
+      ],
+      [
+        "herdr agent list*",
+        "allow"
+      ],
+      [
+        "herdr agent get *",
+        "allow"
+      ],
+      [
+        "herdr agent read *",
+        "allow"
+      ],
+      [
+        "herdr agent wait *",
+        "allow"
+      ],
+      [
+        "herdr pane list*",
+        "allow"
+      ],
+      [
+        "herdr pane read *",
+        "allow"
+      ],
+      [
+        "herdr status*",
+        "allow"
+      ],
+      [
+        "herdr --skill*",
+        "allow"
+      ],
+      [
+        "hc *",
+        "ask"
+      ],
+      [
+        "hc ls*",
+        "allow"
+      ],
+      [
+        "hc get *",
+        "allow"
+      ],
+      [
+        "hc read *",
+        "allow"
+      ],
+      [
+        "hc wait *",
+        "allow"
+      ],
+      [
+        "hc templates*",
+        "allow"
+      ],
+      [
+        "hc schema*",
+        "allow"
+      ],
+      [
+        "hc events*",
+        "allow"
+      ],
+      [
+        "hc --skill*",
+        "allow"
+      ],
+      [
+        "hc --help*",
+        "allow"
+      ],
+      [
+        "herdr-app ls*",
+        "allow"
+      ],
+      [
+        "herdr-app status*",
+        "allow"
+      ],
+      [
+        "herdr-app commands*",
+        "allow"
+      ],
+      [
+        "herdr-app --skill*",
+        "allow"
+      ],
+      [
+        "herdr-app --help*",
+        "allow"
+      ]
+    ]
+  },
+  "profiles": {
+    "implement": {
+      "add_exec_deny": [
+        "git rm",
+        "git mv",
+        "git worktree"
+      ],
+      "allow": [
+        "Exec(git status)",
+        "Exec(git diff)",
+        "Exec(git log)",
+        "Exec(git show)",
+        "Exec(git ls-files)",
+        "Exec(git blame)",
+        "Exec(git add)",
+        "Exec(git checkout -b)",
+        "Exec(git switch)",
+        "Exec(hx usage)",
+        "Exec(hx say)",
+        "Exec(hx checkpoint)",
+        "Exec(hx doctor)",
+        "Exec(hx handoff)",
+        "Exec(hx review)",
+        "Exec(hx boundary)",
+        "Exec(python -m pytest)",
+        "Exec(python -m unittest)",
+        "Exec(npm test)",
+        "Exec(herdr-app check)"
+      ],
+      "drop_exec_deny": [
+        "git worktree remove"
+      ],
+      "hx": "narrow",
+      "note": "writes in its worktree, runs tests, owns its branch; never commit, push, reset or clone",
+      "write_roots": [
+        "cwd"
+      ]
+    },
+    "note": "The execution profiles inside policy.json. Generated deny = shared.exec_deny minus drop_exec_deny, plus the hx mode rules and add_exec_deny; an explicit 'deny' list wins (release). allow rules carve out of deny; write_roots scopes Write() checks ('cwd' = the run directory).",
+    "release": {
+      "allow": [],
+      "deny": [],
+      "lead_only": true,
+      "note": "lead only: workers are never launched with this profile",
+      "write_roots": []
+    },
+    "research": {
+      "add_exec_deny": [
+        "git add",
+        "git rm",
+        "git mv",
+        "git worktree",
+        "rm",
+        "del",
+        "Remove-Item"
+      ],
+      "allow": [
+        "Exec(git status)",
+        "Exec(git diff)",
+        "Exec(git log)",
+        "Exec(git show)",
+        "Exec(git ls-files)",
+        "Exec(git blame)",
+        "Exec(hx usage)",
+        "Exec(hx say)",
+        "Exec(hx checkpoint)",
+        "Exec(hx doctor)",
+        "Exec(hx handoff)",
+        "Exec(hx review)",
+        "Exec(python -m pytest)",
+        "Exec(python -m unittest)",
+        "Exec(npm test)"
+      ],
+      "drop_exec_deny": [
+        "git worktree remove",
+        "rm -rf",
+        "rm -fr",
+        "rm -r",
+        "rm -f -r",
+        "rm -R",
+        "Remove-Item -Recurse",
+        "Remove-Item -r",
+        "del /s"
+      ],
+      "hx": "narrow",
+      "note": "read-only plus web: the report is the final message; writes are refused",
+      "write_roots": []
+    },
+    "review": {
+      "add_exec_deny": [
+        "git add",
+        "git rm",
+        "git mv",
+        "git worktree",
+        "rm",
+        "del",
+        "Remove-Item"
+      ],
+      "allow": [
+        "Exec(git status)",
+        "Exec(git diff)",
+        "Exec(git log)",
+        "Exec(git show)",
+        "Exec(git ls-files)",
+        "Exec(git blame)",
+        "Exec(hx usage)",
+        "Exec(hx say)",
+        "Exec(hx checkpoint)",
+        "Exec(hx doctor)",
+        "Exec(hx handoff)",
+        "Exec(hx review)",
+        "Exec(python -m pytest)",
+        "Exec(python -m unittest)",
+        "Exec(npm test)"
+      ],
+      "drop_exec_deny": [
+        "git worktree remove",
+        "rm -rf",
+        "rm -fr",
+        "rm -r",
+        "rm -f -r",
+        "rm -R",
+        "Remove-Item -Recurse",
+        "Remove-Item -r",
+        "del /s"
+      ],
+      "hx": "narrow",
+      "note": "read-only code review; may run the test suite",
+      "write_roots": []
+    }
+  },
   "shared": {
-    "exec_deny_note": "Denied command prefixes shared by the Devin worker and pane configs and the execution profiles, in deny-list order. The hx entry is not shared: each surface chooses 'hx': 'deny-all' or 'hx': 'narrow' and the narrow list is inserted after the last 'hc ' rule.",
     "exec_deny": [
       "git push",
       "git --git-dir",
@@ -73,6 +951,15 @@
       "npm publish",
       "Start-Process"
     ],
+    "exec_deny_note": "Denied command prefixes shared by the Devin worker and pane configs and the execution profiles, in deny-list order. The hx entry is not shared: each surface chooses 'hx': 'deny-all' or 'hx': 'narrow' and the narrow list is inserted after the last 'hc ' rule.",
+    "hx_narrow_deny": [
+      "hx ocrun",
+      "hx compact",
+      "hx context",
+      "hx task",
+      "hx route"
+    ],
+    "hx_narrow_deny_note": "A pane teammate or a named profile reports with `hx say` and writes checkpoints; routing and compaction stay with the lead.",
     "path_deny": [
       "Write(.env*)",
       "Write(**/.env*)",
@@ -80,290 +967,7 @@
       "Write(~/.ssh/**)",
       "Write(**/.git/**)",
       "Read(~/AppData/Roaming/devin/credentials.toml)"
-    ],
-    "hx_narrow_deny_note": "A pane teammate or a named profile reports with `hx say` and writes checkpoints; routing and compaction stay with the lead.",
-    "hx_narrow_deny": [
-      "hx ocrun",
-      "hx compact",
-      "hx context",
-      "hx task",
-      "hx route"
     ]
   },
-  "devin": {
-    "note": "The two Devin JSONC config templates. Non-permission fields (model pin, permission_mode, read_config_from, subagents_enabled, attribution) are fixed by the renderer; only the deny list comes from here.",
-    "worker": {
-      "hx": "deny-all",
-      "file": "team/devin-worker.config.json"
-    },
-    "pane": {
-      "hx": "narrow",
-      "file": "team/devin-pane.config.json"
-    }
-  },
-  "opencode": {
-    "note": "Components of the OpenCode permission boundary. Home-relative entries are expanded per machine (APPDATA/ and LOCALAPPDATA/ resolve to the user's AppData dirs; everything else is under the home dir). Directory entries render with a trailing backslash-star.",
-    "team_bash": [
-      ["*", "allow"],
-      ["*.env*", "deny"],
-      ["*auth.json*", "deny"],
-      ["*config.toml*", "deny"],
-      ["*.credentials.json*", "deny"],
-      ["*opencode.jsonc*", "deny"],
-      ["*credentials.toml*", "deny"],
-      ["*.ssh\\*", "deny"],
-      ["herdr *", "deny"],
-      ["herdr agent list*", "allow"],
-      ["herdr agent get *", "allow"],
-      ["herdr agent read *", "allow"],
-      ["herdr agent wait *", "allow"],
-      ["herdr pane list*", "allow"],
-      ["herdr pane read *", "allow"],
-      ["herdr status*", "allow"],
-      ["herdr --skill*", "allow"],
-      ["hc *", "ask"],
-      ["hc ls*", "allow"],
-      ["hc get *", "allow"],
-      ["hc read *", "allow"],
-      ["hc wait *", "allow"],
-      ["hc templates*", "allow"],
-      ["hc schema*", "allow"],
-      ["hc events*", "allow"],
-      ["hc --skill*", "allow"],
-      ["hc --help*", "allow"],
-      ["herdr-app ls*", "allow"],
-      ["herdr-app status*", "allow"],
-      ["herdr-app commands*", "allow"],
-      ["herdr-app --skill*", "allow"],
-      ["herdr-app --help*", "allow"]
-    ],
-    "home_ask_dirs": [
-      ".codex",
-      ".claude",
-      ".config/opencode",
-      "APPDATA/devin",
-      ".local/share/opencode"
-    ],
-    "home_read_dirs": [
-      ".agents",
-      ".claude/skills",
-      ".codex/skills",
-      "APPDATA/devin/skills",
-      ".herdr-team",
-      ".herdr-team/state/hc-bindings",
-      ".config/herdr-app",
-      ".config/opencode/agents",
-      ".config/opencode/node_modules",
-      ".config/opencode/plugins",
-      ".local/bin",
-      "LOCALAPPDATA/herdr-core",
-      "APPDATA/herdr-core",
-      "APPDATA/herdr",
-      "LOCALAPPDATA/Programs/herdr-core",
-      "LOCALAPPDATA/Programs/herdr-app",
-      "LOCALAPPDATA/Temp",
-      "Documents/Notes/FDE Knowledge",
-      ".claude/hooks"
-    ],
-    "skill_roots": [
-      ".agents",
-      ".claude/skills",
-      ".codex/skills",
-      "APPDATA/devin/skills"
-    ],
-    "skill_edit_tails": [
-      "\\.agents\\*",
-      "\\.claude\\skills\\*",
-      "\\.codex\\skills\\*",
-      "\\AppData\\Roaming\\devin\\skills\\*"
-    ],
-    "no_write_dirs": [
-      ".config/herdr-app",
-      "LOCALAPPDATA/herdr-core",
-      "APPDATA/herdr-core",
-      "APPDATA/herdr",
-      "LOCALAPPDATA/Programs/herdr-core",
-      "LOCALAPPDATA/Programs/herdr-app"
-    ],
-    "no_write_dirs_with_relative": [
-      ".herdr-team",
-      "Documents/Notes/FDE Knowledge"
-    ],
-    "secret_dirs": [
-      ".ssh"
-    ],
-    "secret_files": [
-      ".codex/auth.json",
-      ".codex/config.toml",
-      ".codex/*.config.toml",
-      ".claude/.credentials.json",
-      ".local/share/opencode/auth.json",
-      ".config/opencode/opencode.jsonc",
-      "APPDATA/devin/credentials.toml"
-    ],
-    "relative_secret_globs": [
-      "*\\.env*",
-      "*\\.ssh\\*",
-      "*\\.codex\\auth.json",
-      "*\\.codex\\config.toml",
-      "*\\.codex\\*.config.toml",
-      "*\\.claude\\.credentials.json",
-      "*\\.local\\share\\opencode\\auth.json",
-      "*\\.config\\opencode\\opencode.jsonc",
-      "*credentials.toml"
-    ],
-    "run_secret_read_globs": [
-      ".env*",
-      "**\\.env*",
-      "**\\.ssh\\**",
-      "**\\credentials.toml",
-      "~\\.ssh\\**",
-      "~\\AppData\\Roaming\\devin\\credentials.toml"
-    ],
-    "run_secret_write_globs": [
-      ".env*",
-      "**\\.env*",
-      "**\\.git\\**",
-      "**\\.ssh\\**",
-      "**\\credentials.toml"
-    ],
-    "overlay_read_extra": [
-      ".env*"
-    ],
-    "overlay_edit_extra_globs": [
-      "*\\.env*",
-      "*credentials.toml"
-    ]
-  },
-  "profiles": {
-    "note": "The execution profiles inside policy.json. Generated deny = shared.exec_deny minus drop_exec_deny, plus the hx mode rules and add_exec_deny; an explicit 'deny' list wins (release). allow rules carve out of deny; write_roots scopes Write() checks ('cwd' = the run directory).",
-    "research": {
-      "note": "read-only plus web: the report is the final message; writes are refused",
-      "hx": "narrow",
-      "add_exec_deny": ["git add", "git rm", "git mv", "git worktree", "rm", "del", "Remove-Item"],
-      "drop_exec_deny": ["git worktree remove", "rm -rf", "rm -fr", "rm -r", "rm -f -r", "rm -R", "Remove-Item -Recurse", "Remove-Item -r", "del /s"],
-      "allow": ["Exec(git status)", "Exec(git diff)", "Exec(git log)", "Exec(git show)", "Exec(git ls-files)", "Exec(git blame)", "Exec(hx usage)", "Exec(hx say)", "Exec(hx checkpoint)", "Exec(hx doctor)", "Exec(hx handoff)", "Exec(hx review)", "Exec(python -m pytest)", "Exec(python -m unittest)", "Exec(npm test)"],
-      "write_roots": []
-    },
-    "review": {
-      "note": "read-only code review; may run the test suite",
-      "hx": "narrow",
-      "add_exec_deny": ["git add", "git rm", "git mv", "git worktree", "rm", "del", "Remove-Item"],
-      "drop_exec_deny": ["git worktree remove", "rm -rf", "rm -fr", "rm -r", "rm -f -r", "rm -R", "Remove-Item -Recurse", "Remove-Item -r", "del /s"],
-      "allow": ["Exec(git status)", "Exec(git diff)", "Exec(git log)", "Exec(git show)", "Exec(git ls-files)", "Exec(git blame)", "Exec(hx usage)", "Exec(hx say)", "Exec(hx checkpoint)", "Exec(hx doctor)", "Exec(hx handoff)", "Exec(hx review)", "Exec(python -m pytest)", "Exec(python -m unittest)", "Exec(npm test)"],
-      "write_roots": []
-    },
-    "implement": {
-      "note": "writes in its worktree, runs tests, owns its branch; never commit, push, reset or clone",
-      "hx": "narrow",
-      "add_exec_deny": ["git rm", "git mv", "git worktree"],
-      "drop_exec_deny": ["git worktree remove"],
-      "allow": ["Exec(git status)", "Exec(git diff)", "Exec(git log)", "Exec(git show)", "Exec(git ls-files)", "Exec(git blame)", "Exec(git add)", "Exec(git checkout -b)", "Exec(git switch)", "Exec(hx usage)", "Exec(hx say)", "Exec(hx checkpoint)", "Exec(hx doctor)", "Exec(hx handoff)", "Exec(hx review)", "Exec(hx boundary)", "Exec(python -m pytest)", "Exec(python -m unittest)", "Exec(npm test)", "Exec(herdr-app check)"],
-      "write_roots": ["cwd"]
-    },
-    "release": {
-      "note": "lead only: workers are never launched with this profile",
-      "lead_only": true,
-      "deny": [],
-      "allow": [],
-      "write_roots": []
-    }
-  },
-  "codex": {
-    "file": "team/herdr-team.rules",
-    "note": "The Codex prefix_rule list, in file order. 'prompt' is Codex's ask decision; it is the hard stop because team Codex runs without a sandbox.",
-    "rules": [
-      {"comments": ["# Herdr trusted dev team. Rollback: delete this file.", "# Read-only discovery/status: run outside the sandbox without prompting."], "decision": "allow", "pattern": ["herdr", "agent", ["list", "get", "read", "wait"]]},
-      {"comments": [], "decision": "allow", "pattern": ["herdr", "pane", ["list", "read", "current", "layout", "get"]]},
-      {"comments": [], "decision": "allow", "pattern": ["herdr", ["workspace", "tab"], "list"]},
-      {"comments": [], "decision": "allow", "pattern": ["herdr", "status"]},
-      {"comments": [], "decision": "allow", "pattern": ["herdr", "--skill"]},
-      {"comments": ["# Team messages go through `hx say`, which only reaches the sender's own team (allowed by the hx rules below).", "# A raw prompt could reach any agent, including another team's, so it asks."], "decision": "prompt", "pattern": ["herdr", "agent", "prompt"]},
-      {"comments": ["# Keyboard injection, raw pane control and agent lifecycle stay with the user."], "decision": "prompt", "pattern": ["herdr", "agent", ["send-keys", "start", "rename", "focus", "attach"]]},
-      {"comments": [], "decision": "prompt", "pattern": ["herdr", "pane", ["run", "send-text", "send-keys", "close", "split", "move", "input"]]},
-      {"comments": [], "decision": "prompt", "pattern": ["herdr", ["workspace", "tab", "server", "worktree"], ["create", "close", "stop"]]},
-      {"comments": ["# Herdr app (herdr-core, `hc`), added 2026-11-09 on the owner's request for one report path for every worker.", "# Reads are free. Reports go through `hx say`, which enforces the team boundary and the outbox;", "# a raw `hc send` could reach any terminal, so it asks. Starting, ending or typing keys asks."], "decision": "allow", "pattern": ["hc", ["ls", "get", "read", "wait", "templates", "schema", "--help"]]},
-      {"comments": [], "decision": "prompt", "pattern": ["hc", "send"]},
-      {"comments": [], "decision": "prompt", "pattern": ["hc", ["run", "kill", "rm", "keys", "interrupt", "label", "keep", "attach", "server", "exec", "file", "put"]]},
-      {"comments": ["# Routine in-repo dev work (added 2026-10-12 to stop repeated approval prompts).", "# The project venv's base python lives under WindowsApps, which the MXC sandbox blocks, so these must run unprompted outside it.", "# Only plain commands match: no pipes, ';', '&&', $env expressions or powershell -Command wrappers."], "decision": "allow", "pattern": [["backend/.venv/Scripts/python.exe", "backend\\.venv\\Scripts\\python.exe", ".venv/Scripts/python.exe", ".venv\\Scripts\\python.exe"]]},
-      {"comments": [], "decision": "allow", "pattern": ["git"]},
-      {"comments": [], "decision": "allow", "pattern": ["npm", "run", ["build", "lint", "test"]]},
-      {"comments": [], "decision": "allow", "pattern": ["npm.cmd", "run", ["build", "lint", "test"]]},
-      {"comments": ["# Team Codex runs without a sandbox (owner decision 2026-10-18), so these are the hard stop for destructive git.", "# The stricter decision wins over the plain git allow above."], "decision": "prompt", "pattern": ["git", ["push", "reset", "clean", "rebase", "filter-branch", "filter-repo", "reflog", "gc", "prune", "update-ref"]]},
-      {"comments": [], "decision": "prompt", "pattern": ["git", "branch", ["-D", "-d", "--delete", "-f", "--force"]]},
-      {"comments": [], "decision": "prompt", "pattern": ["git", "checkout", ["-f", "--force", "--", "."]]},
-      {"comments": [], "decision": "prompt", "pattern": ["git", "restore"]},
-      {"comments": [], "decision": "prompt", "pattern": ["git", "worktree", ["remove", "prune"]]},
-      {"comments": [], "decision": "prompt", "pattern": ["git", "stash", ["drop", "clear"]]},
-      {"comments": ["# hx CLI and tests (added 2026-10-16). Plain python is not reachable inside MXC, so these run unprompted outside it."], "decision": "allow", "pattern": ["python", "-m", ["hx", "pytest"]]},
-      {"comments": [], "decision": "allow", "pattern": ["hx"]},
-      {"comments": ["# Absolute path to the Personal Finance Dashboard venv, used from worktrees (added 2026-10-16)."], "decision": "allow", "pattern": [["C:/Users/caspe/Documents/Projects/Personal Finance Dashboard/backend/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\Personal Finance Dashboard\\backend\\.venv\\Scripts\\python.exe", "../../backend/.venv/Scripts/python.exe", "..\\..\\backend\\.venv\\Scripts\\python.exe"]]},
-      {"comments": ["# QuantLab venv, used from the main checkout and from worktrees (added 2026-10-17, owner request)."], "decision": "allow", "pattern": [["C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe", "../../quantlab/.venv/Scripts/python.exe", "..\\..\\quantlab\\.venv\\Scripts\\python.exe", "../quantlab/.venv/Scripts/python.exe", "..\\quantlab\\.venv\\Scripts\\python.exe"]]},
-      {"comments": ["# Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request)."], "decision": "allow", "pattern": [["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "msedge", "msedge.exe"]]},
-      {"comments": ["# Lead compaction by Codex (15 Nov): only these exact commands against the lead terminal t2x."], "decision": "allow", "pattern": ["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc keys t2x enter"]},
-      {"comments": [], "decision": "allow", "pattern": ["hc", "keys", "t2x", "enter"]},
-      {"comments": [], "decision": "allow", "pattern": ["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc keys t2x / c o m p a c t"]},
-      {"comments": [], "decision": "allow", "pattern": ["hc", "keys", "t2x", "/", "c", "o", "m", "p", "a", "c", "t"]},
-      {"comments": [], "decision": "allow", "pattern": ["C:\\windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", "hc wait t2x --timeout 900"]},
-      {"comments": [], "decision": "allow", "pattern": ["hc", "wait", "t2x", "--timeout", "900"]},
-      {"comments": [], "decision": "allow", "pattern": ["hc", "send", "t2x"]}
-    ]
-  },
-  "claude": {
-    "file": "team/claude-settings.json",
-    "note": "The Claude lead's permission lists. Only the 'permissions' key is generated; statusLine and hooks in the file are kept as they are.",
-    "permissions": {
-      "allow": [
-        "Bash(herdr agent list:*)",
-        "PowerShell(herdr agent list:*)",
-        "Bash(herdr agent get:*)",
-        "PowerShell(herdr agent get:*)",
-        "Bash(herdr agent read:*)",
-        "PowerShell(herdr agent read:*)",
-        "Bash(herdr agent wait:*)",
-        "PowerShell(herdr agent wait:*)",
-        "Bash(herdr pane list:*)",
-        "PowerShell(herdr pane list:*)",
-        "Bash(herdr pane read:*)",
-        "PowerShell(herdr pane read:*)",
-        "Bash(herdr status:*)",
-        "PowerShell(herdr status:*)",
-        "Bash(herdr --skill:*)",
-        "PowerShell(herdr --skill:*)",
-        "Bash(hx:*)",
-        "PowerShell(hx:*)",
-        "Bash(python -m hx:*)",
-        "PowerShell(python -m hx:*)",
-        "Bash(herdr agent prompt hx-claude:*)",
-        "PowerShell(herdr agent prompt hx-claude:*)",
-        "Bash(herdr agent prompt hx-codex:*)",
-        "PowerShell(herdr agent prompt hx-codex:*)",
-        "Bash(herdr agent prompt hx-luna:*)",
-        "PowerShell(herdr agent prompt hx-luna:*)",
-        "Bash(herdr agent prompt hx-haiku:*)",
-        "PowerShell(herdr agent prompt hx-haiku:*)"
-      ],
-      "ask": [
-        "Bash(herdr agent send-keys:*)",
-        "PowerShell(herdr agent send-keys:*)",
-        "Bash(herdr agent start:*)",
-        "PowerShell(herdr agent start:*)",
-        "Bash(herdr pane run:*)",
-        "PowerShell(herdr pane run:*)",
-        "Bash(herdr pane send-text:*)",
-        "PowerShell(herdr pane send-text:*)",
-        "Bash(herdr pane send-keys:*)",
-        "PowerShell(herdr pane send-keys:*)",
-        "Bash(herdr pane close:*)",
-        "PowerShell(herdr pane close:*)",
-        "Bash(herdr workspace close:*)",
-        "PowerShell(herdr workspace close:*)",
-        "Bash(herdr server:*)",
-        "PowerShell(herdr server:*)"
-      ],
-      "deny": [
-        "Bash(herdr agent prompt dev-claude:*)"
-      ]
-    }
-  }
+  "version": 1
 }

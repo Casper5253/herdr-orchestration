@@ -15,12 +15,24 @@ from pathlib import Path
 
 import pytest
 
-from hx import doctor, runtime
+from hx import doctor, host, runtime
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.ps1"
 POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 COMSPEC = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+
+
+def _member(role: str) -> host.Member:
+    return host.Member(
+        name=f"dev-{role}", team="dev", role=role, kind="claude", status="idle",
+        cwd="", address="t1", session_id=None, session_reason=None,
+        focused=None, turn=None, created_ms=None)
+
+
+@pytest.fixture(autouse=True)
+def _lead_caller(monkeypatch):
+    monkeypatch.setattr(runtime, "_caller_member", lambda: _member("lead"))
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,12 +56,19 @@ def _scratch_repo(base: Path) -> Path:
     _git(repo, "checkout", "-b", "main")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "seed")
+    origin = base / "origin.git"
+    origin.mkdir()
+    subprocess.run(["git", "init", "--bare"], cwd=str(origin), check=True, capture_output=True)
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-u", "origin", "main")
     return repo
 
 
 def _commit(repo: Path, message: str) -> str:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", message)
+    if _git(repo, "branch", "--show-current") == "main":
+        _git(repo, "push", "origin", "main")
     return _git(repo, "rev-parse", "HEAD")
 
 
@@ -74,6 +93,7 @@ def reviewed_export(tmp_path, monkeypatch):
 
     monkeypatch.delenv("HX_RELEASE_REF", raising=False)
     monkeypatch.setattr(runtime, "_git", lambda repo, *args: args[-1].split("^")[0])
+    monkeypatch.setattr(runtime, "_release_head", lambda repo: "fetched")
     monkeypatch.setattr(runtime, "_is_ancestor", lambda repo, commit, ref: True)
     monkeypatch.setattr(runtime, "dirty_hx_changes", lambda repo: [])
     monkeypatch.setattr(runtime, "_export", export)
@@ -199,6 +219,28 @@ def test_rollback_keeps_both_pointers_when_reader_stays_open(
     assert not list(root.glob("current.tmp-*"))
 
 
+def test_activate_refuses_a_worker_terminal(reviewed_export, monkeypatch) -> None:
+    source, root = reviewed_export
+    monkeypatch.setattr(runtime, "_caller_member", lambda: _member("codex"))
+    with pytest.raises(RuntimeError, match="only the team lead terminal"):
+        runtime.activate("1" * 40, root=root, repo=source)
+    assert runtime.current_install(root) is None
+
+
+def test_activate_refuses_an_unverified_terminal(reviewed_export, monkeypatch) -> None:
+    source, root = reviewed_export
+    monkeypatch.setattr(runtime, "_caller_member", lambda: None)
+    with pytest.raises(RuntimeError, match="only the team lead terminal"):
+        runtime.activate("1" * 40, root=root, repo=source)
+    assert runtime.current_install(root) is None
+
+
+def test_rollback_refuses_a_worker_terminal(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_caller_member", lambda: _member("devin"))
+    with pytest.raises(RuntimeError, match="only the team lead terminal"):
+        runtime.rollback(tmp_path / "rt")
+
+
 @pytest.mark.parametrize("override", ["argument", "environment"])
 def test_activate_refuses_an_alternate_release_ref(reviewed_export, monkeypatch, override):
     source, root = reviewed_export
@@ -238,17 +280,18 @@ def test_activate_refuses_a_commit_off_the_release_ref(tmp_path: Path) -> None:
     (repo / "hx" / "_side.py").write_text("VALUE = 1\n", encoding="utf-8")
     side = _commit(repo, "side work")
     _git(repo, "checkout", "main")
-    with pytest.raises(RuntimeError, match="not on main"):
+    with pytest.raises(RuntimeError, match="not on origin/main"):
         runtime.activate(side, root=tmp_path / "rt", repo=repo)
     assert runtime.current_install(tmp_path / "rt") is None
 
 
-def test_activate_refuses_dirty_tracked_hx_changes(tmp_path: Path) -> None:
+def test_activate_exports_the_commit_not_dirty_tracked_hx_changes(tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
     with open(repo / "hx" / "__init__.py", "a", encoding="utf-8") as fh:
         fh.write("\n# unreviewed edit\n")
-    with pytest.raises(RuntimeError, match="uncommitted tracked hx changes"):
-        runtime.activate(root=tmp_path / "rt", repo=repo)
+    result = runtime.activate(root=tmp_path / "rt", repo=repo)
+    exported = (Path(result["activated"]) / "hx" / "__init__.py").read_text(encoding="utf-8")
+    assert "unreviewed edit" not in exported
 
 
 def test_activate_switches_pointer_and_keeps_the_previous_build(tmp_path: Path) -> None:
@@ -280,6 +323,40 @@ def test_activate_switches_pointer_and_keeps_the_previous_build(tmp_path: Path) 
     assert again["created"] is False and again["switched"] is True
     assert runtime.current_install(root) == new_install
     assert runtime.previous_install(root) == install
+
+
+def test_rollback_refuses_a_pre_lock_first_build(tmp_path: Path) -> None:
+    repo = _scratch_repo(tmp_path)
+    root = tmp_path / "rt"
+    first = runtime.activate(root=root, repo=repo)
+    (repo / "hx" / "_marker.txt").write_text("second\n", encoding="utf-8")
+    runtime.activate(_commit(repo, "second"), root=root, repo=repo)
+    build_path = Path(first["activated"]) / "runtime.json"
+    build = json.loads(build_path.read_text(encoding="utf-8"))
+    build.pop("lock_first", None)
+    build_path.write_text(json.dumps(build), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="predates the first lock-first build"):
+        runtime.rollback(root)
+
+
+def test_export_contains_only_the_tracked_runtime_manifest(tmp_path: Path) -> None:
+    repo = _scratch_repo(tmp_path)
+    root = tmp_path / "rt"
+    (repo / "hx" / "_untracked.py").write_text("UNREVIEWED = True\n", encoding="utf-8")
+    (repo / "hx" / "__pycache__").mkdir()
+    (repo / "hx" / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+
+    result = runtime.activate(root=root, repo=repo)
+    install = Path(result["activated"])
+
+    assert (install / "hx" / "__main__.py").is_file()
+    assert (install / "policy.json").is_file()
+    assert (install / "team" / "boundary.json").is_file()
+    assert not (install / ".artifacts").exists()
+    assert not (install / "tests").exists()
+    assert not (install / "docs").exists()
+    assert not (install / "hx" / "_untracked.py").exists()
+    assert not (install / "hx" / "__pycache__").exists()
 
 
 def test_activate_refuses_a_state_format_change_unless_allowed(tmp_path: Path) -> None:
@@ -341,10 +418,22 @@ def _install_shims(home: Path) -> subprocess.CompletedProcess:
         capture_output=True, text=True, timeout=180)
 
 
+def _git_bash() -> Path | None:
+    git = shutil.which("git")
+    candidates = []
+    if git:
+        resolved = Path(git).resolve()
+        candidates.extend(parent / "bin" / "bash.exe" for parent in resolved.parents)
+    candidates.append(Path(r"C:\Program Files\Gitinash.exe"))
+    return next((path for path in candidates if path.is_file()), None)
+
+
 def _run_new_shim(home: Path, root: Path, repo: Path, cwd: Path) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(repo)
-    env["HX_RUNTIME_ROOT"] = str(root)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env.pop("HX_RUNTIME_ROOT", None)
     env.pop("HX_RUNTIME_DIR", None)
     shim = home / ".local" / "bin" / "hx.cmd"
     return subprocess.run(
@@ -366,7 +455,9 @@ def test_migrates_legacy_pointer_files_with_one_replacement(reviewed_export) -> 
 
 def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
-    root = tmp_path / "rt"
+    home = tmp_path / "home"
+    home.mkdir()
+    root = home / ".hx-runtime"
     runtime.activate(root=root, repo=repo)
 
     init = repo / "hx" / "__init__.py"
@@ -379,8 +470,6 @@ def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path
     assert old.returncode == 0, old.stderr
     assert "DIRTY-SENTINEL" in old.stdout
 
-    home = tmp_path / "home"
-    home.mkdir()
     installed = _install_shims(home)
     assert installed.returncode == 0, installed.stderr
     cmd_text = (home / ".local" / "bin" / "hx.cmd").read_text(encoding="utf-8")
@@ -400,9 +489,10 @@ def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path
     assert "hx 0.1.0" in from_elsewhere.stdout
     assert "DIRTY-SENTINEL" not in from_elsewhere.stdout
 
-    git_bash = Path(shutil.which("git")).resolve().parent.parent / "bin" / "bash.exe"
-    if git_bash.is_file():
-        env = dict(os.environ, HX_RUNTIME_ROOT=root.as_posix(), PYTHONPATH=str(repo))
+    git_bash = _git_bash()
+    if git_bash is not None:
+        env = dict(os.environ, HOME=home.as_posix(), USERPROFILE=str(home), PYTHONPATH=str(repo))
+        env.pop("HX_RUNTIME_ROOT", None)
         posix = subprocess.run(
             [str(git_bash), (home / ".local" / "bin" / "hx").as_posix(), "--version"],
             cwd=str(repo), env=env, capture_output=True, text=True, timeout=120)
@@ -414,7 +504,9 @@ def test_new_shim_loads_the_activated_commit_not_a_dirty_checkout(tmp_path: Path
 def test_both_shims_follow_the_current_build_after_activation_and_rollback(
         tmp_path: Path) -> None:
     repo = _scratch_repo(tmp_path)
-    root = tmp_path / "runtime with spaces"
+    home = tmp_path / "home"
+    home.mkdir()
+    root = home / ".hx-runtime"
     first = runtime.activate(root=root, repo=repo)
     init = repo / "hx" / "__init__.py"
     init.write_text(
@@ -423,13 +515,12 @@ def test_both_shims_follow_the_current_build_after_activation_and_rollback(
     second = runtime.activate(_commit(repo, "second runtime"), root=root, repo=repo)
     assert second["previous"] == first["activated"]
 
-    home = tmp_path / "home"
-    home.mkdir()
     installed = _install_shims(home)
     assert installed.returncode == 0, installed.stderr
-    git_bash = Path(shutil.which("git")).resolve().parent.parent / "bin" / "bash.exe"
+    git_bash = _git_bash()
+    assert git_bash is not None
     shell_shim = home / ".local" / "bin" / "hx"
-    env = dict(os.environ, HX_RUNTIME_ROOT=root.as_posix(), PYTHONPATH=str(repo))
+    env = dict(os.environ, HOME=home.as_posix(), USERPROFILE=str(home), PYTHONPATH=str(repo))
     env.pop("HX_RUNTIME_DIR", None)
 
     def check_shims(version: str) -> None:

@@ -62,12 +62,16 @@ def _float(value: Any, fallback: float) -> float:
 def count_oneoff_processes(*, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> int:
     """Live one-off `hx ocrun` processes, using the hook's self-excluding pattern."""
     if os.name == "nt":
+        pinned = r"python(\.exe)?\"?.*-I\s+-B\s+-c\s+.*\socrun(\s|$)"
         script = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and "
-                  "($_.CommandLine -match 'hx(\.exe)?\"? +ocrun' -or $_.CommandLine -match '-m hx ocrun') } "
+                  "($_.CommandLine -match 'hx(\.exe)?\"? +ocrun' -or $_.CommandLine -match '-m hx ocrun' "
+                  f"-or $_.CommandLine -match '{pinned}') }} "
                   "| Measure-Object | Select-Object -ExpandProperty Count")
         args = ["powershell", "-NoProfile", "-Command", script]
     else:
-        script = "ps -eo pid=,args= | grep -E 'hx(\.exe)?\"? +ocrun|-m hx ocrun' | grep -v grep | wc -l"
+        script = ("ps -eo pid=,args= | grep -E 'hx(\.exe)?\"? +ocrun|-m hx ocrun|"
+                  "python(\.exe)?\"?.*-I[[:space:]]+-B[[:space:]]+-c[[:space:]]+.*[[:space:]]ocrun([[:space:]]|$)' "
+                  "| grep -v grep | wc -l")
         args = ["sh", "-c", script]
     try:
         completed = runner(args, capture_output=True, text=True, timeout=15, check=False)

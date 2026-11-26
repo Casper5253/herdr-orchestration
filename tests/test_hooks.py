@@ -16,6 +16,24 @@ from hx import checkpoint, ledger
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 
 
+def _install_test_hx(cwd: Path, env: dict[str, str]) -> None:
+    bin_dir = cwd / "hx-bin"
+    bin_dir.mkdir(exist_ok=True)
+    repo = HOOKS_DIR.parent
+    (bin_dir / "hx.cmd").write_text(
+        "@echo off\n"
+        f"set \"PYTHONPATH={repo};%PYTHONPATH%\"\n"
+        f"\"{sys.executable}\" -m hx %*\n",
+        encoding="utf-8")
+    sh = bin_dir / "hx"
+    sh.write_text(
+        "#!/bin/sh\n"
+        f"PYTHONPATH='{repo}' exec '{sys.executable}' -m hx \"$@\"\n",
+        encoding="utf-8")
+    sh.chmod(0o755)
+    env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+
+
 def _run_hook(name: str, payload: dict | None, cwd: Path, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     # pytest tmp_path can live inside the real repo; pin the project root so the
@@ -23,6 +41,7 @@ def _run_hook(name: str, payload: dict | None, cwd: Path, env_extra: dict[str, s
     cwd_source = payload.get("cwd") if payload else None
     project_root = str(Path(cwd_source if cwd_source else cwd).resolve())
     env["HX_PROJECT_ROOT"] = project_root
+    _install_test_hx(cwd, env)
     if env_extra:
         env.update(env_extra)
     stdin = json.dumps(payload) if payload is not None else ""
@@ -148,6 +167,16 @@ def test_statusline_replaces_file_atomically_across_runs(tmp_path: Path) -> None
     assert record["context_window"]["used_percentage"] == 20.0
     leftovers = list(state_dir.glob("*.tmp"))
     assert leftovers == []
+
+
+def test_compact_hooks_never_import_hx_from_the_source_checkout() -> None:
+    for name in ("claude_precompact.py", "claude_session_compact.py"):
+        text = (HOOKS_DIR / name).read_text(encoding="utf-8")
+        assert "sys.path.insert" not in text
+        assert "python -m hx" not in text
+        assert '"-m", "hx"' not in text
+        assert "from hx import" not in text
+        assert "PYTHONPATH" not in text
 
 
 # ---------- claude_precompact.py ---------------------------------------------

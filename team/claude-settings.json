@@ -19,8 +19,6 @@
       "PowerShell(herdr --skill:*)",
       "Bash(hx:*)",
       "PowerShell(hx:*)",
-      "Bash(python -m hx:*)",
-      "PowerShell(python -m hx:*)",
       "Bash(herdr agent prompt hx-claude:*)",
       "PowerShell(herdr agent prompt hx-claude:*)",
       "Bash(herdr agent prompt hx-codex:*)",
@@ -54,7 +52,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "python \"C:/Users/caspe/Documents/Projects/herdr-orchestration/hooks/claude_statusline.py\""
+    "command": "python -c \"import pathlib,runpy,sys;p=pathlib.Path.home()/'.hx-runtime/current';active=p.exists();d=pathlib.Path(p.read_text(encoding='utf-8').splitlines()[0]) if active else pathlib.Path(r'C:/Users/caspe/Documents/Projects/herdr-orchestration');active or print('warning: no pinned hx runtime is activated; using checkout hook only as bootstrap fallback',file=sys.stderr);runpy.run_path(str(d/'hooks'/'claude_statusline.py'),run_name='__main__')\""
   },
   "hooks": {
     "PreCompact": [
@@ -62,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"C:/Users/caspe/Documents/Projects/herdr-orchestration/hooks/claude_precompact.py\"",
+            "command": "python -c \"import pathlib,runpy,sys;p=pathlib.Path.home()/'.hx-runtime/current';active=p.exists();d=pathlib.Path(p.read_text(encoding='utf-8').splitlines()[0]) if active else pathlib.Path(r'C:/Users/caspe/Documents/Projects/herdr-orchestration');active or print('warning: no pinned hx runtime is activated; using checkout hook only as bootstrap fallback',file=sys.stderr);runpy.run_path(str(d/'hooks'/'claude_precompact.py'),run_name='__main__')\"",
             "timeout": 30
           }
         ]
@@ -74,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"C:/Users/caspe/Documents/Projects/herdr-orchestration/hooks/claude_session_compact.py\"",
+            "command": "python -c \"import pathlib,runpy,sys;p=pathlib.Path.home()/'.hx-runtime/current';active=p.exists();d=pathlib.Path(p.read_text(encoding='utf-8').splitlines()[0]) if active else pathlib.Path(r'C:/Users/caspe/Documents/Projects/herdr-orchestration');active or print('warning: no pinned hx runtime is activated; using checkout hook only as bootstrap fallback',file=sys.stderr);runpy.run_path(str(d/'hooks'/'claude_session_compact.py'),run_name='__main__')\"",
             "timeout": 30
           }
         ]

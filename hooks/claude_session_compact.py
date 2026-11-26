@@ -19,9 +19,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Hooks run as scripts from hooks/, so make the hx package next to them importable.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 ACTIVE_STATUSES = {"assigned", "in_progress", "review"}
 MAX_OUTPUT_CHARS = 6000
 
@@ -44,31 +41,28 @@ def _resolve_cwd(payload: dict[str, Any]) -> Path:
     return cwd
 
 
-def _hx_env() -> dict[str, str]:
-    env = dict(os.environ)
-    repo_root = Path(__file__).resolve().parent.parent
-    existing = env.get("PYTHONPATH", "")
-    if str(repo_root) not in existing:
-        env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing}" if existing else str(repo_root)
-    return env
+def _hx_executable() -> str:
+    return "hx.cmd" if os.name == "nt" else "hx"
 
 
-def _hx_cmd() -> list[str]:
-    return [sys.executable, "-m", "hx", "task", "list"]
+def _hx_cmd(*args: str) -> list[str]:
+    return [_hx_executable(), *args]
+
+
+def _run_hx(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        _hx_cmd(*args),
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
 
 
 def _active_tasks(cwd: Path) -> list[dict[str, Any]]:
     try:
-        proc = subprocess.run(
-            _hx_cmd(),
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_hx_env(),
-        )
-        stdout = proc.stdout or ""
-        tasks = json.loads(stdout)
+        proc = _run_hx(["task", "list"], cwd)
+        tasks = json.loads(proc.stdout or "")
         if isinstance(tasks, list):
             return [
                 t for t in tasks
@@ -90,26 +84,33 @@ def _extract_next_action(text: str) -> str | None:
     return None
 
 
+def _validated_checkpoint(task_id: str, cwd: Path) -> Path | None:
+    try:
+        proc = _run_hx(["checkpoint", "validate", task_id], cwd)
+        result = json.loads(proc.stdout or "")
+        if not isinstance(result, dict) or not result.get("ok"):
+            return None
+        path = Path(str(result.get("checkpoint") or ""))
+        return path if path.is_file() else None
+    except Exception:
+        return None
+
+
 def _load_checkpoint(
-    task_id: str, repo_root: Path
+    task_id: str, cwd: Path
 ) -> tuple[str | None, str | None, Path | None]:
     """Return (next_action, full_text, path) for a valid checkpoint, or Nones."""
-    try:
-        from hx import checkpoint as cp
-        from hx import ledger as ledger_mod
-
-        led = ledger_mod.Ledger(repo_root=repo_root)
-        result = cp.validate_checkpoint(task_id, ledger=led, repo_root=repo_root)
-        if not result.get("ok"):
-            return None, None, None
-        path = Path(result["checkpoint"])
-        text = path.read_text(encoding="utf-8", errors="replace")
-        next_action = _extract_next_action(text)
-        if next_action is None:
-            return None, None, None
-        return next_action, text, path
-    except Exception:
+    path = _validated_checkpoint(task_id, cwd)
+    if path is None:
         return None, None, None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None, None
+    next_action = _extract_next_action(text)
+    if next_action is None:
+        return None, None, None
+    return next_action, text, path
 
 
 def _trim_text(text: str, limit: int) -> str:
@@ -130,15 +131,8 @@ def _trim_text(text: str, limit: int) -> str:
 
 def main() -> int:
     payload = _read_payload()
-    _resolve_cwd(payload)
-    try:
-        from hx import paths
-
-        repo_root = paths.project_root()
-    except Exception:
-        repo_root = Path.cwd()
-
-    active = _active_tasks(repo_root)
+    cwd = _resolve_cwd(payload)
+    active = _active_tasks(cwd)
 
     header = "# Post-compact restore (hooks/claude_session_compact.py)\n"
     next_lines: list[str] = []
@@ -147,8 +141,8 @@ def main() -> int:
 
     for task in active:
         task_id = task.get("id", "unknown")
-        next_action, text, path = _load_checkpoint(task_id, repo_root)
-        if next_action is None:
+        next_action, text, path = _load_checkpoint(task_id, cwd)
+        if next_action is None or text is None or path is None:
             missing_lines.append(f"checkpoint missing or stale for {task_id}")
             continue
         next_lines.append(f"Next action for {task_id}: {next_action}")
