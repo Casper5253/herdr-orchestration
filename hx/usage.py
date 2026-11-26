@@ -117,6 +117,62 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def free_memory_gb() -> float | None:
+    """Physical memory available right now, in GiB, or None when unreadable.
+
+    Admission uses this only to decide whether a second heavy unit is safe;
+    an unknown reading keeps the conservative single-heavy cap.
+    """
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None
+            return float(status.ullAvailPhys) / (1024 ** 3)
+        except Exception:
+            return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) / (1024 ** 2)
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def memory_summary() -> dict[str, Any]:
+    free = free_memory_gb()
+    return {
+        "tag": "measured" if free is not None else "unknown",
+        "free_gb": None if free is None else round(free, 2),
+        "source": (
+            "GlobalMemoryStatusEx"
+            if sys.platform.startswith("win")
+            else "MemAvailable"
+            if sys.platform.startswith("linux")
+            else "unavailable"
+        ),
+    }
+
+
 def load_policy(path: Path | None = None) -> dict[str, Any]:
     if path is None:
         path = default_policy_path()
@@ -723,6 +779,7 @@ def usage_snapshot(
         "claude": _usage_part(claude_usage, policy, now),
         "devin": devin_block,
         "agents": agents_usage(policy, now=now, agents=agents),
+        "memory": memory_summary(),
     }
 
 
