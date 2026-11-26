@@ -3,7 +3,8 @@
 Staged routing: attempt cap -> failure cause -> pool -> model ladder.
 While ``policy.routing_balance`` is active the pool stage balances Devin and
 OpenCode (idle first, then fewer recent decision lines). ``route(task, usage,
-policy)`` is a pure function. ``decide(task)`` loads ``policy.json``, snapshots
+policy)`` is deterministic apart from the live Devin price read its pane reuse
+needs, which fails closed. ``decide(task)`` loads ``policy.json``, snapshots
 ``hx.usage`` and appends one JSON line to ``.hx/routing.jsonl``. ``main(argv)``
 parses CLI flags and prints the result.
 """
@@ -364,14 +365,24 @@ def _prev_model_exhausted(
 
 
 def _idle_devin_pane(usage: dict[str, Any], policy: dict[str, Any]) -> str | None:
-    """The team's ``<team>-devin`` pane when the live session list shows it idle."""
+    """The team's ``<team>-devin`` pane when it is idle, allowed, and Free now.
+
+    Reuse hands new work to whatever model the pane runs, so its observed footer
+    model must be one of ``policy.devin.allowed_models`` *and* pass the same
+    launch preflight ``hx ocrun --worker devin`` runs: the live
+    ``devin models list`` tags it Free. An unknown model, a paid one, or an
+    unreadable price list is never reused: it could run a paid id.
+    """
     prefix = (usage.get("agents") or {}).get("prefix") or policy.get("team_prefix", "hx-")
     pane = f"{prefix}devin"
+    allowed = set(hx_devin.allowed_models(policy))
     for session in (usage.get("devin") or {}).get("live_sessions") or []:
         if (
             isinstance(session, dict)
             and session.get("name") == pane
             and session.get("status") in hx_usage.READY
+            and session.get("model") in allowed
+            and hx_devin.preflight(policy, session["model"]) is None
         ):
             return pane
     return None
@@ -752,6 +763,14 @@ def _devin_decision(
             "reason": f"capability failure on {strongest} -> codex strong",
             "stages": stages + ["pool:codex"],
         }
+    # A retry never steps down from the strongest model it already ran on.
+    if prev.get("worker") == "devin" and prev.get("model") == strongest:
+        effort = "max"
+    # A capability failure below the strongest model is only worth retrying Devin
+    # on a stronger model; retrying the same id cannot fix a capability gap.
+    if capability_failure and prev.get("worker") == "devin" and prev.get("model") != strongest:
+        stages.append("devin:capability-climb-max")
+        effort = "max"
     model = hx_devin.model_for_effort(effort, policy)
     method = "persistent-devin" if reuse else "ocrun-devin"
     stages.append("pool:devin")
@@ -862,7 +881,10 @@ def _route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) 
         if prev.get("worker") == "devin":
             retry = _devin_decision(task, usage, policy, prev.get("effort"), stages, False)
             if retry is not None:
-                retry.update(model=prev.get("model"), reason="retry after input failure; fix the input, not the model; recheck pane eligibility")
+                retry["reason"] = (
+                    "retry after input failure; fix the input, not the model; "
+                    "recheck pane eligibility; model comes from current policy"
+                )
                 return retry
         if prev.get("worker") != "devin" and not _prev_model_exhausted(prev, usage, policy):
             chosen_worker = prev.get("worker")

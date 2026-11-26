@@ -224,8 +224,8 @@ def test_capability_failure_on_swe21_max_goes_codex_strong(policy: dict) -> None
     assert "devin:capability-at-max" in result["stages"]
 
 
-def test_capability_failure_on_swe21_xhigh_retries_devin_stronger(policy: dict) -> None:
-    """A capability failure below the strongest model retries devin one step up."""
+def test_capability_failure_on_swe21_xhigh_climbs_to_swe21_max(policy: dict) -> None:
+    """A capability failure below the strongest model climbs one model, not one effort."""
     prev = {
         "worker": "devin",
         "model": "swe-2-1-xhigh",
@@ -236,9 +236,30 @@ def test_capability_failure_on_swe21_xhigh_retries_devin_stronger(policy: dict) 
     task = _task(attempt=2, last_failure="capability", prev=prev)
     result = route(task, _make_usage(), policy)
     assert result["worker"] == "devin"
-    assert result["model"] == "swe-2-1-xhigh"
-    assert result["effort"] == "high"
+    assert result["model"] == "swe-2-1-max"
+    assert result["effort"] == "max"
     assert result["method"] == "ocrun-devin"
+    assert "devin:capability-climb-max" in result["stages"]
+
+
+@pytest.mark.parametrize("failure", ["missing-context", "tool"])
+@pytest.mark.parametrize("previous_effort", ["medium", "high"])
+def test_a_max_model_retry_never_steps_down(
+    policy: dict, failure: str, previous_effort: str
+) -> None:
+    """Once a run is on swe-2-1-max, a retry stays there, whatever effort it recorded."""
+    prev = {
+        "worker": "devin",
+        "model": "swe-2-1-max",
+        "effort": previous_effort,
+        "method": "ocrun-devin",
+        "capability_failures": 0,
+    }
+    task = _task(attempt=2, last_failure=failure, prev=prev)
+    result = route(task, _make_usage(), policy)
+    assert result["worker"] == "devin"
+    assert result["model"] == "swe-2-1-max"
+    assert result["effort"] == "max"
 
 
 def test_fix_input_retry_keeps_devin(policy: dict) -> None:
@@ -257,6 +278,21 @@ def test_fix_input_retry_keeps_devin(policy: dict) -> None:
     assert result["effort"] == "medium"
     assert result["method"] == "ocrun-devin"
     assert "fix the input" in result["reason"].lower()
+
+
+def test_fix_input_retry_takes_the_model_from_current_policy(policy: dict) -> None:
+    """A retired --prev model is never carried into a retry."""
+    prev = {
+        "worker": "devin",
+        "model": "swe-2-high",
+        "effort": "medium",
+        "method": "ocrun-devin",
+        "capability_failures": 0,
+    }
+    task = _task(attempt=2, last_failure="missing-context", prev=prev)
+    result = route(task, _make_usage(), policy)
+    assert result["worker"] == "devin"
+    assert result["model"] == "swe-2-1-xhigh"
 
 
 def test_fix_input_retry_reselects_when_devin_exhausted(policy: dict) -> None:
@@ -460,7 +496,7 @@ def test_balance_keeps_capability_retry_on_devin_before_max(policy: dict) -> Non
         _with_counts(_make_usage(), devin=9, opencode=0),
         _with_balance(policy),
     )
-    assert (result["worker"], result["model"]) == ("devin", "swe-2-1-xhigh")
+    assert (result["worker"], result["model"]) == ("devin", "swe-2-1-max")
 
 
 def test_balance_end_blocks_input_retry_with_pre_cutoff_snapshot(policy: dict) -> None:

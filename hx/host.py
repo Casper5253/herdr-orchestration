@@ -298,6 +298,41 @@ HC_APP_KINDS = {
     "opencode": "opencode",
     "devin": "devin",
 }
+# A launcher can wrap a provider in PowerShell so `status.app` never names it.
+# Measured 26 Nov on the Herdr app: an OpenCode pane launched as `powershell -NoExit
+# -Command "... opencode"` had `status: null`, but its live foreground process was
+# `opencode.exe`. The foreground is what runs now; the terminal's startup argv is not.
+# Only the provider's own CLI executable names it: a helper (`codex-code-mode-host.exe`),
+# a launcher shim (`opencode.cmd`), or a shell running another provider stays unknown.
+# Windows may report `devin.EXE`, so the comparison is case-insensitive.
+_HC_CLI_NAMES = {
+    "claude": "claude",
+    "claude.exe": "claude",
+    "codex": "codex",
+    "codex.exe": "codex",
+    "opencode": "opencode",
+    "opencode.exe": "opencode",
+    "devin": "devin",
+    "devin.exe": "devin",
+}
+
+
+def _foreground_kind(foreground: Any) -> str:
+    """The provider whose real CLI runs as a terminal's live foreground, else unknown.
+
+    A helper process, a launcher shim, or a shell is not the provider: only an
+    exact CLI executable name counts, never a name that merely contains it.
+    """
+    if not isinstance(foreground, dict):
+        return "unknown"
+    name = foreground.get("name")
+    if not isinstance(name, str) or not name:
+        argv = foreground.get("argv")
+        name = argv[0] if isinstance(argv, list) and argv and isinstance(argv[0], str) else ""
+    base = re.split(r"[\\/]", name)[-1].strip().lower()
+    return _HC_CLI_NAMES.get(base, "unknown")
+
+
 # A team or role label that can flow into a path and a logical name.
 HC_LABEL = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 # A terminal address safe to use as an hc-bindings file name (the plugin's own rule).
@@ -810,7 +845,9 @@ def _hc_binding(raw: dict[str, Any], parents: dict[int, int] | None) -> tuple[st
         return None, "binding is for another terminal generation"
     status = raw.get("status")
     status = status if isinstance(status, dict) else {}
-    kind = HC_APP_KINDS.get(str(status.get("app") or ""), "unknown")
+    kind = HC_APP_KINDS.get(str(status.get("app") or ""))
+    if kind is None:
+        kind = _foreground_kind(raw.get("foreground"))
     if data.get("provider") != kind:
         return None, f"binding provider {data.get('provider')!r} is not {kind!r}"
     provider_pid = _pid(data.get("provider_pid"))
@@ -866,7 +903,9 @@ def hc_member(raw: dict[str, Any], *, parents: dict[int, int] | None = None) -> 
     Team and role labels are the canonical logical identity. A raw terminal name
     never overrides them; when labels are absent or invalid the terminal is not
     a team member. A label that is not a safe path component is rejected here,
-    at the host boundary.
+    at the host boundary. The provider kind comes from `status.app`, then from
+    the live foreground process when a launcher wrapped the provider; both
+    absent leaves it unknown.
     """
     labels = raw.get("labels")
     labels = labels if isinstance(labels, dict) else {}
@@ -876,13 +915,14 @@ def hc_member(raw: dict[str, Any], *, parents: dict[int, int] | None = None) -> 
     status_raw = raw.get("status")
     status_raw = status_raw if isinstance(status_raw, dict) else {}
     app = str(status_raw.get("app") or "")
+    kind = HC_APP_KINDS.get(app) or _foreground_kind(raw.get("foreground"))
     state = str(status_raw.get("state") or "")
     session, session_reason = _hc_binding(raw, parents)
     return Member(
         name=name,
         team=team,
         role=role,
-        kind=HC_APP_KINDS.get(app, "unknown"),
+        kind=kind,
         status=state if state in STATUSES else "unknown",
         cwd=str(raw.get("cwd") or ""),
         address=str(raw.get("address") or ""),

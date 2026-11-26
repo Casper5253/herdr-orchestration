@@ -108,6 +108,34 @@ def model_for_effort(effort: str | None, policy: dict[str, Any]) -> str:
     return models.get(effort or "medium") or models.get("medium") or DEFAULT_MODELS["medium"]
 
 
+def model_id(label: Any) -> str | None:
+    """A Devin model label ("SWE-2.1 XHigh") normalized to the policy id ("swe-2-1-xhigh")."""
+    if not isinstance(label, str) or not label.strip():
+        return None
+    return re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-") or None
+
+
+def pane_model(name: str | None, reader=None) -> str | None:
+    """The model a live Devin pane's footer reports, normalized to its policy id.
+
+    Reuses the footer parser in ``hx.context``, the same source ``hx doctor``
+    reads. A missing pane, an unreadable screen, a screen the host did not
+    prove complete, or a footer without a model is None: a caller must treat
+    the model as unknown, never assume an allowed one.
+    """
+    if not name:
+        return None
+    try:
+        from hx import context
+
+        screen = (reader or context._herdr_read)(name, lines=8)
+        if getattr(screen, "complete", None) is not True:
+            return None
+        return model_id(context._devin_footer_label(str(screen)))
+    except Exception:
+        return None
+
+
 def _parse_ts(text: Any) -> datetime.datetime | None:
     if not isinstance(text, str) or not text:
         return None
@@ -146,7 +174,12 @@ def promo_status(policy: dict[str, Any], now: datetime.datetime | None = None) -
 
 
 def list_models(bin_path: Path, timeout: float = 60.0) -> tuple[dict[str, Any] | None, str | None]:
-    """``devin models list --format json`` as {model_uid: variant}."""
+    """``devin models list --format json`` as {model_uid: variant}.
+
+    A partial or timed-out read, and any catalog row without a model id and a
+    cost tier, is incomplete. Return ``None`` so every caller refuses: a
+    missing tier must never read as free.
+    """
     try:
         result = spawn.run(
             [str(bin_path), "models", "list", "--format", "json"],
@@ -155,20 +188,28 @@ def list_models(bin_path: Path, timeout: float = 60.0) -> tuple[dict[str, Any] |
             encoding="utf-8",
             errors="replace",
         )
+    except subprocess.TimeoutExpired:
+        return None, f"devin models list timed out after {timeout:g}s"
     except Exception as exc:
         return None, f"devin models list failed: {exc}"
     if result.returncode != 0:
         return None, f"devin models list exited {result.returncode}: {(result.stderr or '')[:200]}"
     try:
         document = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return None, "devin models list returned no JSON (logged out?)"
+    if not isinstance(document, dict) or not isinstance(document.get("families"), list):
+        return None, "devin models list returned an incomplete catalog"
     variants: dict[str, Any] = {}
-    for family in document.get("families") or []:
-        for variant in family.get("variants") or []:
-            uid = variant.get("model_uid")
-            if uid:
-                variants[uid] = variant
+    for family in document["families"]:
+        if not isinstance(family, dict) or not isinstance(family.get("variants"), list):
+            return None, "devin models list returned an incomplete catalog"
+        for variant in family["variants"]:
+            uid = variant.get("model_uid") if isinstance(variant, dict) else None
+            tier = variant.get("cost_tier") if isinstance(variant, dict) else None
+            if not isinstance(uid, str) or not uid or not isinstance(tier, str) or not tier:
+                return None, "devin models list returned an incomplete catalog"
+            variants[uid] = variant
     return variants, None
 
 
@@ -194,8 +235,10 @@ def preflight(
     variants, error = models_lister(bin_path)
     if variants is None:
         return {"kind": "tool", "reason": error or "devin models list failed"}
+    if not isinstance(variants, dict):
+        return {"kind": "tool", "reason": "devin models list returned an incomplete catalog"}
     variant = variants.get(model)
-    if variant is None:
+    if not isinstance(variant, dict):
         return {"kind": "policy", "reason": f"{model} is not offered to this account"}
     tier = variant.get("cost_tier")
     if tier != FREE_TIER:
@@ -673,6 +716,11 @@ def _usage(
     error = last_error(now)
     slots = active_slots(now)
     live_now = live_sessions(agents)
+    if live_now is not None:
+        live_now = [
+            {**session, "model": pane_model(session.get("name"))}
+            for session in live_now
+        ]
     max_concurrent = int(conf.get("max_concurrent", 1))
     unmapped = sorted({model_for_effort(e, policy) for e in DEFAULT_MODELS} - set(allowed_models(policy)))
     if not conf.get("enabled"):

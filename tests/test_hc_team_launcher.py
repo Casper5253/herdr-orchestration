@@ -139,6 +139,8 @@ class Stage:
         team_dir.mkdir()
         launcher = team_dir / "Start-HerdrAppTeam.ps1"
         launcher.write_bytes((REPO / "team" / "Start-HerdrAppTeam.ps1").read_bytes())
+        (team_dir / "DevinModelGate.ps1").write_bytes(
+            (REPO / "team" / "DevinModelGate.ps1").read_bytes())
         (team_dir / "devin-pane.config.json").write_bytes(
             (REPO / "team" / "devin-pane.config.json").read_bytes()
         )

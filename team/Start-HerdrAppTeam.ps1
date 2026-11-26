@@ -248,17 +248,13 @@ foreach ($role in $roles.Keys) {
 
 if (-not $live.ContainsKey('devin')) {
     if ($policy.devin.enabled -ne $true) { throw 'policy.devin.enabled must be true.' }
-    if ($devinModel -cnotin $policy.devin.allowed_models) { throw 'Devin model is not in policy.devin.allowed_models.' }
     $promoEnd = $null
     try { $promoEnd = [DateTimeOffset]::Parse($policy.devin.promo.ends_at) } catch {}
     if (-not $promoEnd -or [DateTimeOffset]::UtcNow -ge $promoEnd) {
         throw 'SWE-2.1 promotion ended or policy.devin.promo.ends_at is missing; re-verify pricing and get approval before starting a Devin pane.'
     }
-    $modelOut = devin models list --format json | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'devin models list failed.' }
-    $catalog = try { $modelOut | ConvertFrom-Json } catch { throw 'devin models list returned no JSON.' }
-    $variants = @($catalog.families | ForEach-Object { $_.variants } | Where-Object { $_.model_uid -ceq $devinModel })
-    if ($variants.Count -ne 1 -or $variants[0].cost_tier -cne 'Free') { throw 'Devin model is unavailable or not Free; refusing launch.' }
+    . (Join-Path $dir 'DevinModelGate.ps1')
+    Assert-DevinModelFree -Policy $policy -Model $devinModel
 }
 
 Invoke-Planned @('hc', 'label', $lead, "team=$Team", "role=$leadRole") | Out-Null

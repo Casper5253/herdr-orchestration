@@ -48,6 +48,8 @@ if ($Devin) {
     }
     $devinModel = $policy.devin.models.medium
     if (-not $devinModel) { throw 'policy.devin.models.medium is not set.' }
+    . (Join-Path $dir 'DevinModelGate.ps1')
+    Assert-DevinModelFree -Policy $policy -Model $devinModel
 }
 
 if ($LeadPane) {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -163,6 +164,88 @@ def test_preflight_ended_promo(tmp_path: Path) -> None:
     failure = devin.preflight(policy, MODEL, now=NOW, models_lister=_free_lister)
     assert failure["kind"] == "policy"
     assert "promotion ended" in failure["reason"]
+
+
+# ---------- list_models: incomplete reads refuse, never allow ----------
+
+
+def _models_run(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(["devin"], returncode, stdout, "")
+
+
+def test_list_models_refuses_a_catalog_row_without_a_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row missing its tier makes the catalog incomplete; never drop it silently."""
+    stdout = json.dumps({"families": [{"variants": [
+        {"model_uid": MODEL, "cost_tier": "Free"},
+        {"model_uid": "mystery-model"},
+    ]}]})
+    monkeypatch.setattr(devin.spawn, "run", lambda *a, **k: _models_run(stdout))
+    variants, error = devin.list_models(tmp_path / "devin.exe")
+    assert variants is None
+    assert "incomplete" in error.lower()
+
+
+def test_preflight_refuses_a_catalog_with_an_incomplete_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launch gate must not allow because the target row happened to be Free."""
+    stdout = json.dumps({"families": [{"variants": [
+        {"model_uid": MODEL, "cost_tier": "Free"},
+        {"model_uid": "mystery-model"},
+    ]}]})
+    monkeypatch.setattr(devin.spawn, "run", lambda *a, **k: _models_run(stdout))
+    failure = devin.preflight(_policy(tmp_path), MODEL, now=NOW)
+    assert failure is not None
+    assert "incomplete" in failure["reason"].lower()
+
+
+@pytest.mark.parametrize(
+    "stdout", ["[]", "null", '{"families":"x"}', '{"families":[{"variants":"x"}]}']
+)
+def test_list_models_refuses_an_ill_formed_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    monkeypatch.setattr(devin.spawn, "run", lambda *a, **k: _models_run(stdout))
+    variants, _error = devin.list_models(tmp_path / "devin.exe")
+    assert variants is None
+
+
+def test_list_models_refuses_a_timed_out_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("devin", 60)
+
+    monkeypatch.setattr(devin.spawn, "run", timeout)
+    variants, error = devin.list_models(tmp_path / "devin.exe")
+    assert variants is None
+    assert "timed out" in error.lower()
+
+
+# ---------- pane_model: an unproven screen read is unknown ----------
+
+
+def test_pane_model_refuses_an_incomplete_screen_read() -> None:
+    from hx import host
+
+    screen = host.ReadText("SWE-2.1 XHigh · accept edits\n", complete=False, why="truncated")
+    assert devin.pane_model("dev-devin", reader=lambda name, lines=8: screen) is None
+
+
+def test_pane_model_refuses_a_screen_without_completeness() -> None:
+    from hx import host
+
+    screen = host.ReadText("SWE-2.1 XHigh · accept edits\n", complete=None)
+    assert devin.pane_model("dev-devin", reader=lambda name, lines=8: screen) is None
+
+
+def test_pane_model_reads_a_complete_screen() -> None:
+    from hx import host
+
+    screen = host.ReadText("SWE-2.1 XHigh · accept edits\n", complete=True)
+    assert devin.pane_model("dev-devin", reader=lambda name, lines=8: screen) == MODEL
 
 
 # ---------- parse_export + detect_failure ----------

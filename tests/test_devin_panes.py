@@ -25,6 +25,10 @@ REAL_LIVE_MEMBERS = hx_usage.live_members
 @pytest.fixture(autouse=True)
 def synthetic_herdr_agents(monkeypatch):
     monkeypatch.setattr(hx_usage, "live_members", lambda: [])
+    # No test here reads a real pane; the observed model is supplied per case.
+    monkeypatch.setattr(devin, "pane_model", lambda name, reader=None: None)
+    # Reuse gates on the live launch preflight, which shells out in production.
+    monkeypatch.setattr(devin, "preflight", lambda policy, model, **kwargs: None)
 
 
 def _policy(tmp_path: Path, **overrides) -> dict:
@@ -67,8 +71,8 @@ def test_live_sessions_lists_devin_agents_any_name(
     ]
     status = devin.usage(_policy(tmp_path), now=NOW, agents=agents)
     assert status["live_sessions"] == [
-        {"name": "dev-devin", "status": "working", "cwd": "C:\\work"},
-        {"name": None, "status": "idle", "cwd": "C:\\work"},
+        {"name": "dev-devin", "status": "working", "cwd": "C:\\work", "model": None},
+        {"name": None, "status": "idle", "cwd": "C:\\work", "model": None},
     ]
     assert status["active_runs"] == 0
 
@@ -168,8 +172,8 @@ def test_usage_snapshot_shares_one_agent_list_and_marks_sessions(
 
     assert calls == [1]
     assert snapshot["devin"]["live_sessions"] == [
-        {"name": "dev-devin", "status": "working", "cwd": "C:\\work"},
-        {"name": None, "status": "idle", "cwd": "C:\\work"},
+        {"name": "dev-devin", "status": "working", "cwd": "C:\\work", "model": None},
+        {"name": None, "status": "idle", "cwd": "C:\\work", "model": None},
     ]
     assert [a["name"] for a in snapshot["agents"]["agents"]] == ["dev-devin", "dev-claude"]
     # Admission refreshes the same synthetic agent list.
@@ -249,7 +253,7 @@ def _task(**overrides) -> dict:
     return task
 
 
-IDLE_DEVIN = [{"name": "dev-devin", "status": "idle", "cwd": "C:\\work"}]
+IDLE_DEVIN = [{"name": "dev-devin", "status": "idle", "cwd": "C:\\work", "model": MODEL}]
 
 
 def test_r1_admission_refreshes_expired_pane_cache(tmp_path, monkeypatch):
@@ -262,6 +266,7 @@ def test_r1_admission_refreshes_expired_pane_cache(tmp_path, monkeypatch):
 
 def test_r1_full_cap_reuses_existing_pane(tmp_path, monkeypatch, route_policy):
     monkeypatch.setenv("HX_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(devin, "pane_model", lambda name, reader=None: MODEL)
     block = devin.usage(_policy(tmp_path, max_concurrent=1), now=NOW,
                         agents=[_pane("dev-devin")])
     snapshot = _route_usage()
@@ -273,7 +278,54 @@ def test_r1_full_cap_reuses_existing_pane(tmp_path, monkeypatch, route_policy):
 
 def test_r1_done_pane_is_reusable(route_policy):
     decision = route(_task(iterative=True), _route_usage([
-        {"name": "dev-devin", "status": "done"}]), route_policy)
+        {"name": "dev-devin", "status": "done", "model": MODEL}]), route_policy)
+    assert decision["method"] == "persistent-devin"
+    assert decision["agent"] == "dev-devin"
+
+
+@pytest.mark.parametrize("model", ["swe-2-high", "swe-2-1-xhigh-lightning"])
+def test_idle_pane_on_a_non_allowed_model_is_not_reused(route_policy, model):
+    """A pane running a retired or paid model is never handed new work."""
+    sessions = [{"name": "dev-devin", "status": "idle", "model": model}]
+    decision = route(_task(iterative=True), _route_usage(sessions), route_policy)
+    assert decision["worker"] == "devin"
+    assert decision["method"] == "ocrun-devin"
+    assert "agent" not in decision
+    assert decision["model"] == "swe-2-1-xhigh"
+
+
+def test_idle_pane_with_unknown_model_is_not_reused(route_policy):
+    """An unreadable footer model could be any id, so it is never reused."""
+    sessions = [{"name": "dev-devin", "status": "idle", "model": None}]
+    decision = route(_task(iterative=True), _route_usage(sessions), route_policy)
+    assert decision["method"] == "ocrun-devin"
+    assert "agent" not in decision
+
+
+def test_idle_pane_reuse_asks_the_live_free_preflight(route_policy, monkeypatch):
+    """Allowlisted is not enough: reuse runs the same launch preflight for the pane model."""
+    asked = []
+
+    def paid(policy, model, **kwargs):
+        asked.append(model)
+        return {"kind": "policy", "reason": f"{model} cost_tier is 'High cost', not 'Free'"}
+
+    monkeypatch.setattr(devin, "preflight", paid)
+    sessions = [{"name": "dev-devin", "status": "idle", "model": MODEL}]
+    decision = route(_task(iterative=True), _route_usage(sessions), route_policy)
+    assert asked == [MODEL]
+    assert decision["worker"] == "devin"
+    assert decision["method"] == "ocrun-devin"
+    assert "agent" not in decision
+
+
+def test_idle_pane_reuse_when_the_live_preflight_passes(route_policy, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        devin, "preflight", lambda policy, model, **kwargs: asked.append(model))
+    sessions = [{"name": "dev-devin", "status": "idle", "model": MODEL}]
+    decision = route(_task(iterative=True), _route_usage(sessions), route_policy)
+    assert asked == [MODEL]
     assert decision["method"] == "persistent-devin"
     assert decision["agent"] == "dev-devin"
 

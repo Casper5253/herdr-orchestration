@@ -43,6 +43,7 @@ def _terminal(
     cwd: str = "C:\\repo",
     created_ms: int = 1794205754477,
     foreground_pid: int | None = None,
+    foreground_name: str = "powershell.exe",
     finished: bool = False,
 ) -> dict:
     """An `hc get` detail in the real wire shape (see `hc get t24 --json`)."""
@@ -61,7 +62,7 @@ def _terminal(
         "labels": labels,
         "status": {"app": app, "state": state} if app and state else None,
         "foreground": (
-            {"argv": [], "cwd": cwd, "name": "powershell.exe",
+            {"argv": [], "cwd": cwd, "name": foreground_name,
              "pid": foreground_pid if foreground_pid is not None else pid}
             if pid is not None else None
         ),
@@ -264,6 +265,67 @@ def test_team_filters_on_the_team_label(fake: FakeHc) -> None:
     team = host.HcHost().team("dev-")
     assert sorted(team) == ["dev-claude", "dev-codex", "dev-devin", "dev-opencode"]
     assert "other-claude" not in team
+
+
+def test_a_wrapped_opencode_pane_resolves_kind_from_its_foreground_process(fake: FakeHc) -> None:
+    """A powershell-launched provider has no status.app; its live foreground names it."""
+    fake.add(_terminal("t58", name="dev-opencode-wrapped", team="dev", role="opencode",
+                       pid=58, foreground_name="opencode.exe"))
+    members = {member["address"]: member for member in host.HcHost().all_members()}
+    assert members["t58"]["kind"] == "opencode"
+
+
+@pytest.mark.parametrize("foreground_name", ["cmd.exe", "powershell.exe", ""])
+def test_a_pane_with_no_status_and_no_provider_foreground_stays_unknown(
+    fake: FakeHc, foreground_name: str
+) -> None:
+    """Unresolvable provider evidence still refuses admission: kind stays unknown."""
+    fake.add(_terminal("t60", pid=60, foreground_name=foreground_name))
+    members = {member["address"]: member for member in host.HcHost().all_members()}
+    assert members["t60"]["kind"] == "unknown"
+
+
+def test_a_wrapped_opencode_pane_no_longer_blocks_devin_admission() -> None:
+    """The real 26 Nov shape: null status.app, foreground opencode.exe.
+
+    An unresolved kind made `devin.live_sessions` return None, so every one-off
+    Devin run reported busy. A resolved OpenCode kind keeps the roster known.
+    """
+    from hx import devin
+
+    wrapped = host.hc_member({
+        "address": "t58",
+        "labels": {"team": "dev", "role": "opencode"},
+        "status": None,
+        "foreground": {"argv": [], "name": "opencode.exe", "pid": 58},
+    })
+    assert wrapped["kind"] == "opencode"
+    assert devin.live_sessions([wrapped]) == []
+
+
+@pytest.mark.parametrize(
+    "foreground_name,kind",
+    [("claude.exe", "claude"), ("codex.EXE", "codex"),
+     ("opencode.exe", "opencode"), ("devin.EXE", "devin")],
+)
+def test_only_the_real_cli_executable_names_a_provider(
+    fake: FakeHc, foreground_name: str, kind: str
+) -> None:
+    fake.add(_terminal("t62", pid=62, foreground_name=foreground_name))
+    members = {member["address"]: member for member in host.HcHost().all_members()}
+    assert members["t62"]["kind"] == kind
+
+
+@pytest.mark.parametrize(
+    "foreground_name",
+    ["opencode.cmd", "codex.ps1", "devin.bat",
+     "codex-code-mode-host.exe", "codex-windows-sandbox-service.exe"],
+)
+def test_a_helper_or_shim_is_not_the_provider(fake: FakeHc, foreground_name: str) -> None:
+    """A shim or helper that merely contains a provider name still leaves kind unknown."""
+    fake.add(_terminal("t63", pid=63, foreground_name=foreground_name))
+    members = {member["address"]: member for member in host.HcHost().all_members()}
+    assert members["t63"]["kind"] == "unknown"
 
 
 def test_duplicate_label_roles_are_refused_even_with_different_raw_names(fake: FakeHc) -> None:
