@@ -127,6 +127,7 @@ console.log(JSON.stringify({writes, binding, tmp}));
     )
     out = _run(tmp_path, body)
     assert out["writes"] == [
+        f"{ESC}]7501;state=idle:app=opencode{ESC}\\",
         f"{ESC}]7501;state=working:app=opencode{ESC}\\",
         f"{ESC}]7501;state=blocked:app=opencode:kind=permission{ESC}\\",
         f"{ESC}]7501;state=working:app=opencode{ESC}\\",
@@ -143,6 +144,27 @@ console.log(JSON.stringify({writes, binding, tmp}));
         "written_ms": 222,
     }
     assert out["tmp"] == []
+
+
+def test_startup_reports_idle_before_any_session_event(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    body = _body(
+        """
+import * as p from __PLUGIN__;
+const writes = [];
+await p.createPlugin({
+  env: {HC_TERMINAL_ID: "t58", OPENCODE_CONFIG: "C:/repo/opencode-trusted-dev.jsonc"},
+  stdout: {isTTY: true, write(s) { writes.push(s); }}, stderr: null,
+  stateDir: __STATE__, pid: 4242,
+  terminalInfo: () => ({terminal_created_ms: 111}),
+})({});
+console.log(JSON.stringify({writes}));
+""",
+        PLUGIN=PLUGIN.as_uri(),
+        STATE=str(state),
+    )
+    out = _run(tmp_path, body)
+    assert out["writes"] == [f"{ESC}]7501;state=idle:app=opencode{ESC}\\"]
 
 
 def test_binding_overwrites_only_its_own_terminal(tmp_path: Path) -> None:
@@ -213,7 +235,10 @@ console.log(JSON.stringify({binding, writes}));
     )
     out = _run(tmp_path, body)
     assert out["binding"]["session_id"] == "root"
-    assert out["writes"] == [f"{ESC}]7501;state=blocked:app=opencode:kind=permission{ESC}\\"]
+    assert out["writes"] == [
+        f"{ESC}]7501;state=idle:app=opencode{ESC}\\",
+        f"{ESC}]7501;state=blocked:app=opencode:kind=permission{ESC}\\",
+    ]
 
 
 def test_atomic_write_uses_a_temp_file_then_renames(tmp_path: Path) -> None:
@@ -306,7 +331,10 @@ await event("session.created", {info: {id: "child", parentID: "root"}});
 await event("session.idle", {sessionID: "child"});
 await event("session.error", {sessionID: "child"});
 ''')
-    assert out["writes"] == [f"{ESC}]7501;state=working:app=opencode{ESC}\\"]
+    assert out["writes"] == [
+        f"{ESC}]7501;state=idle:app=opencode{ESC}\\",
+        f"{ESC}]7501;state=working:app=opencode{ESC}\\",
+    ]
 
 
 def test_concurrent_child_prompts_stay_blocked_until_all_resolve(tmp_path):
@@ -328,7 +356,8 @@ await event("session.idle", {sessionID: "root"});
 await event("session.created", {info: {id: "unrelated", parentID: null}});
 ''')
     assert out["binding"]["session_id"] == "new-root"
-    assert all("state=working" in w for w in out["writes"])
+    assert "state=idle" in out["writes"][0]
+    assert all("state=working" in w for w in out["writes"][1:])
 
 
 def test_new_process_invalidates_binding_and_fences_old_writer(tmp_path):
@@ -464,8 +493,9 @@ fail = false;
 await hooks.event({event: {type: "session.status", properties: {sessionID: "root", status: "busy"}}});
 console.log(JSON.stringify({writes}));
 ''', PLUGIN=PLUGIN.as_uri(), STATE=str(tmp_path / "state")))
-    assert all("state=blocked" in w for w in out["writes"][1:])
-    assert len(out["writes"]) == 3
+    assert "state=working" in out["writes"][1]
+    assert all("state=blocked" in w for w in out["writes"][2:])
+    assert len(out["writes"]) == 4
 
 
 def test_terminal_info_requires_live_ancestor_and_generation(tmp_path: Path) -> None:

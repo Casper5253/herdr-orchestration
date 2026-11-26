@@ -322,6 +322,7 @@ export function createPlugin(options = {}) {
       writeRecord(stream, record(status.state, status.kind));
     };
 
+    emit();
     return {
       event: async ({ event } = {}) => {
         const type = event?.type;
