@@ -235,7 +235,7 @@ def test_stage_pool_selection(policy: dict) -> None:
     review = route(_feature_task(kind="review"), usage, policy)
     assert review["worker"] == "codex"
     assert review["effort"] == "high"
-    assert review["model"] == _codex_strong_model(policy)
+    assert review["model"] == _codex_economy_model(policy)
 
     architecture = route(_feature_task(kind="architecture"), usage, policy)
     assert architecture["worker"] == "claude"
@@ -485,7 +485,7 @@ def test_escalation_starts_from_prev_effort(policy: dict) -> None:
     retry = _feature_task(kind="review", attempt=2, last_failure="capability", prev=prev)
     result = route(retry, usage, policy)
     assert result["effort"] == "max"
-    assert result["model"] == _codex_strong_model(policy)
+    assert result["model"] == _codex_economy_model(policy)
 
 
 def test_capability_failures_counter_increments(policy: dict) -> None:
@@ -687,7 +687,7 @@ def test_effort_by_kind_from_policy(policy: dict) -> None:
 
     review = route(_feature_task(kind="review"), usage, policy)
     assert review["effort"] == "high"
-    assert review["model"] == _codex_strong_model(policy)
+    assert review["model"] == _codex_economy_model(policy)
 
 
 def test_codex_models_read_from_policy(policy: dict) -> None:
@@ -697,7 +697,7 @@ def test_codex_models_read_from_policy(policy: dict) -> None:
         opencode_models={m: _model_state(spend_5h=0.9) for m in _all_ladder_models()},
     )
     review = route(_feature_task(kind="review"), usage, policy)
-    assert review["model"] == policy["codex"]["strong_model"]
+    assert review["model"] == policy["codex"]["economy_model"]
 
     fallback = route(_feature_task(), usage, policy)
     assert fallback["model"] == policy["codex"]["economy_model"]

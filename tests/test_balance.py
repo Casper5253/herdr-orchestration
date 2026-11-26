@@ -41,7 +41,7 @@ def snap(tmp_path, tasks=None, members=None, free_gb=32.0, oneoffs=0,
     members = members if members is not None else [member("dev-lead", "working")]
     reports = reports or {}
     state_path = state_path or tmp_path / "balance-state.json"
-    def next_unit(weight=None, running_heavy=0, worker=None):
+    def next_unit(weight=None, running_heavy=0, worker=None, exclude_refs=None):
         return (choices or {}).get((weight, worker), unit(weight or "light", worker or "codex", f"{weight}-{worker}"))
     def read_screen(name, lines=240):
         if screen is None: raise RuntimeError("unreadable")
@@ -131,3 +131,54 @@ def test_process_scan_pattern_and_json_shape(tmp_path, monkeypatch):
     rows = snap(tmp_path, members=[member("dev-lead"), member("dev-codex")])
     assert set(rows) >= {"heavy_cap", "running_heavy", "oneoff_count", "free_memory_gb", "slots", "assignments", "stuck", "warnings"}
     json.dumps(rows)
+
+
+def test_idle_workers_never_get_the_same_unit_in_one_run(tmp_path):
+    offered = [unit("heavy", "codex", "same"), unit("heavy", "claude", "other")]
+    def next_unit(weight=None, running_heavy=0, worker=None, exclude_refs=None):
+        excluded = set(exclude_refs or [])
+        return next(u for u in offered if u["ref"] not in excluded)
+    state = tmp_path / "state.json"
+    rows = balance.snapshot(ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex"), member("dev-devin")],
+        policy=POLICY, now=NOW, free_gb=32, oneoff_count=0, next_unit=next_unit,
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=state)
+    refs = [a["unit"]["ref"] for a in rows["assignments"]]
+    assert refs == ["same", "other"]
+
+
+def test_devin_gets_no_second_copy_when_no_distinct_unit_exists(tmp_path):
+    def next_unit(weight=None, running_heavy=0, worker=None, exclude_refs=None):
+        if "same" in set(exclude_refs or []): raise balance.NextUnitUnavailable("no distinct unit")
+        return unit("heavy", "codex", "same")
+    rows = balance.snapshot(ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex"), member("dev-devin")],
+        policy=POLICY, now=NOW, free_gb=32, oneoff_count=0, next_unit=next_unit,
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / "state.json")
+    assert [a["worker"] for a in rows["assignments"]] == ["dev-codex"]
+
+
+def test_codex_gets_no_ordinary_unit_under_the_policy_rule(tmp_path):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {"codex": {"allow_if_any": [
+        {"source": "follow-up", "why_contains": "failed task"},
+        {"title_contains_any": ["security", "token"]}]}}
+    rows = snap(tmp_path, members=[member("dev-lead"), member("dev-codex")], choices={("heavy", "codex"): unit("heavy", "codex", "ordinary")})
+    rows = balance.snapshot(ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+        policy=policy, now=NOW, free_gb=32, oneoff_count=0,
+        next_unit=lambda weight=None, running_heavy=0, worker=None, exclude_refs=None: unit("heavy", "codex", "ordinary"),
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / "state.json")
+    assert rows["assignments"] == []
+
+
+def test_codex_rule_allows_failed_followups_and_security_or_token_checks(tmp_path):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {"codex": {"allow_if_any": [
+        {"source": "follow-up", "why_contains": "failed task"},
+        {"title_contains_any": ["security", "token"]}]}}
+    follow = unit("heavy", "codex", "fix")
+    follow["source"] = "follow-up"
+    follow["why"] = "failed task left a next action"
+    rows = balance.snapshot(ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+        policy=policy, now=NOW, free_gb=32, oneoff_count=0,
+        next_unit=lambda weight=None, running_heavy=0, worker=None, exclude_refs=None: follow,
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=tmp_path / "state.json")
+    assert len(rows["assignments"]) == 1

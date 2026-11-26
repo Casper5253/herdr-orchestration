@@ -16,6 +16,11 @@ from hx import host, jotarium, ledger as ledger_mod, next as next_mod, paths, sa
 ACTIVE_STATUSES = {"assigned", "in_progress", "review"}
 WEIGHTS = {"heavy", "light"}
 DEFAULT_STUCK_MINUTES = 45
+
+
+class NextUnitUnavailable(RuntimeError):
+    """No distinct unit remains for this worker in this balance run."""
+
 SCREEN_LINES = 240
 STATE_VERSION = 1
 
@@ -148,9 +153,36 @@ def _default_next_unit(policy: dict[str, Any], query=None, ledger_obj=None, live
     if ledger_obj is None:
         ledger_obj = ledger_mod.default_ledger()
     sources = next_mod.Sources(query, ledger_obj, policy=policy, live=live or [], free_gb=free_gb)
-    def choose(weight: str | None = None, running_heavy: int = 0, worker: str | None = None):
-        return sources.next_unit(weight=weight, running_heavy=running_heavy, worker=worker)
+    def choose(weight: str | None = None, running_heavy: int = 0, worker: str | None = None, exclude_refs: set[str] | None = None):
+        return sources.next_unit(weight=weight, running_heavy=running_heavy, worker=worker, exclude_refs=exclude_refs)
     return choose
+
+
+def _assignment_allowed(worker_role: str, unit: dict[str, Any], policy: dict[str, Any]) -> bool:
+    """The policy-driven worker restriction check; no rule means unrestricted."""
+    rules = ((policy.get("next") or {}).get("worker_assignment_rules") or {})
+    rule = rules.get(worker_role)
+    if not isinstance(rule, dict):
+        return True
+    clauses = rule.get("allow_if_any")
+    if not isinstance(clauses, list) or not clauses:
+        return False
+    title = str(unit.get("title") or "").lower()
+    why = str(unit.get("why") or "").lower()
+    source = str(unit.get("source") or "")
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            continue
+        if clause.get("source") is not None and str(clause.get("source")) != source:
+            continue
+        needle = clause.get("why_contains")
+        if needle is not None and str(needle).lower() not in why:
+            continue
+        words = clause.get("title_contains_any")
+        if isinstance(words, list) and not any(str(word).lower() in title for word in words):
+            continue
+        return True
+    return False
 
 
 def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
@@ -247,6 +279,7 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
                                        "automatic_kill": False}})
 
     assignments: list[dict[str, Any]] = []
+    assigned_refs: set[str] = set()
     planned_heavy = running_heavy
     for slot in slots:
         if slot["state"] != "idle":
@@ -254,13 +287,18 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
         worker = str(slot["worker"]).rsplit("-", 1)[-1]
         wanted = "heavy" if planned_heavy < heavy_cap else "light"
         try:
-            chosen = next_unit(weight=wanted, running_heavy=planned_heavy, worker=worker)
+            chosen = next_unit(weight=wanted, running_heavy=planned_heavy, worker=worker, exclude_refs=assigned_refs)
+        except NextUnitUnavailable:
+            continue
         except Exception as exc:
             warnings.append(f"{slot['worker']}: hx next failed: {exc}")
+            continue
+        if not _assignment_allowed(worker, chosen, policy):
             continue
         actual = str(chosen.get("weight") or wanted)
         assignments.append({"worker": slot["worker"], "weight": actual, "unit": chosen,
                             "hint": "matched" if chosen.get("worker_hint") == worker else "fallback"})
+        assigned_refs.add(str(chosen.get("ref") or ""))
         if actual == "heavy":
             planned_heavy += 1
 

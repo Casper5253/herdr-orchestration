@@ -557,3 +557,34 @@ def test_prepare_run_without_deny_rules_leaves_prompt_alone(
     run_dir = tmp_path / "run"
     devin.prepare_run(run_dir, "just the brief", policy)
     assert (run_dir / "prompt.md").read_text(encoding="utf-8") == "just the brief"
+
+
+def test_review_uses_idle_max_devin_pane_persistently(route_policy):
+    policy = dict(route_policy)
+    policy["devin"] = dict(route_policy["devin"], kinds=list(route_policy["devin"]["kinds"]) + ["review"])
+    sessions = [{"name": "dev-devin", "status": "idle", "model": "swe-2-1-max"}]
+    decision = route(_task(kind="review"), _route_usage(sessions), policy)
+    assert decision["worker"] == "devin"
+    assert decision["model"] == "swe-2-1-max"
+    assert decision["effort"] == "max"
+    assert decision["method"] == "persistent-devin"
+    assert decision["agent"] == "dev-devin"
+
+
+def test_review_without_an_idle_max_pane_is_a_devin_oneoff(route_policy):
+    policy = dict(route_policy)
+    policy["devin"] = dict(route_policy["devin"], kinds=list(route_policy["devin"]["kinds"]) + ["review"])
+    decision = route(_task(kind="review"), _route_usage([]), policy)
+    assert decision["worker"] == "devin"
+    assert decision["model"] == "swe-2-1-max"
+    assert decision["effort"] == "max"
+    assert decision["method"] == "ocrun-devin"
+
+
+def test_review_capability_failure_after_devin_max_still_uses_codex(route_policy):
+    policy = dict(route_policy)
+    policy["devin"] = dict(route_policy["devin"], kinds=list(route_policy["devin"]["kinds"]) + ["review"])
+    prev = {"worker": "devin", "model": "swe-2-1-max", "effort": "max", "method": "ocrun-devin"}
+    decision = route(_task(kind="review", last_failure="capability", prev=prev), _route_usage([]), policy)
+    assert decision["worker"] == "codex"
+    assert decision["model"] == policy["codex"]["strong_model"]

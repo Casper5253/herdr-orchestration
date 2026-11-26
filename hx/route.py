@@ -395,6 +395,8 @@ def _devin_persistent_eligible(task: dict[str, Any], pane: str) -> bool:
     """Persistent dispatch is for iterative work, or a --persistent block naming the pane."""
     if task.get("parallel"):
         return False
+    if task.get("kind") == "review":
+        return True
     persistent = task.get("persistent") or {}
     if persistent.get("name") == pane or persistent.get("agent") == pane:
         return persistent.get("status", "idle") in hx_usage.READY
@@ -957,15 +959,11 @@ def _route(task: dict[str, Any], usage: dict[str, Any], policy: dict[str, Any]) 
             "review": True,
         }
     elif kind == "review":
-        stages.append("pool:codex")
-        decision = {
-            "worker": "codex",
-            "model": _codex_strong_model(policy),
-            "effort": effort,
-            "method": "ocrun-codex",
-            "reason": "review -> codex",
-            "stages": stages,
-        }
+        decision = _devin_decision(task, usage, policy, "max", stages, capability_failure)
+        if decision is None:
+            decision = _fallback_decision(usage, policy, effort, stages)
+        else:
+            decision["reason"] = "review -> devin swe-2-1-max; " + decision.get("reason", "")
     elif kind == "architecture":
         stages.append("pool:claude")
         decision = {
