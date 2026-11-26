@@ -79,16 +79,15 @@ class JotariumClient:
             with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            raise JotariumError(f"Jotarium query {name} failed with HTTP {exc.code}") from exc
+            raise JotariumError(f"Jotarium query {name} failed") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise JotariumError(f"Jotarium is not reachable at {self.url}") from exc
+            raise JotariumError(f"Jotarium query {name} is not reachable") from exc
         try:
             body = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise JotariumError(f"Jotarium query {name} returned invalid JSON") from exc
         if not isinstance(body, dict) or body.get("ok") is not True:
-            code = body.get("error", {}).get("code") if isinstance(body, dict) else None
-            raise JotariumError(f"Jotarium query {name} was refused ({code or 'unknown error'})")
+            raise JotariumError(f"Jotarium query {name} was refused")
         data = body.get("data")
         if not isinstance(data, dict):
             raise JotariumError(f"Jotarium query {name} returned no data object")

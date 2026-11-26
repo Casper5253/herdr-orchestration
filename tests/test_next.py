@@ -196,6 +196,62 @@ def test_postponed_answer_is_not_work(tmp_path: Path) -> None:
     assert "Q-851" not in refs
 
 
+def test_answer_that_says_do_now_is_not_postponed(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-853"] = {
+        "ref": "Q-853",
+        "kind": "task",
+        "status": "backlog",
+        "title": "Adopt the shared parser in this release",
+        "assignee": None,
+        "acceptance": {"status": "none", "revision": 1},
+        "children": {"open": 0, "done": 0},
+        "blockers": {
+            "open": None,
+            "resolved": [
+                {
+                    "request": {
+                        "kind": "decide",
+                        "options": [
+                            {"key": "keep", "label": "Keep it and build now"},
+                            {"key": "after", "label": "Park it until after 1.0"},
+                        ],
+                    },
+                    "revision": 1,
+                    "resolvedAt": "2026-11-24T12:00:00.000Z",
+                    "action": "choose",
+                    "choice": "keep",
+                }
+            ],
+        },
+        "comments": [],
+        "activity": [],
+    }
+    data["activity"].append(
+        {
+            "activity": {
+                "id": "a-853-resolve",
+                "actor": "human",
+                "command": "resolveBlocker",
+                "createdAt": "2026-11-24T12:00:00.000Z",
+            },
+            "item": {"ref": "Q-853", "title": "Adopt the shared parser in this release"},
+        }
+    )
+    sources = next_mod.Sources(
+        FakeJotarium(data),
+        FakeLedger(tmp_path, []),
+        policy=POLICY,
+        now=NOW,
+        free_gb=32.0,
+        live=[],
+    )
+
+    refs = {unit["ref"] for unit in sources.creator_answers()}
+
+    assert "Q-853" in refs
+
+
 def test_answer_the_lead_already_acted_on_is_not_work(tmp_path: Path) -> None:
     refs = {unit["ref"] for unit in _sources(tmp_path).creator_answers()}
 
@@ -231,6 +287,115 @@ def test_open_item_with_a_pending_request_is_not_work(tmp_path: Path) -> None:
     refs = {unit["ref"] for unit in _sources(tmp_path).open_items()}
 
     assert "Q-4" not in refs
+
+
+def test_postponed_answer_does_not_resurface_as_open_item(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-851"]["status"] = "todo"
+    data["items"]["Q-851"]["comments"] = []
+    sources = next_mod.Sources(
+        FakeJotarium(data),
+        FakeLedger(tmp_path, []),
+        policy=POLICY,
+        now=NOW,
+        free_gb=32.0,
+        live=[],
+    )
+
+    assert "Q-851" not in {unit["ref"] for unit in sources.open_items()}
+
+
+def test_handled_answer_does_not_resurface_as_open_item(tmp_path: Path) -> None:
+    data = _data()
+    data["items"]["Q-852"]["status"] = "todo"
+    sources = next_mod.Sources(
+        FakeJotarium(data),
+        FakeLedger(tmp_path, []),
+        policy=POLICY,
+        now=NOW,
+        free_gb=32.0,
+        live=[],
+    )
+
+    assert "Q-852" not in {unit["ref"] for unit in sources.open_items()}
+
+
+@pytest.mark.parametrize("ref", ["Q-851", "Q-852"])
+def test_old_suppressed_answer_stays_out_until_the_human_reopens_it(
+    tmp_path: Path, ref: str
+) -> None:
+    data = _data()
+    item = data["items"][ref]
+    item["status"] = "todo"
+    if ref == "Q-851":
+        item["comments"] = []
+        item["activity"] = [event for event in item["activity"] if event["actor"] == "human"]
+    now = NOW + dt.timedelta(days=30)
+
+    def query(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        detail = FakeJotarium(data)(name, payload)
+        if name == "getItem" and payload["ref"] == ref:
+            detail["item"] = {key: value for key, value in item.items() if key != "activity"}
+            detail["activity"] = item["activity"]
+        return detail
+
+    def open_refs() -> set[str]:
+        sources = next_mod.Sources(
+            query, FakeLedger(tmp_path, []), policy=POLICY, now=now,
+        )
+        return {unit["ref"] for unit in sources.open_items()}
+
+    assert ref not in open_refs()
+    item["activity"].append({
+        "actor": "human", "command": "setStatus", "createdAt": now.isoformat(),
+    })
+    assert ref in open_refs()
+
+
+@pytest.mark.parametrize(
+    ("key", "label"),
+    [
+        ("no", "Do not build"),
+        ("decline", "Do not build"),
+        ("decline", "Skip this"),
+        ("decline", "Drop this"),
+        ("decline", "Not now, revisit after release"),
+    ],
+)
+def test_declining_answer_is_suppressed(tmp_path: Path, key: str, label: str) -> None:
+    data = _data()
+    item = data["items"]["Q-851"]
+    item["status"] = "todo"
+    item["comments"] = []
+    item["activity"] = [event for event in item["activity"] if event["actor"] == "human"]
+    card = item["blockers"]["resolved"][0]
+    card["choice"] = key
+    card["request"]["options"] = [{"key": key, "label": label}]
+    sources = next_mod.Sources(
+        FakeJotarium(data), FakeLedger(tmp_path, []), policy=POLICY, now=NOW,
+    )
+
+    assert "Q-851" not in {unit["ref"] for unit in sources.creator_answers()}
+    assert "Q-851" not in {unit["ref"] for unit in sources.open_items()}
+
+
+def test_open_item_title_filters_explicit_creator_actions(tmp_path: Path) -> None:
+    data = _data()
+    titles = {
+        "Q-26": "Independent review and two-model comparison; Casper edits",
+        "Q-27": "Creator decides the release date",
+        "Q-28": "Compare what Casper edits in each draft",
+        "Q-29": "Review the Creator checks table",
+    }
+    for ref, title in titles.items():
+        data["items"][ref] = {"ref": ref, "title": title, "status": "todo"}
+    policy = {"next": {**POLICY["next"], "creator_names": ["Casper", "creator"]}}
+    sources = next_mod.Sources(
+        FakeJotarium(data), FakeLedger(tmp_path, []), policy=policy, now=NOW,
+    )
+
+    refs = {unit["ref"] for unit in sources.open_items()}
+    assert refs.intersection(titles) == {"Q-28", "Q-29"}
 
 
 def test_follow_up_from_a_done_task_checkpoint(tmp_path: Path) -> None:
@@ -293,6 +458,32 @@ def test_follow_up_ignores_placeholder_next_action(tmp_path: Path) -> None:
     assert sources.follow_ups() == []
 
 
+@pytest.mark.parametrize(
+    "next_action",
+    [
+        "Ask the creator whether the migration ships today",
+        "Confirm with the creator before merging",
+        "Wait for the creator to answer",
+    ],
+)
+def test_follow_up_that_needs_the_creator_is_skipped(
+    tmp_path: Path, next_action: str
+) -> None:
+    sources = _sources(
+        tmp_path,
+        tasks=[
+            {
+                "id": "old-task",
+                "status": "done",
+                "updated": "2026-11-24T00:00:00Z",
+                "checkpoint": _checkpoint(tmp_path, "old-task", next_action),
+            }
+        ],
+    )
+
+    assert sources.follow_ups() == []
+
+
 def test_idea_without_a_linked_item_is_light(tmp_path: Path) -> None:
     units = _sources(tmp_path).ideas()
 
@@ -314,6 +505,45 @@ def test_housekeeping_never_empty_for_both_weights(tmp_path: Path) -> None:
 
     assert {unit["weight"] for unit in units} >= {"heavy", "light"}
     assert all(unit["source"] == "housekeeping" for unit in units)
+
+
+def _fallback_sources(tmp_path: Path, moment: dt.datetime) -> next_mod.Sources:
+    def failing(_name: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        raise jotarium.JotariumError("Jotarium is not reachable")
+
+    return next_mod.Sources(
+        failing,
+        FakeLedger(tmp_path, []),
+        policy=POLICY,
+        now=moment,
+        free_gb=32.0,
+        live=[],
+    )
+
+
+def test_audit_and_housekeeping_alternate_by_day(tmp_path: Path) -> None:
+    today = _fallback_sources(tmp_path, NOW).next_unit()["source"]
+    tomorrow = _fallback_sources(tmp_path, NOW + dt.timedelta(days=1)).next_unit()["source"]
+
+    assert {today, tomorrow} == {"audit", "housekeeping"}
+
+
+@pytest.mark.parametrize("weight", ["heavy", "light"])
+def test_fallback_rotation_returns_every_entry_of_the_requested_weight(
+    tmp_path: Path, weight: str
+) -> None:
+    selected = set()
+    for day in range(12):
+        sources = _fallback_sources(tmp_path, NOW + dt.timedelta(days=day))
+        unit = sources.next_unit(weight=weight)
+        selected.add((unit["source"], unit["ref"]))
+
+    assert selected == {
+        (source, entry["id"])
+        for source, entries in [("audit", next_mod.AUDITS), ("housekeeping", next_mod.HOUSEKEEPING)]
+        for entry in entries
+        if entry["weight"] == weight
+    }
 
 
 def test_unreachable_jotarium_falls_through_to_an_audit(tmp_path: Path) -> None:
