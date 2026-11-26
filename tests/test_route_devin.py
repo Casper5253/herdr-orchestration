@@ -37,7 +37,7 @@ def policy() -> dict:
         "routing_order": ["devin", "opencode"],
         "devin": {
             "enabled": True,
-            "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test"],
+            "kinds": ["routine", "investigate", "feature", "debug", "refactor", "test", "review"],
             "models": {
                 "low": "swe-2-1-xhigh",
                 "medium": "swe-2-1-xhigh",
@@ -166,13 +166,13 @@ def test_high_effort_maps_to_swe21_xhigh(policy: dict) -> None:
 
 
 def test_non_implementation_pools_unchanged(policy: dict) -> None:
-    """review/architecture/risk=high/trivial never reach the devin branch."""
+    """architecture/risk=high/trivial never reach the devin branch; review does."""
     usage = _make_usage()
 
     review = route(_task(kind="review"), usage, policy)
-    assert review["worker"] == "codex"
-    assert review["model"] == policy["codex"]["strong_model"]
-    assert review["method"] == "ocrun-codex"
+    assert review["worker"] == "devin"
+    assert review["model"] == "swe-2-1-max"
+    assert review["method"] == "ocrun-devin"
 
     architecture = route(_task(kind="architecture"), usage, policy)
     assert architecture["worker"] == "claude"

@@ -513,8 +513,9 @@ class Sources:
         rungs[audit], rungs[house] = rungs[house], rungs[audit]
         return tuple(rungs)
 
-    def next_unit(self, weight: str | None = None, running_heavy: int = 0, worker: str | None = None) -> Unit:
+    def next_unit(self, weight: str | None = None, running_heavy: int = 0, worker: str | None = None, exclude_refs: set[str] | None = None) -> Unit:
         at_cap = running_heavy >= self.heavy_cap()
+        excluded = set(exclude_refs or set())
         for _source, method in self._ladder():
             units = self.safe_units(method)
             if at_cap:
@@ -525,6 +526,8 @@ class Sources:
                 units = [unit for unit in units if unit["weight"] == "heavy"] + [
                     unit for unit in units if unit["weight"] == "light"
                 ]
+            if excluded:
+                units = [unit for unit in units if unit["ref"] not in excluded]
             if worker:
                 units = sorted(units, key=lambda unit: 0 if unit["worker_hint"] == worker else 1)
             if units:
@@ -834,8 +837,9 @@ def select_next(
     weight: str | None = None,
     running_heavy: int = 0,
     worker: str | None = None,
+    exclude_refs: set[str] | None = None,
 ) -> Unit:
-    return sources.next_unit(weight=weight, running_heavy=running_heavy, worker=worker)
+    return sources.next_unit(weight=weight, running_heavy=running_heavy, worker=worker, exclude_refs=exclude_refs)
 
 
 def format_unit(unit: Unit) -> str:
