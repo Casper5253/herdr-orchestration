@@ -7,7 +7,7 @@ import json
 import sys
 
 from hx import __version__
-from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, runtime, say, task_index, team_stalls, team_watch, usage
+from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, pace, profile, review, route, runtime, say, task_index, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -16,6 +16,15 @@ def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Print a JSON snapshot of provider availability and quota.",
     )
     parser.set_defaults(func=lambda _args: usage.print_usage())
+
+
+def _add_pace_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "pace",
+        help="Pool pacing from hx usage: used share, elapsed share and pace per window.",
+    )
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.set_defaults(func=lambda args: pace.command(as_json=args.as_json))
 
 
 def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -162,6 +171,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_activate_parser(subparsers)
     _add_usage_parser(subparsers)
+    _add_pace_parser(subparsers)
     _add_task_parser(subparsers)
     _add_say_parser(subparsers)
     _add_jotarium_parser(subparsers)

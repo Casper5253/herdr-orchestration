@@ -40,7 +40,8 @@ def unit(weight="heavy", hint="codex", ref="u"):
 
 
 def snap(tmp_path, tasks=None, members=None, free_gb=32.0, oneoffs=0,
-         choices=None, screen="same", reports=None, now=NOW, state_path=None):
+         choices=None, screen="same", reports=None, now=NOW, state_path=None,
+         pace_report=None):
     members = members if members is not None else [member("dev-lead", "working")]
     reports = reports or {}
     state_path = state_path or tmp_path / "balance-state.json"
@@ -52,7 +53,8 @@ def snap(tmp_path, tasks=None, members=None, free_gb=32.0, oneoffs=0,
     return balance.snapshot(ledger=FakeLedger(tasks or []), members=members,
         policy=POLICY, now=now, free_gb=free_gb, oneoff_count=oneoffs,
         next_unit=next_unit, read_screen=read_screen,
-        report_time=lambda worker, lead: reports.get(worker), state_path=state_path)
+        report_time=lambda worker, lead: reports.get(worker), state_path=state_path,
+        pace_report=pace_report)
 
 
 def test_slots_and_running_states(tmp_path):
@@ -166,6 +168,69 @@ def test_idle_workers_never_get_the_same_unit_in_one_run(tmp_path):
         read_screen=lambda n, lines=240: "", report_time=lambda w, l: None, state_path=state)
     refs = [a["unit"]["ref"] for a in rows["assignments"]]
     assert refs == ["same", "other"]
+
+
+def pace_report(statuses):
+    pools = {
+        name: {"pool": name, "label": name, "status": status,
+               "reason": f"{status} fixture", "windows": []}
+        for name, status in statuses.items()
+    }
+    return {"pools": pools, "line": "pace: fixture"}
+
+
+def test_underused_codex_gets_the_review_unit_first(tmp_path):
+    policy = json.loads(json.dumps(POLICY))
+    policy["next"]["worker_assignment_rules"] = {
+        "codex": {"allow_if_any": [{"title_contains_any": ["review"]}]}
+    }
+
+    def next_unit(weight=None, running_heavy=0, worker=None, exclude_refs=None):
+        return unit(weight or "light", "codex", "review-1")
+
+    rows = balance.snapshot(
+        ledger=FakeLedger([]),
+        members=[member("dev-lead"), member("dev-codex"), member("dev-claude")],
+        policy=policy, now=NOW, free_gb=32, oneoff_count=0, next_unit=next_unit,
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None,
+        state_path=tmp_path / "state.json",
+        pace_report=pace_report({"codex": "underused", "claude": "ahead"}))
+    assert [row["worker"] for row in rows["assignments"]] == ["dev-codex"]
+    assert rows["assignments"][0]["pace"]["status"] == "underused"
+    assert "underused" in rows["assignments"][0]["pace"]["reason"]
+
+
+def test_over_pace_pool_is_held(tmp_path):
+    rows = balance.snapshot(
+        ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+        policy=POLICY, now=NOW, free_gb=32, oneoff_count=0,
+        next_unit=lambda **kw: unit("light", "codex", "review-1"),
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None,
+        state_path=tmp_path / "state.json",
+        pace_report=pace_report({"codex": "ahead"}))
+    assert rows["assignments"] == []
+
+
+def test_unknown_pool_is_not_held(tmp_path):
+    rows = balance.snapshot(
+        ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-codex")],
+        policy=POLICY, now=NOW, free_gb=32, oneoff_count=0,
+        next_unit=lambda **kw: unit("light", "codex", "review-1"),
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None,
+        state_path=tmp_path / "state.json",
+        pace_report=pace_report({"codex": "unknown"}))
+    assert [row["worker"] for row in rows["assignments"]] == ["dev-codex"]
+
+
+def test_free_pool_is_not_held(tmp_path):
+    rows = balance.snapshot(
+        ledger=FakeLedger([]), members=[member("dev-lead"), member("dev-devin")],
+        policy=POLICY, now=NOW, free_gb=32, oneoff_count=0,
+        next_unit=lambda **kw: unit("light", "devin", "review-1"),
+        read_screen=lambda n, lines=240: "", report_time=lambda w, l: None,
+        state_path=tmp_path / "state.json",
+        pace_report=pace_report({"devin": "free"}))
+    assert [row["worker"] for row in rows["assignments"]] == ["dev-devin"]
 
 
 def test_devin_gets_no_second_copy_when_no_distinct_unit_exists(tmp_path):

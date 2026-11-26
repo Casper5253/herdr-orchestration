@@ -755,6 +755,21 @@ def test_next_command_prints_readable_text(tmp_path: Path, capsys: pytest.Captur
     assert "why:" in out
 
 
+def test_next_command_prints_the_pace_line(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    rc = next_mod.next_command(
+        query=FakeJotarium(_data()),
+        ledger=FakeLedger(tmp_path, []),
+        policy=POLICY,
+        now=NOW,
+        free_gb=32.0,
+        live=[],
+        pace_report={"line": "pace: codex underused"},
+    )
+
+    assert rc == 0
+    assert "pace: codex underused" in capsys.readouterr().out
+
+
 def test_cli_dispatches_next(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, Any] = {}
 

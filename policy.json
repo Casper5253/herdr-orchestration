@@ -116,6 +116,12 @@
     "stale_seconds": 3600,
     "pool_soft_limit_note": "2026-10-17 owner directive: spend all OpenCode allowance before falling back to Codex (was 0.85); 0.98 keeps a margin because spend is estimated."
   },
+  "pace": {
+    "under": 0.10,
+    "over": 0.10,
+    "reset_soon": 0.50,
+    "note": "2026-11-26 creator: always watch token windows and use them proactively. A pool 10 points under its elapsed window with the reset near is underused and gets suitable work first; 10 points over is ahead and is held. reset_soon is the share of the window left when an under-pace window counts as near its reset. Unknown stays unknown, never exhausted; an active Devin promotion is free."
+  },
   "next": {
     "heavy_cap": 1,
     "heavy_cap_when_memory_ok": 2,
@@ -143,7 +149,23 @@
             "why_contains": "failed task"
           },
           {
+            "title_contains_any": [
+              "review",
+              "audit",
+              "research",
+              "investigate",
+              "diagnose",
+              "analyse",
+              "analyze",
+              "analysis",
+              "technical",
+              "flaky"
+            ]
+          },
+          {
             "kind_in": [
+              "review",
+              "research",
               "security",
               "token",
               "security-check",
@@ -152,6 +174,8 @@
           },
           {
             "label_in": [
+              "review",
+              "research",
               "security",
               "token",
               "security-check",
@@ -159,7 +183,7 @@
             ]
           }
         ],
-        "note": "2026-11-26 creator: manage Codex tokens tighter. Balance gives Codex only fixes after another worker failed, or checks whose item kind or label is named here; free title text does not qualify."
+        "note": "2026-11-26 creator, corrected the same day: Codex sat idle because a one-off tighter call became a standing rule. Pace now gives an underused Codex the next suitable review, technical analysis or tricky fix first, never a bigger implementation. Failed-task follow-ups and security/token checks stay allowed; free title text still does not qualify for security."
       }
     }
   },

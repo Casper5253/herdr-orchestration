@@ -11,7 +11,7 @@ description: "Lead playbook for routing work across the Herdr team with the hx C
 **Until 2026-12-10 (promotion guard): Devin SWE-2.1 and OpenCode share implementation work about 50/50.** SWE-2.1 is free on Devin Pro in the CLI for about two weeks from 26 Nov 2026, so `hx route` balances routine, investigate, feature, debug, refactor and test work between `ocrun-devin` and OpenCode (`policy.json` `routing_balance`). Don't hold SWE-2.1 back to save it; do keep briefs scoped and never retry blindly (free tokens are not free concurrency or rate limits). Otherwise: spend OpenCode Go first. It is one shared pool across its models, and `hx usage` reads its measured 5h, week and month percentages from OpenCode's servers; it is the cheapest pool. Keep Claude for architecture, prose and judgment, and Codex for review, hard debugging and risky changes. A failure caused by missing context, an unclear brief or a tool problem is fixed by fixing the input, never by a bigger model. Only a capability failure escalates, one step at a time.
 
 ## Loop for each piece of work
-1. **Check headroom** when a pool may be tight: `hx usage` (each value is tagged measured, estimated or unknown; unknown is not exhausted).
+1. **Check headroom** when a pool may be tight: `hx usage` (each value is tagged measured, estimated or unknown; unknown is not exhausted). `hx pace` derives used share, elapsed share and pace per window; an underused pool gets suitable work first, an ahead pool is held. The one-line `pace:` summary prints with `hx next` and `hx balance`. Policy: `pace.under`, `pace.over` and `pace.reset_soon` in `policy.json` (defaults 0.10, 0.10 and 0.50).
 2. **Route**: `hx route --task-id <id> --kind <trivial|routine|investigate|feature|debug|refactor|test|review|architecture> [--risk high] [--size large] [--iterative] [--parallel] [--attempt N --last-failure <missing-context|unclear|tool|capability> --prev '<previous decision json>'] [--persistent '{"model":..,"effort":..,"status":..}']`. Output: worker, model, effort, method, reason, decision_id. Follow it unless you have a concrete reason; if you override, say why in the brief.
 3. **Track**: `hx task add <id> --title .. --owner <agent> --files <owned paths> [--worktree <path>]`, then `hx task assign <id> --owner <agent> [--method persistent --agent <name>]`. It refuses overlapping file ownership and agents that are mid-compaction. Parallel workers get disjoint files or their own `git worktree`.
 4. **Dispatch by method**:
@@ -49,6 +49,7 @@ Set it at dispatch, never by reconfiguring a live session. Real controls: `codex
 
 ## Don't
 - Don't route trivial work through agents, or invent work to burn allowance.
+- Don't save a weekly allowance for a reset that is near. The `pace:` line names the underused pool; give it the next suitable unit.
 - Don't escalate on a context or brief problem.
 - Don't let two agents edit the same files outside separate worktrees.
 - Don't answer a worker's approval prompt or send keys for the user.

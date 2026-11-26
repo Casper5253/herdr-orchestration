@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, NotRequired, TypedDict
 
-from hx import jotarium, ledger as ledger_mod, task_index, usage
+from hx import jotarium, ledger as ledger_mod, pace, task_index, usage
 
 LADDER = (
     ("creator-answer", "creator_answers"),
@@ -1022,6 +1022,7 @@ def next_command(
     now: dt.datetime | None = None,
     free_gb: float | None | object = _UNSET,
     live: list[dict[str, Any]] | None = None,
+    pace_report: dict[str, Any] | None = None,
 ) -> int:
     policy = usage.load_policy() if policy is None else policy
     if query is None:
@@ -1040,6 +1041,8 @@ def next_command(
     if as_json:
         print(json.dumps(unit, indent=2))
     else:
+        if pace_report and pace_report.get("line"):
+            print(pace_report["line"])
         print(format_unit(unit))
     for error in sources.errors:
         print(f"hx next: {error}", file=sys.stderr)
@@ -1064,11 +1067,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
-    return next_command(
-        weight=args.weight,
-        running_heavy=args.running_heavy,
-        as_json=args.as_json,
-    )
+    report = None
+    if not args.as_json and sys.stdout.isatty():
+        try:
+            policy = usage.load_policy()
+            report = pace.build(usage.usage_snapshot(policy), policy)
+        except Exception:
+            report = None
+    kwargs = {
+        "weight": args.weight,
+        "running_heavy": args.running_heavy,
+        "as_json": args.as_json,
+    }
+    if report is not None:
+        kwargs["pace_report"] = report
+    return next_command(**kwargs)
 
 
 if __name__ == "__main__":

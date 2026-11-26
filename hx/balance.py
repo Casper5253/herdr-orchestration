@@ -11,10 +11,11 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from hx import host, jotarium, ledger as ledger_mod, next as next_mod, paths, say, task_index, team_stalls, usage, context
+from hx import host, jotarium, ledger as ledger_mod, next as next_mod, pace, paths, say, task_index, team_stalls, usage, context
 
 ACTIVE_STATUSES = {"assigned", "in_progress", "review"}
 WEIGHTS = {"heavy", "light"}
+PACE_ORDER = {"underused": 0, "free": 1, "on_pace": 2, "unknown": 3, "ahead": 4}
 DEFAULT_STUCK_MINUTES = 45
 
 
@@ -144,6 +145,20 @@ def _weight(task: dict[str, Any]) -> str:
     return weight if weight in WEIGHTS else "heavy"
 
 
+def _pace_status(pace_report: dict[str, Any] | None, worker: Any) -> str:
+    return pace.status_for(pace_report, worker) if pace_report else "on_pace"
+
+
+def _pace_detail(pace_report: dict[str, Any] | None, worker: Any) -> dict[str, Any]:
+    pool = pace.pool_for_worker(worker)
+    entry = ((pace_report or {}).get("pools") or {}).get(pool) if pool else None
+    return {
+        "pool": pool,
+        "status": _pace_status(pace_report, worker),
+        "reason": str((entry or {}).get("reason") or ""),
+    }
+
+
 def _stuck_minutes(policy: dict[str, Any]) -> float:
     value = (policy.get("next") or {}).get("stuck_minutes", DEFAULT_STUCK_MINUTES)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
@@ -224,7 +239,8 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
              read_screen: Callable[[str, int], str] | None = None,
              report_time: Callable[[str, str], dt.datetime | None] | None = None,
              state_path: Path | None = None,
-             external_tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+             external_tasks: list[dict[str, Any]] | None = None,
+             pace_report: dict[str, Any] | None = None) -> dict[str, Any]:
     """One balanced dispatch snapshot. It never sends, types, kills or restarts."""
     now = now or _utcnow()
     prefix = usage.team_prefix(policy)
@@ -319,10 +335,16 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
     assignments: list[dict[str, Any]] = []
     assigned_refs: set[str] = set()
     planned_heavy = running_heavy
-    for slot in slots:
-        if slot["state"] != "idle":
-            continue
+    idle_slots = [slot for slot in slots if slot["state"] == "idle"]
+    idle_slots.sort(key=lambda slot: (
+        PACE_ORDER.get(_pace_status(pace_report, slot["worker"]), 2),
+        str(slot["worker"]),
+    ))
+    for slot in idle_slots:
         worker = str(slot["worker"]).rsplit("-", 1)[-1]
+        status = _pace_status(pace_report, slot["worker"])
+        if status == "ahead":
+            continue
         wanted = "heavy" if planned_heavy < heavy_cap else "light"
         try:
             chosen = next_unit(weight=wanted, running_heavy=planned_heavy, worker=worker, exclude_refs=assigned_refs)
@@ -335,7 +357,8 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
             continue
         actual = str(chosen.get("weight") or wanted)
         assignments.append({"worker": slot["worker"], "weight": actual, "unit": chosen,
-                            "hint": "matched" if chosen.get("worker_hint") == worker else "fallback"})
+                            "hint": "matched" if chosen.get("worker_hint") == worker else "fallback",
+                            "pace": _pace_detail(pace_report, slot["worker"])})
         assigned_refs.add(str(chosen.get("ref") or ""))
         if actual == "heavy":
             planned_heavy += 1
@@ -344,20 +367,29 @@ def snapshot(*, ledger: Any, members: list[host.Member], policy: dict[str, Any],
     return {"heavy_cap": heavy_cap, "running_heavy": running_heavy,
             "planned_heavy": planned_heavy, "oneoff_count": int(oneoff_count),
             "free_memory_gb": free_gb, "slots": slots, "assignments": assignments,
-            "stuck": stuck, "warnings": warnings}
+            "stuck": stuck, "warnings": warnings,
+            "pace_line": (pace_report or {}).get("line")}
 
 
 def format_snapshot(rows: dict[str, Any]) -> str:
-    lines = [f"heavy: {rows['running_heavy']} running / cap {rows['heavy_cap']} "
-             f"({rows['oneoff_count']} one-off)"]
+    lines: list[str] = []
+    if rows.get("pace_line"):
+        lines.append(str(rows["pace_line"]))
+    lines.append(f"heavy: {rows['running_heavy']} running / cap {rows['heavy_cap']} "
+                 f"({rows['oneoff_count']} one-off)")
     for slot in rows["slots"]:
         task = f" task {slot['task_id']}" if slot.get("task_id") else ""
         lines.append(f"{slot['worker']}: {slot['state']}{task} since {slot['since']}")
     for assignment in rows["assignments"]:
         unit = assignment["unit"]
+        pace_info = assignment.get("pace") or {}
+        suffix = (
+            f"; pace {pace_info['status']}: {pace_info['reason']}"
+            if pace_info.get("status") else ""
+        )
         lines.append(f"start on {assignment['worker']}: [{assignment['weight']}] "
                      f"{unit.get('source')} {unit.get('ref')}: {unit.get('title')} "
-                     f"(hint {unit.get('worker_hint')}, {assignment['hint']})")
+                     f"(hint {unit.get('worker_hint')}, {assignment['hint']}{suffix})")
     for item in rows["stuck"]:
         lines.append(f"stuck {item['worker']} for {item['minutes']}m: "
                      + " -> ".join(item["recovery"]["ladder"]))
@@ -366,9 +398,11 @@ def format_snapshot(rows: dict[str, Any]) -> str:
 
 def command(as_json: bool = False) -> int:
     policy = usage.load_policy()
+    report = pace.build(usage.usage_snapshot(policy), policy)
     prefix = usage.team_prefix(policy)
     members = list(usage.team_agents(prefix).values())
     rows = snapshot(ledger=ledger_mod.default_ledger(), members=members, policy=policy,
-                    free_gb=usage.free_memory_gb(), oneoff_count=count_oneoff_processes())
+                    free_gb=usage.free_memory_gb(), oneoff_count=count_oneoff_processes(),
+                    pace_report=report)
     print(json.dumps(rows, indent=2) if as_json else format_snapshot(rows))
     return 0
