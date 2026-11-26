@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from hx import boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, say, team_stalls, team_watch, usage
+from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, profile, review, route, say, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -60,6 +60,7 @@ def _add_task_parser(subparsers: argparse._SubParsersAction) -> None:
     add.add_argument("--method")
     add.add_argument("--review-required", action="store_true")
     add.add_argument("--jotarium", help="Jotarium item ref this task delivers, for example Q-412.")
+    add.add_argument("--weight", choices=("heavy", "light"), help="Work weight; default follows hx next's ledger-task rule.")
     add.set_defaults(func=_task_add)
 
     assign = task_sub.add_parser("assign", help="Assign a task to an owner.")
@@ -169,6 +170,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "next",
         help="Print the next unit of work that does not need the creator.",
     )
+    balance_parser = subparsers.add_parser("balance", help="Heavy/light dispatch advice and stuck-worker watchdog.")
+    balance_parser.add_argument("--json", action="store_true", dest="as_json")
+    balance_parser.set_defaults(func=lambda args: balance.command(as_json=args.as_json))
     subparsers.add_parser("doctor", help="Read-only drift report: policy vs live adapters.")
     subparsers.add_parser("handoff", help="Write a portable handoff file and print its re-brief line.")
     subparsers.add_parser("review", help="One review record per change on the ledger task.")
@@ -258,6 +262,7 @@ def _task_add(args: argparse.Namespace) -> None:
         method=args.method,
         review_required=args.review_required,
         jotarium=args.jotarium,
+        weight=args.weight or next_mod._follow_up_weight({"effort": args.effort}),
     )
     print(json.dumps(task, indent=2))
 
