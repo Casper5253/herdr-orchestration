@@ -1660,6 +1660,8 @@ def run(
         )
     if worker != "opencode":
         raise ValueError(f"worker {worker} supports visible mode only")
+    # OpenCode resolves --dir and OPENCODE_CONFIG after the child changes cwd.
+    cwd = Path(cwd).resolve()
     started = time.monotonic()
     run_dir = _claim_run_dir(Path(cwd), title)
     sender = _sender(worker, run_dir.name)

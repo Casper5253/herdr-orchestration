@@ -71,6 +71,28 @@ def test_unprofiled_run_renders_the_baseline_config(repo: Path, monkeypatch: pyt
     assert provenance["sha256"] == hashlib.sha256(config_path.read_bytes()).hexdigest()
 
 
+def test_relative_cwd_keeps_launch_and_profile_paths_valid_from_child(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repo.parent)
+
+    def fake_execute(cmd, cwd, timeout, env):  # noqa: ARG001
+        child_cwd = Path(cwd).resolve()
+        opencode_dir = child_cwd / cmd[cmd.index("--dir") + 1]
+        config_path = child_cwd / env["OPENCODE_CONFIG"]
+        assert opencode_dir.resolve() == repo
+        assert config_path.is_file()
+        assert config_path == repo / ".hx" / "profiles" / "opencode-baseline.jsonc"
+        return 0, STREAM, "", False, True
+
+    monkeypatch.setattr(ocrun, "execute", fake_execute)
+    result = ocrun.run(
+        "read TEAM.md", "glm-5.3-flash", cwd=Path(repo.name), routing_log=repo / "r.jsonl"
+    )
+
+    assert result["ok"]
+
+
 def test_profiled_run_records_its_profile(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _capture(monkeypatch)
     routing_log = repo / ".hx" / "routing.jsonl"
