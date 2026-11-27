@@ -17,7 +17,9 @@ records. Inside the per-record delivery claim, the shared path marks a worker
 record `cancelled` when it is expired, its task is closed, its destination
 session changed, or a newer record to the same target supersedes it. Messages
 resolved to the lead role are durable reports and are never cancelled by this
-guard. `cancelled` is terminal. An `uncertain` record was already attempted:
+guard. A pending retry also has a shorter age limit. Records past that limit
+become `expired`, and manual retries print expired lead reports for review.
+Both `cancelled` and `expired` are terminal. An `uncertain` record was already attempted:
 it is never resent by --pending (a record with no valid age counts as uncertain); it waits for `hx reconcile`.
 An uncertain send gets one bounded resume first: if the pane's turn did not start
 and its composer is clear, `hx say` presses the submit key once, never retyping;
@@ -535,7 +537,7 @@ def _read_record(path: Path) -> dict | None:
 
 def _record_state(record: dict) -> str:
     state = record.get("state")
-    if state in ("pending", "delivered", "uncertain", "failed", "cancelled"):
+    if state in ("pending", "delivered", "uncertain", "failed", "cancelled", "expired"):
         return state
     return "delivered" if record.get("delivered") else "pending"
 
@@ -559,7 +561,7 @@ def records_for(sender: str) -> list[tuple[str, Path, dict | None]]:
     directories = {_outbox_dir(sender), _outbox_dir(sender, legacy=True)}
     for path in (path for directory in directories for path in directory.glob("*.json")):
         record = _read_record(path)
-        if record is not None and _record_state(record) in ("delivered", "failed", "cancelled"):
+        if record is not None and _record_state(record) in ("delivered", "failed", "cancelled", "expired"):
             continue
         stamp = str(record.get("created_at") or "") if record else ""
         try:
@@ -609,6 +611,7 @@ def _is_lead(destination: host.Member, policy: dict) -> bool:
 # Used when policy.json is missing or unreadable, so worker briefs never become
 # immortal by accident; policy say.work_ttl_seconds overrides it.
 DEFAULT_WORK_TTL_SECONDS = 86400.0
+DEFAULT_PENDING_MAX_AGE_S = 1800.0
 
 
 def _work_ttl_seconds(policy: dict) -> float:
@@ -627,6 +630,25 @@ def _resubmit_wait_seconds(policy: dict) -> float:
             and math.isfinite(raw) and raw > 0):
         return float(raw)
     return RESUBMIT_WAIT_SECONDS
+
+
+def _pending_max_age_s(policy: dict) -> float:
+    say_policy = policy.get("say")
+    raw = say_policy.get("pending_max_age_s") if isinstance(say_policy, dict) else None
+    if (isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            and raw > 0 and math.isfinite(raw)):
+        return float(raw)
+    return DEFAULT_PENDING_MAX_AGE_S
+
+
+def _expire_pending(path: Path, created: datetime.datetime, max_age_s: float,
+                    lead_report: str | None) -> str | None:
+    age_s = (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds()
+    if age_s < max_age_s:
+        return None
+    note = f"age {int(age_s)}s"
+    _write_state(path, "expired", note=note)
+    return f"{note}\n{lead_report}" if lead_report is not None else note
 
 
 def _obsolete_state(
@@ -672,7 +694,7 @@ def _obsolete_state(
         if (str(sibling.get("id") or "") != record_id
                 and str(sibling.get("supersedes") or "") == record_id
                 and str(sibling.get("target") or "") == target
-                and _record_state(sibling) not in ("cancelled", "failed")):
+                and _record_state(sibling) not in ("cancelled", "expired", "failed")):
             return "cancelled", f"superseded by {sibling.get('id')}"
     if unknown is not None:
         return "uncertain", unknown
@@ -806,24 +828,44 @@ def _deliver(
         if current is None:
             return "uncertain", "record unreadable under claim", (where, "uncertain")
         current_state = _record_state(current)
+        if current_state == "expired":
+            return "expired", None, (where, "expired")
         if current_state != "pending":
             return current_state, current.get("note"), (where, _OUTCOME_WORDS.get(current_state, "uncertain"))
-        try:
-            name, destination = resolve(sender_member, target)
-        except ValueError as exc:
-            # The role is gone (a lead handover left records for the old name):
-            # report it once with the reason and resolve the record, never reprint.
-            _write_state(path, "failed", note=f"undeliverable: {exc}")
-            return "failed", f"undeliverable: {exc}", (target, "failed")
         try:
             text = with_header(sender, body)
         except ValueError as exc:
             _write_state(path, "failed", note=f"undeliverable: {exc}")
-            return "failed", f"undeliverable: {exc}", (name, "failed")
-        where = str(destination["address"]) or name
+            return "failed", f"undeliverable: {exc}", (target, "failed")
         policy = _policy()
-        work = not _is_lead(destination, policy)
         marker = current.get("unverified_sender")
+        resolution_error = None
+        try:
+            name, destination = resolve(sender_member, target)
+            work = not _is_lead(destination, policy)
+        except ValueError as exc:
+            resolution_error = exc
+            lead_role = str(policy.get("lead_role", "lead"))
+            lead_name = f"{sender_member['team']}-{lead_role}"
+            name = lead_name if target == lead_role else target
+            work = name != lead_name
+        created = context._timestamp(current.get("created_at")) if retry else None
+        max_age_s = _pending_max_age_s(policy)
+        lead_report = None if work else (f"{marker} {text}" if marker else text)
+        if retry:
+            if created is not None:
+                expired = _expire_pending(path, created, max_age_s, lead_report)
+                if expired is not None:
+                    return "expired", expired, (name, "expired")
+            if work and (created is None or created > datetime.datetime.now(datetime.timezone.utc)):
+                note = "missing or invalid created_at; reconcile before resend"
+                _write_state(path, "uncertain", note=note)
+                return "uncertain", note, (where, "uncertain")
+        if resolution_error is not None:
+            note = f"undeliverable: {resolution_error}"
+            _write_state(path, "failed", note=note)
+            return "failed", note, (target, "failed")
+        where = str(destination["address"]) or name
         if marker and work:
             _write_state(path, "failed", note="unverified sender may only report to the lead")
             return "failed", "unverified sender may only report to the lead", (where, "failed")
@@ -901,6 +943,10 @@ def _deliver(
                 status_before = _host_status(detected, name)
                 if kind in _SAME_TURN_COMPOSERS and host._composer_working(screen, kind):
                     status_before = "working"
+        if created is not None:
+            expired = _expire_pending(path, created, max_age_s, lead_report)
+            if expired is not None:
+                return "expired", expired, (name, "expired")
         sent_ms = int(time.time() * 1000)
         try:
             result = detected.send_checked(name, text)
@@ -1043,8 +1089,8 @@ def notify(target: str, text: str) -> tuple[str, str | None]:
     return _delivery_state(result)
 
 
-def retry_pending(*, list_uncertain: bool = False) -> int:
-    """Retry the sender's pending records through the guarded path; never replay uncertain ones."""
+def retry_pending(*, record_id: str | None = None, list_only: bool = False) -> int:
+    """List the sender's unresolved records or retry pending ones through the guarded path."""
     if os.environ.get("HX_OCRUN_SENDER"):
         raise ValueError("one-off workers report through their final message; hx say cannot use the caller identity")
     detected = host.detect()
@@ -1056,6 +1102,12 @@ def retry_pending(*, list_uncertain: bool = False) -> int:
     sender = sender_member["name"]
     key = _sender_key(sender_member)
     records = records_for(key)
+    if record_id is not None:
+        records = [(path, record, state) for path, record, state in records
+                   if str((record or {}).get("id") or path.stem) == record_id]
+        if len(records) != 1:
+            print(f"Expected one pending record {record_id} for {sender}, found {len(records)}.")
+            return 1
     if not records:
         print(f"No pending messages for {sender}.")
         return 0
@@ -1087,15 +1139,23 @@ def retry_pending(*, list_uncertain: bool = False) -> int:
             kept_uncertain.append((message_id, target))
             unresolved += 1
             continue
-        print(f"Pending {message_id} -> {target} ({record.get('created_at')})")
+        pending_line = f"Pending {message_id} -> {target} ({record.get('created_at')})"
+        if list_only:
+            print(pending_line)
+            continue
         outcome, reason, (where, word) = _deliver(
             detected, sender_member, target, body, path, retry=True)
+        if outcome == "expired":
+            if reason is not None:
+                print(f"Expired {message_id} -> {where}: {reason}")
+            continue
+        print(pending_line)
         suffix = f" ({reason})" if reason and outcome != "delivered" else ""
         print(f"{message_id} -> {where}: {word}{suffix}")
         if outcome not in ("delivered", "cancelled"):
             unresolved += 1
     if kept_uncertain:
-        if list_uncertain:
+        if list_only:
             for message_id, target in kept_uncertain:
                 print(f"Unresolved {message_id} -> {target}: uncertain delivery, "
                       f"reconcile before resend")
@@ -1120,7 +1180,7 @@ def retry_pending_for(detected: host.Host, worker: str) -> dict[str, int]:
     sender = sender_member["name"]
     key = _sender_key(sender_member)
     counts = {"considered": 0, "delivered": 0, "cancelled": 0,
-              "pending": 0, "uncertain": 0, "failed": 0, "unresolved": 0}
+              "expired": 0, "pending": 0, "uncertain": 0, "failed": 0, "unresolved": 0}
     for path, record, state in records_for(key):
         if record is None or state == "corrupt":
             counts["unresolved"] += 1

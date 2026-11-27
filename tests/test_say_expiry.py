@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from hx import host, say
+from hx.__main__ import main
 
 
 def _member(name, role=None, kind="codex", status="idle", address="t1"):
@@ -112,6 +113,7 @@ def _ahead(**kwargs) -> str:
 def _record(tmp_path: Path, body: str = "stale brief", **fields) -> Path:
     """One pending record in dev-codex's outbox, in the real record shape."""
     message_id = fields.pop("id", uuid.uuid4().hex)
+    created_at = fields.pop("created_at", _ago(minutes=5))
     record = {
         "id": message_id,
         "sender": "dev-codex",
@@ -119,8 +121,8 @@ def _record(tmp_path: Path, body: str = "stale brief", **fields) -> Path:
         "target": "dev-lead",
         "body": body,
         "text": f"[team from dev-codex] {body}",
-        "created_at": fields.pop("created_at", _ago(days=4)),
-        "updated_at": _ago(days=4),
+        "created_at": created_at,
+        "updated_at": created_at,
         "state": "pending",
         "delivered": False,
         "delivered_at": None,
@@ -137,7 +139,100 @@ def _state(path: Path) -> str:
     return json.loads(path.read_text(encoding="utf-8"))["state"]
 
 
-def test_the_four_stale_9_nov_briefs_are_cancelled_not_resent(fake, tmp_path, capsys):
+@pytest.mark.parametrize("select_by_id", [False, True])
+def test_pending_expires_a_five_hour_old_record(fake, tmp_path, capsys, select_by_id):
+    path = _record(tmp_path, target="dev-opencode", created_at=_ago(hours=5),
+                   expires_at=_ahead(hours=19))
+    args = ["say", "--pending", *([path.stem] if select_by_id else [])]
+
+    assert main(args) == 0
+    assert fake.sent == []
+    assert _state(path) == "expired"
+    (notice,) = capsys.readouterr().out.splitlines()
+    assert path.stem in notice and "dev-opencode" in notice and "18000" in notice
+    assert main(["say", "--pending"]) == 0
+    assert path.stem not in capsys.readouterr().out
+
+
+def test_pending_resends_only_records_inside_the_policy_window(fake, tmp_path, monkeypatch):
+    monkeypatch.setattr(say, "_policy", lambda: {"say": {"pending_max_age_s": 60}})
+    old = _record(tmp_path, body="old", target="dev-opencode", created_at=_ago(seconds=90))
+    fresh = _record(tmp_path, body="fresh", target="dev-opencode", created_at=_ago(seconds=10))
+
+    assert main(["say", "--pending"]) == 0
+    assert fake.sent == [("dev-opencode", "[team from dev-codex] fresh")]
+    assert _state(old) == "expired"
+    assert _state(fresh) == "delivered"
+
+
+def test_pending_with_id_resends_only_the_selected_record(fake, tmp_path):
+    other = _record(tmp_path, body="other", target="dev-opencode", created_at=_ago(minutes=10))
+    chosen = _record(tmp_path, body="chosen", target="dev-opencode", created_at=_ago(minutes=5))
+
+    assert main(["say", "--pending", chosen.stem]) == 0
+    assert fake.sent == [("dev-opencode", "[team from dev-codex] chosen")]
+    assert _state(other) == "pending"
+    assert _state(chosen) == "delivered"
+
+
+def test_pending_with_an_unknown_id_leaves_other_records_pending(fake, tmp_path):
+    path = _record(tmp_path, target="dev-opencode")
+
+    assert main(["say", "--pending", path.stem[:-1]]) == 1
+    assert fake.sent == []
+    assert _state(path) == "pending"
+
+
+def test_pending_can_expire_while_delivery_is_prepared(fake, tmp_path, monkeypatch):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    path = _record(tmp_path, target="dev-opencode",
+                   created_at=(now - datetime.timedelta(seconds=1799)).isoformat())
+
+    class Clock(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
+
+    Clock.current = now
+
+    def check_pressure(_name):
+        Clock.current += datetime.timedelta(seconds=1)
+        return False
+
+    monkeypatch.setattr(say.datetime, "datetime", Clock)
+    monkeypatch.setattr(say, "_under_pressure", check_pressure)
+
+    assert main(["say", "--pending"]) == 0
+    assert fake.sent == []
+    assert _state(path) == "expired"
+
+
+def test_watcher_retry_expires_stale_worker_records(fake, tmp_path):
+    path = _record(tmp_path, target="dev-opencode", created_at=_ago(hours=5))
+
+    counts = say.retry_pending_for(fake, "dev-opencode")
+
+    assert counts["expired"] == 1
+    assert fake.sent == []
+    assert _state(path) == "expired"
+
+
+@pytest.mark.parametrize("target,online", [("lead", True), ("dev-lead", True), ("dev-lead", False)])
+def test_pending_prints_an_expired_lead_report(fake, tmp_path, capsys, target, online):
+    if not online:
+        fake.members.pop("dev-lead")
+    body = "[team report from dev-codex] STATUS: done\nSecond line of report"
+    path = _record(tmp_path, body=body, target=target, created_at=_ago(hours=5))
+
+    assert main(["say", "--pending"]) == 0
+    assert fake.sent == []
+    (notice, *report) = capsys.readouterr().out.splitlines()
+    assert path.stem in notice and "dev-lead" in notice and "18000" in notice
+    assert "\n".join(report) == body
+    assert _state(path) == "expired"
+
+
+def test_the_four_stale_9_nov_briefs_expire_without_resending(fake, tmp_path, capsys):
     """The 12 Nov incident shape: four metadata-free worker briefs."""
     paths = [
         _record(
@@ -153,9 +248,8 @@ def test_the_four_stale_9_nov_briefs_are_cancelled_not_resent(fake, tmp_path, ca
     assert fake.sent == []
     for path in paths:
         record = json.loads(path.read_text(encoding="utf-8"))
-        assert record["state"] == "cancelled"
-        assert "expired" in record["note"]
-    assert "cancelled" in capsys.readouterr().out
+        assert record["state"] == "expired"
+    assert capsys.readouterr().out.count("Expired ") == 4
 
 
 def test_a_worker_brief_gets_the_policy_default_ttl(fake, tmp_path):
@@ -177,7 +271,7 @@ def test_a_pending_brief_for_a_closed_task_is_cancelled(fake, tmp_path):
 
 
 def test_an_expired_brief_is_cancelled(fake, tmp_path):
-    path = _record(tmp_path, target="dev-opencode", expires_at=_ago(hours=1))
+    path = _record(tmp_path, target="dev-opencode", expires_at=_ago(minutes=1))
     assert say.retry_pending() == 0
     assert _state(path) == "cancelled"
     assert fake.sent == []
@@ -200,7 +294,7 @@ def test_an_uncertain_record_waits_for_reconcile_even_after_expiry(fake, tmp_pat
 
 def test_a_superseded_brief_is_cancelled(fake, tmp_path):
     old = _record(tmp_path, body="stale brief", target="dev-opencode",
-                  created_at=_ago(hours=1))
+                  created_at=_ago(minutes=10))
     old_id = json.loads(old.read_text(encoding="utf-8"))["id"]
     _record(tmp_path, body="corrected brief", target="dev-opencode", state="delivered",
             delivered=True, supersedes=old_id)
@@ -213,10 +307,10 @@ def test_a_superseded_brief_is_cancelled(fake, tmp_path):
 
 def test_a_pending_superseder_cancels_the_old_and_still_delivers(fake, tmp_path):
     old = _record(tmp_path, body="stale brief", target="dev-opencode",
-                  created_at=_ago(hours=2))
+                  created_at=_ago(minutes=10))
     old_id = json.loads(old.read_text(encoding="utf-8"))["id"]
     new = _record(tmp_path, body="corrected brief", target="dev-opencode", supersedes=old_id,
-                  created_at=_ago(hours=1))
+                  created_at=_ago(minutes=5))
     assert say.retry_pending() == 0
     assert _state(old) == "cancelled"
     assert _state(new) == "delivered"
@@ -233,7 +327,7 @@ def test_a_current_message_still_delivers(fake, tmp_path):
 def test_an_open_task_brief_still_delivers(fake, tmp_path):
     _ledger(tmp_path, **{"q-334": "in_progress"})
     path = _record(tmp_path, target="dev-opencode", task_id="q-334",
-                   created_at=_ago(hours=1))
+                   created_at=_ago(minutes=10))
     assert say.retry_pending() == 0
     assert len(fake.sent) == 1
     assert _state(path) == "delivered"
@@ -299,7 +393,7 @@ def test_a_changed_worker_session_cancels_a_queued_brief(fake, tmp_path):
         tmp_path,
         target="dev-opencode",
         session_id="old-session",
-        created_at=_ago(hours=1),
+        created_at=_ago(minutes=10),
     )
     assert say.retry_pending() == 0
     assert fake.sent == []
@@ -311,7 +405,7 @@ def test_a_changed_worker_session_cancels_a_queued_brief(fake, tmp_path):
 def test_a_task_closing_during_resolution_cancels_before_transport(fake, tmp_path, monkeypatch):
     _ledger(tmp_path, **{"fixture": "in_progress"})
     path = _record(tmp_path, target="dev-opencode", task_id="fixture",
-                   created_at=_ago(hours=1))
+                   created_at=_ago(minutes=10))
     original = say.resolve
 
     def close_then_resolve(sender_member, target):

@@ -241,7 +241,7 @@ def test_current_and_legacy_outboxes_share_the_retry_order(monkeypatch, sent, tm
     record = json.loads(path.read_text(encoding="utf-8"))
     record["created_at"] = (
         datetime.datetime.now(datetime.timezone.utc)
-        - datetime.timedelta(hours=1)
+        - datetime.timedelta(minutes=10)
     ).isoformat()
     path.write_text(json.dumps(record), encoding="utf-8")
     say._write_outbox("dev__codex", "dev-codex", "dev-claude", "new report", "new report")
@@ -376,6 +376,24 @@ def test_pending_list_shows_the_kept_uncertain_records(
     output = capsys.readouterr().out
     assert "uncertain-1 -> dev-opencode" in output
     assert "uncertain delivery" in output
+
+
+@pytest.mark.parametrize("flags", [["--pending", "--list"], ["--list"]])
+def test_pending_list_leaves_held_messages_untouched(monkeypatch, sent, tmp_path, capsys, flags):
+    monkeypatch.setenv("HERDR_PANE_ID", "w8:p2")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fresh = _record(tmp_path, "fresh", "dev-codex", "dev__codex", "dev-opencode",
+                    now.isoformat(), state="pending")
+    _record(tmp_path, "stale", "dev-codex", "dev__codex", "dev-claude",
+            (now - datetime.timedelta(hours=5)).isoformat(), state="pending")
+    before = {path.name: path.read_bytes() for path in fresh.parent.iterdir()}
+
+    assert main(["say", *flags]) == 0
+    assert sent == []
+    assert {path.name: path.read_bytes() for path in fresh.parent.iterdir()} == before
+    output = capsys.readouterr().out
+    assert "Pending fresh -> dev-opencode" in output
+    assert "Pending stale -> dev-claude" in output
 
 
 # ---------- Q-558: no report since the last brief ----------

@@ -176,9 +176,10 @@ def test_a_delivered_receipt_missing_from_the_transcript_is_not_confirmed_lost(t
     assert summary["counts"]["lost"] == 0
 
 
-def test_cancelled_records_are_excluded_from_the_measure(tmp_path):
+@pytest.mark.parametrize("state", ["cancelled", "expired"])
+def test_unsent_terminal_records_are_excluded_from_the_measure(tmp_path, state):
     claude_session(tmp_path, "ARRIVED")
-    hx = outbox(tmp_path, ("c", "dev-claude", "NEVER SEEN", T, "cancelled"))
+    hx = outbox(tmp_path, ("c", "dev-claude", "NEVER SEEN", T, state))
     summary = settle(hx, roots(tmp_path))
     assert summary["records"] == 0
     assert summary["excluded"] == 1

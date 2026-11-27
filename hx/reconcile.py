@@ -412,7 +412,7 @@ def reconcile(records: list[dict[str, Any]], logs: list[SessionLog]) -> dict[str
     excluded = 0
     receipt_only = 0
     for record in records:
-        if record.get("state") == "cancelled":
+        if record.get("state") in ("cancelled", "expired"):
             excluded += 1
             continue
         target = str(record.get("target") or "")
@@ -460,7 +460,7 @@ def render_text(summary: dict[str, Any], since: str | None, until: str | None) -
         row = summary["by_receiver"][target]
         lines.append(f"  {target:14} delivered {row['delivered']:4}  lost {row['lost']:4}  "
                      f"unconfirmed {row['unconfirmed']:4}  family {summary['families'].get(target) or '-'}")
-    lines.append(f"  {summary['excluded']} cancelled records excluded (never sent); "
+    lines.append(f"  {summary['excluded']} cancelled or expired records excluded (never sent); "
                  f"{summary['receipt_only']} delivered receipts missing from the transcript")
     lines.append(f"  upper bound {summary['upper_bound']} briefs with no matching reply; "
                  f"confirmed lost {summary['lost_briefs']} of {summary['briefs']} briefs "

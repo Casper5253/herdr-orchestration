@@ -190,6 +190,8 @@
   "say": {
     "work_ttl_seconds": 86400,
     "work_ttl_note": "Ordinary worker briefs expire one day after creation when hx say gets no --ttl. Lead reports are durable and never expire through this guard.",
+    "pending_max_age_s": 1800,
+    "pending_max_age_note": "Pending retries expire at this age from creation. Manual retries print expired lead reports for review.",
     "resubmit_wait_seconds": 15,
     "resubmit_note": "After an uncertain send, hx say waits this long for a late turn start before pressing the pane's submit key once. The press never retypes the message, never runs while the target works, and runs at most once per record."
   },
