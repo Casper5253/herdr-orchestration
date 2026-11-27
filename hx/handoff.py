@@ -41,7 +41,7 @@ def _repo_root() -> Path:
     return paths.project_root()
 
 
-def _redact(text: str) -> str:
+def redact(text: str) -> str:
     text = _AUTH_RE.sub(lambda m: f"{m.group('name')}: [redacted]", text)
     return _SECRET_ASSIGN_RE.sub(lambda m: f"{m.group('name')}: [redacted]", text)
 
@@ -56,7 +56,7 @@ def _truncate(text: str) -> str:
 def _section(body: list[str], title: str, text: str | None) -> None:
     if text:
         body.append(f"## {title}")
-        body.append(_truncate(_redact(text.strip())))
+        body.append(_truncate(redact(text.strip())))
         body.append("")
 
 

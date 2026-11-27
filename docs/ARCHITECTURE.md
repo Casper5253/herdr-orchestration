@@ -32,6 +32,7 @@ hx/            python package, stdlib only, team entry: hx <command>
   context.py   context controller: per-agent utilisation, compaction decision + execution
   ocrun.py     one-off worker runs: OpenCode, Codex, Devin (logs tokens, cost, latency)
   devin.py     Devin SWE-2.1 worker: preflight, promotion guard, run slots, export checks
+  muse.py      Muse Mail bridge: IMAP poll into the lead, SMTP send per Jotarium thread, journal
 policy.json    every tunable: model ladders, plan limits, thresholds, retry caps
 hooks/         claude statusline writer, PreCompact checkpoint, SessionStart(compact) restore
 bench/         OpenCode model benchmark: fixtures with hidden tests + runner
@@ -40,7 +41,7 @@ tests/         pytest, no network, no real model calls
 ```
 
 State locations:
-- Machine state: `~/.herdr-team/state/` (`claude-status.json`, `compact-guard.json`).
+- Machine state: `~/.herdr-team/state/` (`claude-status.json`, `compact-guard.json`, `muse/config.json`, `muse/journal.jsonl`).
 - Project state: `<repo>/.hx/` (git-ignored): `ledger.json`, `routing.jsonl`, `checkpoints/<task-id>.md`.
 - Durable project memory (layer A) stays in agentmem (`mem remember`, project notes). hx does not duplicate it; `hx checkpoint --promote` hands a decision to `mem remember`.
 
