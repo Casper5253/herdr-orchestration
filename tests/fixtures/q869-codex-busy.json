@@ -11,7 +11,7 @@
     "expected": "submitted"
   },
   {
-    "case": "dropped",
+    "case": "dropped-then-resubmitted",
     "status_before": "idle",
     "turn_before": 42,
     "started": true,
@@ -19,6 +19,6 @@
     "status_after": "idle",
     "turn_after": 43,
     "composer": "empty",
-    "expected": "uncertain"
+    "expected": "submitted"
   }
 ]

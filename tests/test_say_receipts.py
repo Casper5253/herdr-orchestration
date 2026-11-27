@@ -91,12 +91,14 @@ def test_codex_busy_receipt_uses_live_send_evidence(fake, capsys, scenario):
     assert say.say("lead", "brief ends here") == int(scenario["expected"] == "uncertain")
     receipt = capsys.readouterr().out.rpartition(": ")[2].split(maxsplit=1)[0]
     assert receipt == scenario["expected"]
-    assert fake.keys == []
+    assert fake.keys == (
+        [["keys", "t24", "enter"]] if scenario["case"].startswith("dropped") else [])
 
 
 def test_uncertain_receipt_records_submission_evidence(fake, capsys):
     fake.members["dev-lead"].update(kind="codex", session_id="session-after-compact")
     fake.advance = False
+    fake.press = lambda member, *keys: False
     assert say.say("lead", "brief ends here") == 1
     capsys.readouterr()
     records = say.records_for("dev__codex")
@@ -231,6 +233,7 @@ class FakeHc:
 def fake(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(say, "SUBMIT_POLL_SECONDS", 0.3)
     monkeypatch.setattr(say, "KEY_SETTLE_SECONDS", 0.01)
+    monkeypatch.setattr(say, "RESUBMIT_WAIT_SECONDS", 0.3)
     hc = FakeHc()
     monkeypatch.setenv("HC_TERMINAL_ID", "t9")
     monkeypatch.setenv("HX_PROJECT_ROOT", str(tmp_path))
@@ -394,11 +397,11 @@ def test_newly_staged_paste_gets_provider_key(fake, capsys, monkeypatch, kind, s
 @pytest.mark.parametrize("case,expected", [
     ("status", "submitted"),
     ("screen", "submitted"),
-    ("dropped", "uncertain"),
+    ("dropped", "lost-unstarted"),
     ("unrelated_work", "uncertain"),
     ("already_working", "uncertain"),
     ("already_spinning", "uncertain"),
-    ("quoted_spinner", "uncertain"),
+    ("quoted_spinner", "lost-unstarted"),
     ("queued", "queued"),
     ("foreign_draft", "uncertain"),
 ])
@@ -437,8 +440,8 @@ def test_same_turn_worker_receipts(fake, capsys, tmp_path, monkeypatch,
     code = say.say("lead", "brief ends here")
     receipt = capsys.readouterr().out.partition(" -> t24: ")[2]
     assert receipt.split()[0] == expected, receipt
-    assert code == int(expected == "uncertain")
-    assert fake.keys == ([["enter"]] if case == "queued" else [])
+    assert code == int(expected in ("uncertain", "lost-unstarted"))
+    assert fake.keys == ([["enter"]] if case in {"queued", "dropped", "quoted_spinner"} else [])
 
 
 @pytest.mark.parametrize("after", [_CODEX_IDLE_STAGED, _CODEX_STAGED_WITH_EDIT,
@@ -696,6 +699,7 @@ def test_devin_send_still_queued_after_enter_is_pending(fake, capsys):
 @pytest.mark.parametrize("phase", ["before", "after", "recheck"])
 def test_incomplete_composer_evidence_never_earns_success(fake, capsys, phase):
     fake.members["dev-lead"]["kind"] = "codex"
+    fake.advance = False
     incomplete = host.ReadText(_CODEX_IDLE_EMPTY, complete=False)
     fake.views["dev-lead"] = incomplete if phase == "before" else _CODEX_IDLE_EMPTY
     fake.on_send = lambda name: fake.views.update({name:
@@ -745,3 +749,111 @@ def test_cli_pending_retry_keeps_foreign_draft_untouched(fake, capsys):
     assert main(["say", "--pending"]) == 0
     assert capsys.readouterr().out.endswith("submitted\n")
     assert len(fake.sent) == 1
+
+
+# ---------- Q-1131: one bounded resubmit after an uncertain send ----------
+
+
+def _uncertain(*_args, **_kwargs):
+    return "uncertain", "empty composer without submission evidence"
+
+
+def _record_for(tmp_path: Path, body: str = "brief ends here") -> dict:
+    for path in (tmp_path / ".hx" / "outbox").rglob("*.json"):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("body") == body:
+            return record
+    raise AssertionError("record missing")
+
+
+def test_uncertain_send_that_starts_late_gets_no_key(fake, capsys, monkeypatch, tmp_path):
+    member = fake.members["dev-lead"]
+    member["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    fake.advance = False
+    late = {"after_send": False, "advanced": False}
+
+    def send_checked(name, text, **_):
+        fake.sent.append((name, text))
+        late["after_send"] = True
+        return host.SendResult(started=True, status="idle", turn=4, ended=False, reason=None)
+
+    def info(name):
+        if late["after_send"] and not late["advanced"]:
+            late["advanced"] = True
+            member["turn"] += 1
+        return member
+
+    fake.send_checked = send_checked
+    fake.info = info
+    monkeypatch.setattr(say, "_submission_evidence", _uncertain)
+    assert say.say("lead", "brief ends here") == 0
+    out = capsys.readouterr()
+    assert out.out.endswith("submitted\n")
+    assert fake.keys == []
+    record = _record_for(tmp_path)
+    assert record["state"] == "delivered"
+    assert record["receipt_evidence"]["resume"] == {"started": "turn", "keys": 0}
+
+
+def test_uncertain_send_is_resubmitted_once(fake, capsys, monkeypatch, tmp_path):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    fake.advance = False
+    monkeypatch.setattr(say, "_submission_evidence", _uncertain)
+    assert say.say("lead", "brief ends here") == 0
+    assert capsys.readouterr().out.endswith("submitted\n")
+    assert fake.keys == [["keys", "t24", "enter"]]
+    record = _record_for(tmp_path)
+    assert record["state"] == "delivered"
+    assert record["note"] == "resubmitted once"
+    assert record["receipt"] == "submitted"
+    assert record["receipt_evidence"]["resume"]["keys"] == 1
+
+
+def test_uncertain_send_that_never_starts_is_lost_after_one_key(
+        fake, capsys, monkeypatch, tmp_path):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    fake.advance = False
+    fake.press = lambda member, *keys: fake.keys.append(["keys", member["address"], *keys]) or True
+    monkeypatch.setattr(say, "_submission_evidence", _uncertain)
+    assert say.say("lead", "brief ends here") == 1
+    out = capsys.readouterr()
+    assert out.out.endswith("lost-unstarted\n")
+    assert "hc read t24" in out.err
+    assert fake.keys == [["keys", "t24", "enter"]]
+    record = _record_for(tmp_path)
+    assert record["state"] == "uncertain"
+    assert record["note"] == "lost-unstarted"
+    assert record["receipt"] == "lost-unstarted"
+    capsys.readouterr()
+    assert say.retry_pending() == 1
+    assert fake.keys == [["keys", "t24", "enter"]]
+
+
+def test_uncertain_send_with_text_still_in_the_composer_gets_no_key(fake, capsys, monkeypatch):
+    fake.members["dev-lead"]["kind"] = "codex"
+    fake.views["dev-lead"] = _CODEX_IDLE_EMPTY
+    fake.advance = False
+    fake.on_send = lambda name: fake.views.update({name: _CODEX_IDLE_STAGED})
+    monkeypatch.setattr(say, "_submission_evidence", _uncertain)
+    assert say.say("lead", "brief ends here") == 1
+    assert " -> t24: uncertain" in capsys.readouterr().out
+    assert fake.keys == []
+
+
+def test_uncertain_send_to_a_working_target_gets_no_key(fake, capsys, monkeypatch):
+    fake.members["dev-lead"].update(kind="codex", status="working")
+    fake.advance = False
+    monkeypatch.setattr(say, "_submission_evidence", _uncertain)
+    assert say.say("lead", "brief ends here") == 1
+    assert " -> t24: uncertain" in capsys.readouterr().out
+    assert fake.keys == []
+
+
+def test_resubmit_wait_seconds_come_from_policy():
+    assert say._resubmit_wait_seconds({"say": {"resubmit_wait_seconds": 2.5}}) == 2.5
+    assert say._resubmit_wait_seconds(
+        {"say": {"resubmit_wait_seconds": -1}}) == say.RESUBMIT_WAIT_SECONDS
+    assert say._resubmit_wait_seconds({}) == say.RESUBMIT_WAIT_SECONDS

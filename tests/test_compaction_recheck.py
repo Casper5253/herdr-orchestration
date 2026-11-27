@@ -309,7 +309,7 @@ def test_lead_self_compact_refuses_while_a_key_stream_is_active(
 
 
 def test_delivery_ttl_covers_the_real_send_bound() -> None:
-    assert ledger.DELIVERY_STALE_SECONDS > 60 + say.SUBMIT_POLL_SECONDS + say.KEY_SETTLE_SECONDS
+    assert ledger.DELIVERY_STALE_SECONDS > 60 + say.SUBMIT_POLL_SECONDS + 2 * say.RESUBMIT_WAIT_SECONDS + 2 * say.KEY_SETTLE_SECONDS
 
 
 @pytest.mark.parametrize("hold", [None, "delivery", "compacting", "compact-unknown", "reset-unknown"])
