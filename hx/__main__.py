@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 
@@ -157,6 +158,33 @@ def _add_checkpoint_parser(subparsers: argparse._SubParsersAction) -> None:
     validate.set_defaults(func=_checkpoint_validate)
 
 
+def _add_step_parser(subparsers: argparse._SubParsersAction) -> None:
+    step_parser = subparsers.add_parser(
+        "step",
+        help="Task step log: harvest a worker transcript or record a step by hand.",
+    )
+    step_sub = step_parser.add_subparsers(dest="step_command", required=True)
+
+    harvest = step_sub.add_parser(
+        "harvest",
+        help="Append a worker's steps since its brief to the task checkpoint.",
+    )
+    harvest.add_argument("id")
+    harvest.add_argument("--agent", required=True,
+                         help="worker whose transcript to read, for example dev-opencode")
+    window = harvest.add_mutually_exclusive_group()
+    window.add_argument("--brief", help="send record id that carried the brief")
+    window.add_argument("--since", help="ISO timestamp to search in one unambiguous worker session")
+    harvest.add_argument("--json", action="store_true", dest="as_json")
+    harvest.set_defaults(func=_step_harvest)
+
+    add = step_sub.add_parser("add", help="Record a step by hand, for Devin and bare shells.")
+    add.add_argument("id")
+    add.add_argument("--note", required=True)
+    add.add_argument("--agent", default="", help="who did it; defaults to manual")
+    add.set_defaults(func=_step_add)
+
+
 def _add_activate_parser(subparsers: argparse._SubParsersAction) -> None:
     activate = subparsers.add_parser(
         "activate",
@@ -189,6 +217,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_reconcile_parser(subparsers)
     _add_jotarium_parser(subparsers)
     _add_checkpoint_parser(subparsers)
+    _add_step_parser(subparsers)
     boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction. `hx boundary check|gen` handles the worker boundary manifest.")
     boundary.add_argument("agent")
     boundary.add_argument("--task")
@@ -442,6 +471,26 @@ def _checkpoint_validate(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
     if not result["ok"]:
         raise SystemExit(1)
+
+
+def _step_harvest(args: argparse.Namespace) -> int:
+    result = checkpoint.harvest(
+        args.id, args.agent, brief=args.brief, since=args.since)
+    if args.as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(checkpoint.render_harvest(result))
+    return 0
+
+
+def _step_add(args: argparse.Namespace) -> int:
+    line = checkpoint.format_step(
+        dt.datetime.now(dt.timezone.utc), args.agent or "manual", "note", args.note)
+    path, added = checkpoint.append_steps(args.id, [line])
+    state = "recorded" if added else "already recorded"
+    print(f"hx step add {args.id}: {state} {line}")
+    print(f"checkpoint {path}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
