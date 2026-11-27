@@ -23,7 +23,7 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
+def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path, request):
     # Tests must never inherit the agent session's HERDR_ENV=1, which flips
     # ocrun's default launch mode to visible (real console windows). A test
     # that needs the visible default sets the variable explicitly.
@@ -38,6 +38,10 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     # The live terminal scope is identity evidence for own(); tests set their own.
     monkeypatch.delenv("HC_SCOPE", raising=False)
     monkeypatch.delenv("HC_TERMINAL_SOCKET", raising=False)
+    # Pace reads live usage; tests that cover the pace hold patch it back in.
+    from hx import say as _say
+    if not request.node.get_closest_marker("pace_hold"):
+        monkeypatch.setattr(_say, "_over_pace", lambda name, body: False)
     # A one-off ocrun worker running the suite must not make hx say refuse.
     monkeypatch.delenv("HX_OCRUN_SENDER", raising=False)
     monkeypatch.setenv("HX_OPENCODE_AUTH", str(tmp_path / "missing-opencode-auth.json"))
