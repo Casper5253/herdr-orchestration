@@ -33,7 +33,7 @@ import time
 import uuid
 from pathlib import Path
 
-from hx import briefs, context, devin, host, ledger, paths, usage
+from hx import briefs, context, devin, host, ledger, pace, paths, usage
 
 # A process that dies between claiming and marking a record leaves the claim;
 # after this long the delivery is unknown, not unsent.
@@ -118,6 +118,34 @@ def _under_pressure(name: str) -> bool:
         return True
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError, OverflowError, subprocess.SubprocessError):
         # Unknown or unavailable telemetry must not block team communication.
+        return False
+
+
+_BRIEF_POINTER = re.compile(r"\.hx[\\/]briefs[\\/]", re.IGNORECASE)
+
+
+def _over_pace(name: str, body: str) -> bool:
+    """Hold a new brief to a pool that is ahead of pace; name the pools with room."""
+    if not _BRIEF_POINTER.search(body or ""):
+        return False
+    try:
+        policy = usage.load_policy()
+        if not (policy.get("pace") or {}).get("hold_briefs", True):
+            return False
+        report = pace.build(usage.usage_snapshot(policy), policy)
+        if pace.status_for(report, name) != "ahead":
+            return False
+        room = [pool for pool, entry in (report.get("pools") or {}).items()
+                if entry.get("status") in ("underused", "free")]
+        print(
+            f"Held: {name} draws on a pool that is ahead of pace ({pace.reason_for(report, name)}). "
+            f"Pools with room: {', '.join(room) or 'none'}. Give the brief to one of them, "
+            "or wait for the reset. Use --force only when this pool is the only one that fits.",
+            file=sys.stderr,
+        )
+        return True
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, AttributeError, OverflowError, subprocess.SubprocessError):
+        # Unknown usage must not block team communication.
         return False
 
 
@@ -708,6 +736,9 @@ def _deliver(
             return state, note, (where, _OUTCOME_WORDS.get(state, "uncertain"))
         if not force and _under_pressure(name):
             return "pending", "pressure", (where, "pending")
+        if work and not force and not current.get("control") and _over_pace(name, body):
+            _write_state(path, "failed", note="refused: pool ahead of pace")
+            return "failed", "refused: pool ahead of pace", (where, "failed")
         line = _denied_line_for(destination)
         if line:
             text += " " + line
