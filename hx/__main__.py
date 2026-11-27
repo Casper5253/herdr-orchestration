@@ -7,7 +7,7 @@ import json
 import sys
 
 from hx import __version__
-from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, pace, profile, review, route, runtime, say, task_index, team_stalls, team_watch, usage
+from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, next as next_mod, ocrun, pace, profile, reconcile, review, route, runtime, say, task_index, team_stalls, team_watch, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -42,6 +42,18 @@ def _add_say_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=lambda args: say.retry_pending(list_uncertain=args.list_uncertain) if args.pending or args.list_uncertain else say.say(
         args.target, " ".join(args.message), force=args.force, control=args.control,
         task=args.task, ttl=args.ttl, supersedes=args.supersedes))
+
+
+def _add_reconcile_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "reconcile",
+        help="Settle send records against the receiver transcript (read-only).",
+    )
+    parser.add_argument("--since", metavar="DATE", help="first send date, YYYY-MM-DD")
+    parser.add_argument("--until", metavar="DATE", help="last send date, YYYY-MM-DD")
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.set_defaults(func=lambda args: reconcile.command(
+        since=args.since, until=args.until, as_json=args.as_json))
 
 
 def _add_jotarium_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -174,6 +186,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_pace_parser(subparsers)
     _add_task_parser(subparsers)
     _add_say_parser(subparsers)
+    _add_reconcile_parser(subparsers)
     _add_jotarium_parser(subparsers)
     _add_checkpoint_parser(subparsers)
     boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction. `hx boundary check|gen` handles the worker boundary manifest.")
