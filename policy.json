@@ -189,7 +189,9 @@
   },
   "say": {
     "work_ttl_seconds": 86400,
-    "work_ttl_note": "Ordinary worker briefs expire one day after creation when hx say gets no --ttl. Lead reports are durable and never expire through this guard."
+    "work_ttl_note": "Ordinary worker briefs expire one day after creation when hx say gets no --ttl. Lead reports are durable and never expire through this guard.",
+    "resubmit_wait_seconds": 15,
+    "resubmit_note": "After an uncertain send, hx say waits this long for a late turn start before pressing the pane's submit key once. The press never retypes the message, never runs while the target works, and runs at most once per record."
   },
   "persistent_opencode_model": "deepseek-v4.1-flash",
   "ladders_note": "2026-10-22 owner directive, temporary: glm-5.3-flash demoted to last in every ladder and replaced as the persistent model after repeated stalls and a context overrun in real work (portfolio project); revisit after the next benchmark. 2026-11-06 creator executive decision: deepseek-v4.1-flash is the go-to model, first in every ladder and the persistent OpenCode model (Global regions enabled; smoke test passed).",

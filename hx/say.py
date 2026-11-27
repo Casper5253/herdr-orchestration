@@ -19,6 +19,9 @@ session changed, or a newer record to the same target supersedes it. Messages
 resolved to the lead role are durable reports and are never cancelled by this
 guard. `cancelled` is terminal. An `uncertain` record was already attempted:
 it is never resent by --pending (a record with no valid age counts as uncertain); it waits for `hx reconcile`.
+An uncertain send gets one bounded resume first: if the pane's turn did not start
+and its composer is clear, `hx say` presses the submit key once, never retyping;
+a second failed start is recorded as `lost-unstarted` and named in one stderr line.
 """
 from __future__ import annotations
 
@@ -54,6 +57,10 @@ _SAME_TURN_COMPOSERS = frozenset({"opencode", "devin"})
 # to settle before the one recheck.
 SUBMIT_POLL_SECONDS = 10.0  # a busy receiver's turn advances at its next provider turn
 KEY_SETTLE_SECONDS = 0.75
+# An uncertain send gets one bounded chance to start late, then at most one
+# submit-key press. The live 27 Nov compaction loss left the text in the pane
+# with no turn; the press never retypes the message.
+RESUBMIT_WAIT_SECONDS = 15.0
 # The host explicitly refused or never accepted the text; a retry is safe.
 UNSENT_REASONS = frozenset({
     "blocked", "finished", "unavailable", "status_mismatch", "not_found",
@@ -203,6 +210,38 @@ def _await_advance(detected: host.Host, name: str, sent_turn: int | None, second
         time.sleep(0.25)
 
 
+def _wait_started(detected: host.Host, name: str, sent_turn: int | None, seconds: float) -> str:
+    """The start signal within the bound: "turn", "working", or "".
+
+    A working pane is not proof that this message started, but it is proof the
+    pane is busy and must not take a submit-key press.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        member = _host_member(detected, name)
+        if member is None:
+            return ""
+        if _turn_advanced(member, sent_turn):
+            return "turn"
+        if member["status"] == "working":
+            return "working"
+        if member["status"] in ("blocked", "error"):
+            return ""
+        if time.monotonic() >= deadline:
+            return ""
+        time.sleep(0.25)
+
+
+def _queue_visible(screen: str, kind: str) -> bool:
+    """A provider queue shows unsent messages; Enter would send those, not ours."""
+    if kind == "devin":
+        return bool((host._queued_text(screen, "devin") or "").strip())
+    if kind == "opencode":
+        return any(re.search(r"(?<!\w)QUEUED(?!\w)", block) and block.strip()
+                   for block in re.split(r"\n\s*\n", screen or ""))
+    return "Queued follow-up inputs" in (screen or "")
+
+
 def _read_composer(detected: host.Host, name: str, kind: str) -> tuple[str, str | None]:
     try:
         screen = detected.read(name, 60)
@@ -341,6 +380,65 @@ def _submission_evidence(
     if same_turn and (queued_before or host._queue_holds(screen, kind, text)):
         return "queued", None
     return word, None
+
+
+def _resume_uncertain(
+    detected: host.Host,
+    address: str,
+    name: str,
+    sent_turn: int | None,
+    seconds: float,
+    evidence: dict[str, object],
+) -> tuple[str, str | None, str] | None:
+    """One bounded resume of an uncertain send; never the text again.
+
+    Waits for a late turn advance or a busy pane, then presses the submit key
+    once only when the composer is empty and no queued message is visible. A
+    pressed Enter that starts nothing is `lost-unstarted`. A busy pane, held
+    text, a queue or an unreadable composer keeps the record uncertain with no
+    press, and None means keep the original reason.
+    """
+    member = _host_member(detected, name)
+    if member is None or str(member["address"]) != address:
+        return None
+    kind = str(member["kind"])
+    if kind not in host._COMPOSER_KINDS:
+        return None
+    started = _wait_started(detected, name, sent_turn, seconds)
+    if started == "turn":
+        evidence["resume"] = {"started": "turn", "keys": 0}
+        return "delivered", None, "submitted"
+    if started:
+        evidence["resume"] = {"started": started, "keys": 0}
+        return None
+    screen, staged = _read_composer(detected, name, kind)
+    if staged is None or not host._composer_empty(staged, kind):
+        evidence["resume"] = {"started": "", "keys": 0, "held": staged is not None}
+        return None
+    if host._composer_working(screen, kind):
+        evidence["resume"] = {"started": "screen", "keys": 0}
+        return None
+    if _queue_visible(screen, kind):
+        evidence["resume"] = {"started": "", "keys": 0, "queued": True}
+        return None
+    member = _host_member(detected, name)
+    if (member is None or str(member["address"]) != address
+            or member["status"] not in ("idle", "done")):
+        return None
+    key, _ = host._submit_key(screen, kind)
+    try:
+        pressed = detected.press(member, key)
+    except Exception:
+        pressed = False
+    evidence["resume"] = {"started": "", "keys": int(bool(pressed)), "key": key}
+    if not pressed:
+        return None
+    time.sleep(KEY_SETTLE_SECONDS)
+    started = _wait_started(detected, name, sent_turn, seconds)
+    evidence["resume"]["started"] = started
+    if started:
+        return "delivered", "resubmitted once", "submitted"
+    return "uncertain", "lost-unstarted", "lost-unstarted"
 
 
 _OUTCOME_WORDS = {
@@ -522,6 +620,15 @@ def _work_ttl_seconds(policy: dict) -> float:
     return DEFAULT_WORK_TTL_SECONDS
 
 
+def _resubmit_wait_seconds(policy: dict) -> float:
+    say_policy = policy.get("say")
+    raw = say_policy.get("resubmit_wait_seconds") if isinstance(say_policy, dict) else None
+    if (isinstance(raw, (int, float)) and not isinstance(raw, bool)
+            and math.isfinite(raw) and raw > 0):
+        return float(raw)
+    return RESUBMIT_WAIT_SECONDS
+
+
 def _obsolete_state(
     path: Path,
     sender_key: str,
@@ -677,8 +784,8 @@ def _deliver(
     """The one guarded delivery path, shared by a first send and a retry.
 
     Returns the durable record state, a reason, and a `(where, outcome)` receipt:
-    the destination address plus `submitted`, `queued`, `pending`, `uncertain`
-    or `failed` — the short line `hx say` prints.
+    the destination address plus `submitted`, `queued`, `pending`, `uncertain`,
+    `lost-unstarted` or `failed` — the short line `hx say` prints.
     """
     sender = sender_member["name"]
     try:
@@ -830,10 +937,21 @@ def _deliver(
                 elif outcome == "uncertain":
                     state = "uncertain"
                     reason = receipt_reason or "sent; no submission evidence"
+        note = reason
+        if state == "uncertain" and not isinstance(detected, host.HerdrHost):
+            resumed = _resume_uncertain(
+                detected, where, name, result["turn"],
+                _resubmit_wait_seconds(policy), receipt_evidence)
+            if resumed is not None:
+                state, note, outcome = resumed
+                reason = None if outcome == "lost-unstarted" else note
+                if outcome == "lost-unstarted":
+                    print(f"lost-unstarted: {name} did not start a turn; "
+                          f"run `hc read {where}`", file=sys.stderr)
         # Keep the claim until the outcome is durable: releasing it first lets a
         # second sender claim the same still-pending record and send twice.
         try:
-            _write_state(path, state, note=reason, receipt=outcome,
+            _write_state(path, state, note=note, receipt=outcome,
                          receipt_evidence=receipt_evidence)
         except OSError:
             try:
