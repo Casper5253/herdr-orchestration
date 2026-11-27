@@ -10,14 +10,18 @@ and the task's current revision.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import os
 import re
 import subprocess
+import tempfile
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
 from hx import ledger as ledger_mod
 from hx import paths
+from hx import reconcile
 from hx import spawn
 
 
@@ -38,6 +42,11 @@ SECTIONS = [
 ]
 
 AGENT_SECTIONS = ["Decisions", "Exact errors", "Next action"]
+# Appended by hx step; not a required section, so older checkpoints still validate.
+STEPS_SECTION = "Steps"
+STEP_DETAIL_LIMIT = 300
+STEP_ID = re.compile(r" <!-- hx-step:([0-9a-f]{32}) -->$")
+MARKDOWN_LINE = re.compile(r"^ {0,3}(?:##[ \t]+(?P<heading>[^\r\n]*)|(?P<fence>`{3,}|~{3,})(?P<tail>[^\r\n]*))\r?$", re.MULTILINE)
 
 _LEDGER_REV_RE = re.compile(r"^ledger_rev:\s*(\d+)\s*$", re.MULTILINE)
 
@@ -164,6 +173,7 @@ def _compose_checkpoint(
     diff_stat: list[str],
     committed: list[str],
     ledger_rev: int,
+    steps: str = "",
 ) -> str:
     """Assemble the checkpoint markdown (no I/O)."""
     owner_text = owner or task.get("owner", "")
@@ -209,6 +219,8 @@ def _compose_checkpoint(
         references,
         "",
     ]
+    if steps:
+        lines += [f"## {STEPS_SECTION}", "", steps, ""]
     return "\n".join(lines)
 
 
@@ -227,6 +239,7 @@ def _write_checkpoint(
     diff_stat: list[str],
     committed: list[str],
     ledger_rev: int,
+    steps: str = "",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = _compose_checkpoint(
@@ -243,13 +256,9 @@ def _write_checkpoint(
         diff_stat=diff_stat,
         committed=committed,
         ledger_rev=ledger_rev,
+        steps=steps,
     )
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    _atomic_write_text(path, text)
 
 
 def write_checkpoint(
@@ -264,8 +273,10 @@ def write_checkpoint(
     tests: str = "",
     next_action: str = "",
     references: str = "",
+    steps: str = "",
     repo_root: Path | None = None,
     checkpoints_dir: Path | None = None,
+    _lock_held: bool = False,
 ) -> Path:
     if ledger is None:
         ledger = ledger_mod.default_ledger()
@@ -287,39 +298,42 @@ def write_checkpoint(
     owned_committed = [line for line in committed_lines]
 
     path = checkpoints_dir / f"{task_id}.md"
-    # Explicit non-empty flags override the saved text; saved text is the
-    # default for sections the caller left empty, so repeated writes preserve
-    # earlier agent prose unless the agent rewrites it.
-    saved = _read_authored_sections(path)
-    merged = {
-        "objective": objective or saved.get("Objective", ""),
-        "owner": owner or "",
-        "status": status or "",
-        "decisions": decisions or saved.get("Decisions", ""),
-        "errors": errors or saved.get("Exact errors", ""),
-        "tests": tests or saved.get("Tests", ""),
-        "next_action": next_action or saved.get("Next action", ""),
-        "references": references or saved.get("References", ""),
-    }
-    # Record the checkpoint path in the ledger first so the file mtime is
-    # strictly newer than the task's updated timestamp when validated.
-    task = ledger.update_task(task_id, checkpoint=str(path))
-    _write_checkpoint(
-        path,
-        task,
-        objective=merged["objective"],
-        owner=merged["owner"],
-        status=merged["status"],
-        decisions=merged["decisions"],
-        errors=merged["errors"],
-        tests=merged["tests"],
-        next_action=merged["next_action"],
-        references=merged["references"],
-        git_status=owned_status,
-        diff_stat=owned_diff_stat,
-        committed=owned_committed,
-        ledger_rev=task["rev"],
-    )
+    with (nullcontext() if _lock_held else _checkpoint_lock(path)):
+        # Explicit non-empty flags override the saved text; saved text is the
+        # default for sections the caller left empty, so repeated writes preserve
+        # earlier agent prose unless the agent rewrites it.
+        saved = _read_authored_sections(path)
+        merged = {
+            "objective": objective or saved.get("Objective", ""),
+            "owner": owner or "",
+            "status": status or "",
+            "decisions": decisions or saved.get("Decisions", ""),
+            "errors": errors or saved.get("Exact errors", ""),
+            "tests": tests or saved.get("Tests", ""),
+            "next_action": next_action or saved.get("Next action", ""),
+            "references": references or saved.get("References", ""),
+            "steps": steps or saved.get(STEPS_SECTION, ""),
+        }
+        # Record the checkpoint path in the ledger first so the file mtime is
+        # strictly newer than the task's updated timestamp when validated.
+        task = ledger.update_task(task_id, checkpoint=str(path))
+        _write_checkpoint(
+            path,
+            task,
+            objective=merged["objective"],
+            owner=merged["owner"],
+            status=merged["status"],
+            decisions=merged["decisions"],
+            errors=merged["errors"],
+            tests=merged["tests"],
+            next_action=merged["next_action"],
+            references=merged["references"],
+            git_status=owned_status,
+            diff_stat=owned_diff_stat,
+            committed=owned_committed,
+            ledger_rev=task["rev"],
+            steps=merged["steps"],
+        )
     return path
 
 
@@ -373,6 +387,7 @@ def write_completion_checkpoint(
             "tests": authored.get("Tests", "") or tests,
             "next_action": authored.get("Next action", "") or next_action,
             "references": authored.get("References", "") or references,
+            "steps": authored.get(STEPS_SECTION, ""),
         }
         workdir = _task_workdir(task, repo_root)
         owned_files = {_canonical_path(workdir / f) for f in task.get("files", [])}
@@ -399,15 +414,14 @@ def write_completion_checkpoint(
             diff_stat=owned_diff_stat,
             committed=owned_committed,
             ledger_rev=rev,
+            steps=merged["steps"],
         )
 
         # Validate BEFORE the close is committed; the writer runs inside the
         # ledger lock, so raising here aborts complete_task without saving.
         validation_errors = _validate_content(text, task, rev, workdir)
         if validation_errors:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(text)
+            _atomic_write_text(path, text)
             raise CheckpointInvalid(
                 f"checkpoint validation failed: {'; '.join(validation_errors)}"
             )
@@ -427,19 +441,38 @@ def write_completion_checkpoint(
             diff_stat=owned_diff_stat,
             committed=owned_committed,
             ledger_rev=rev,
+            steps=merged["steps"],
         )
         return path
 
-    ledger.complete_task(task_id, status, writer)
-    return checkpoints_dir / f"{task_id}.md"
+    path = checkpoints_dir / f"{task_id}.md"
+    with _checkpoint_lock(path):
+        ledger.complete_task(task_id, status, writer)
+    return path
+
+
+def _section_span(text: str, section: str) -> tuple[int, int] | None:
+    start = None
+    fence = ""
+    for match in MARKDOWN_LINE.finditer(text):
+        marker = match["fence"]
+        if marker:
+            if not fence:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence) and not match["tail"].strip():
+                fence = ""
+        elif not fence:
+            if start is not None:
+                return start, match.start()
+            heading = re.sub(r"[ \t]+#+[ \t]*$", "", match["heading"]).strip()
+            if heading == section:
+                start = match.end() + (text[match.end():match.end() + 1] == "\n")
+    return (start, len(text)) if start is not None else None
 
 
 def _extract_section(text: str, section: str) -> str | None:
-    pattern = rf"## {re.escape(section)}\n(.*?)\n(?:## |\Z)"
-    match = re.search(pattern, text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return None
+    span = _section_span(text, section)
+    return text[span[0]:span[1]].strip() if span else None
 
 
 def _read_authored_sections(path: Path) -> dict[str, str]:
@@ -453,6 +486,9 @@ def _read_authored_sections(path: Path) -> dict[str, str]:
         content = _extract_section(text, section)
         if content is not None:
             sections[section] = content
+    steps = _extract_section(text, STEPS_SECTION)
+    if steps is not None:
+        sections[STEPS_SECTION] = steps
     return sections
 
 
@@ -571,3 +607,230 @@ def validate_checkpoint(
             )
 
     return {"ok": not errors, "errors": errors, "checkpoint": str(path), "mtime": mtime.isoformat()}
+
+
+def format_step(when: datetime.datetime, agent: str, kind: str, detail: str,
+                exit_status: int | None = None) -> str:
+    label = " ".join(str(agent or "manual").split()) or "manual"
+    text = " ".join(str(detail or "").split())
+    if len(text) > STEP_DETAIL_LIMIT:
+        text = text[: STEP_DETAIL_LIMIT - 3] + "..."
+    stamp = when.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tail = f" exit={exit_status}" if exit_status is not None else ""
+    return f"- {stamp} {label} {kind}{tail} {text}"
+
+
+def _with_steps(text: str, lines: list[str], span: tuple[int, int] | None) -> str:
+    first_break = re.search(r"\r?\n", text)
+    eol = first_break[0] if first_break else "\n"
+    body = eol.join(lines)
+    if span is None:
+        gap = eol if text.endswith(eol) else eol * 2
+        return text + gap + f"## {STEPS_SECTION}{eol}{eol}{body}{eol}"
+    start, end = span
+    section = text[start:end]
+    first, last = re.search(r"\S", section), re.search(r"\s*$", section)
+    if first:
+        return text[:start + first.start()] + body + text[start + last.start():]
+    heading_gap = eol if text[:start].endswith("\n") else eol * 2
+    return text[:start] + heading_gap + body + eol + text[start:]
+
+
+@contextmanager
+def _checkpoint_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the lock inode valid for other processes already waiting on it.
+    with path.with_suffix(".lock").open("a+b") as lock:
+        lock.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        mode="w", encoding="utf-8", newline="",
+    ) as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(handle.name, path)
+
+
+def _merge_steps(existing: list[str], wanted: list[str]) -> tuple[list[str], int]:
+    positions = {}
+    for index, line in enumerate(existing):
+        identity = STEP_ID.search(line)
+        positions[identity[1] if identity else line] = index
+    added = 0
+    for line in wanted:
+        identity = STEP_ID.search(line)
+        key = identity[1] if identity else line
+        index = positions.get(key)
+        if index is None:
+            positions[key] = len(existing)
+            existing.append(line)
+            added += 1
+        elif identity and re.match(r"^- \S+ \S+ (?:command|test) exit=-?\d+ ", line):
+            existing[index] = line
+    return existing, added
+
+
+def append_steps(
+    task_id: str,
+    lines: list[str],
+    *,
+    checkpoints_dir: Path | None = None,
+    ledger: ledger_mod.Ledger | None = None,
+) -> tuple[Path, int]:
+    """Append step lines to a task checkpoint, creating it from the ledger if needed.
+
+    A line already in the Steps section is skipped, so running the same harvest
+    twice appends nothing.
+    """
+    directory = checkpoints_dir or default_checkpoints_dir()
+    path = directory / f"{task_id}.md"
+    wanted, _ = _merge_steps([], [line for line in lines if line.strip()])
+    with _checkpoint_lock(path):
+        if path.exists():
+            text = path.read_bytes().decode("utf-8")
+            span = _section_span(text, STEPS_SECTION)
+            existing = text[span[0]:span[1]].strip().splitlines() if span else []
+            merged, added = _merge_steps(existing.copy(), wanted)
+            if merged != existing:
+                _atomic_write_text(path, _with_steps(text, merged, span))
+            return path, added
+        if ledger is None:
+            ledger = ledger_mod.default_ledger()
+        try:
+            ledger.get_task(task_id)
+        except ledger_mod.TaskNotFound as exc:
+            raise ValueError(
+                f"no checkpoint and no ledger task {task_id}; record steps under a task"
+            ) from exc
+        path = write_checkpoint(task_id, ledger=ledger,
+                                steps="\n".join(wanted),
+                                checkpoints_dir=directory, _lock_held=True)
+        return path, len(wanted)
+
+
+def _parse_since(value: str) -> datetime.datetime:
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"--since must be an ISO timestamp: {exc}") from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def harvest(
+    task_id: str,
+    agent: str,
+    *,
+    brief: str | None = None,
+    since: str | None = None,
+    roots: dict[str, Path] | None = None,
+    hx_dir: Path | None = None,
+    checkpoints_dir: Path | None = None,
+    ledger: ledger_mod.Ledger | None = None,
+    now: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """Read the agent's steps since its brief and append them to the task checkpoint."""
+    records = reconcile.load_records(hx_dir or paths.hx_dir())
+    family = reconcile.role_family(agent)
+    if family is None:
+        raise ValueError(
+            f"unknown agent family for {agent or 'no agent'}: name a worker such as dev-opencode"
+        )
+    record: dict[str, Any] | None = None
+    if brief:
+        record = next((item for item in records if str(item.get("id")) == brief), None)
+        if record is None:
+            raise ValueError(f"no send record {brief} in {hx_dir or paths.hx_dir()}")
+        if not reconcile.same_agent(str(record.get("target") or ""), agent):
+            raise ValueError(f"send record {brief} went to {record.get('target')}, not {agent}")
+        if not reconcile.names_task(str(record.get("text") or ""), task_id):
+            raise ValueError(f"send record {brief} does not name task {task_id}")
+        start = record["_sent"]
+    elif since:
+        start = _parse_since(since)
+    else:
+        record = reconcile.brief_for_task(records, task_id, agent)
+        if record is None:
+            raise ValueError(
+                f"no send to {agent} names {task_id}; pass --brief <id> or --since <iso>"
+            )
+        start = record["_sent"]
+    until = now or datetime.datetime.now(datetime.timezone.utc)
+    # Allow clock skew between the sender and worker when finding a receipt.
+    logs = reconcile.load_logs(roots or reconcile.default_roots(), start, until)
+    if record is not None:
+        match = reconcile.brief_receipt(record, family, logs)
+        if match is None:
+            raise ValueError(
+                f"no readable {family} transcript received the brief for {task_id} sent "
+                f"{start.strftime('%Y-%m-%dT%H:%MZ')}; record steps by hand with "
+                f"hx step add {task_id} --note ..."
+            )
+        log, receipt = match
+    else:
+        covering = [log for log in logs if log.family == family
+                    and log.first is not None and log.last is not None
+                    and log.first <= until and log.last >= start]
+        if not covering:
+            raise ValueError(
+                f"no readable {family} transcript covers {start.strftime('%Y-%m-%dT%H:%MZ')}"
+                f"..{until.strftime('%Y-%m-%dT%H:%MZ')}; record steps by hand with "
+                f"hx step add {task_id} --note ..."
+            )
+        if len(covering) != 1:
+            raise ValueError(f"ambiguous {family} worker session for --since {since}")
+        log = covering[0]
+        receipt = next((entry for entry in log.entries
+                        if entry.at is not None and start <= entry.at <= until
+                        and reconcile.TASK_BRIEF.match(entry.text)
+                        and reconcile.names_task(entry.text, task_id)),
+                       reconcile.Entry(start, "", -1))
+    found, until = reconcile.steps_in_window(log, receipt, until)
+    start = receipt.at
+    lines = [format_step(step.at, agent, step.kind, step.detail, step.exit) for step in found]
+    persisted = []
+    for step, line in zip(found, lines):
+        identity = "\\0".join((family, log.session_id, step.invocation))
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+        persisted.append(f"{line} <!-- hx-step:{digest} -->")
+    path, added = append_steps(task_id, persisted, checkpoints_dir=checkpoints_dir, ledger=ledger)
+    return {
+        "task": task_id,
+        "agent": agent,
+        "family": family,
+        "brief": str(record.get("id")) if record else None,
+        "brief_at": record["_sent"].isoformat() if record else None,
+        "since": start.isoformat(),
+        "until": until.isoformat(),
+        "session": log.path,
+        "steps": lines,
+        "total": len(lines),
+        "added": added,
+        "newest": lines[-1] if lines else None,
+        "checkpoint": str(path),
+    }
+
+
+def render_harvest(result: dict[str, Any]) -> str:
+    source = (f"brief {result['brief']}" if result.get("brief")
+              else f"since {result['since']}")
+    lines = [f"hx step harvest {result['task']} {result['agent']}: {source}, "
+             f"{result['total']} steps, {result['added']} new",
+             f"  window {result['since']} .. {result['until']}"]
+    if result.get("newest"):
+        lines.append(f"  newest {result['newest']}")
+    lines.append(f"checkpoint {result['checkpoint']}")
+    return "\n".join(lines)
