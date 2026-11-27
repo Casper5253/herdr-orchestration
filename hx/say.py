@@ -18,7 +18,7 @@ record `cancelled` when it is expired, its task is closed, its destination
 session changed, or a newer record to the same target supersedes it. Messages
 resolved to the lead role are durable reports and are never cancelled by this
 guard. `cancelled` is terminal. An `uncertain` record was already attempted:
-it is never resent by --pending (a record with no valid age counts as uncertain); it waits for reconciliation.
+it is never resent by --pending (a record with no valid age counts as uncertain); it waits for `hx reconcile`.
 """
 from __future__ import annotations
 
