@@ -18,7 +18,7 @@ The overlay is unchanged, including its existing DeepSeek model line and the lea
 
 Command run before production edits:
 
-`C:/Users/caspe/AppData/Local/Microsoft/WindowsApps/python.exe -m pytest tests/test_doctor.py::test_installed_qwen_repo_deepseek_regression -q -p no:cacheprovider`
+`C:/Users/<user>/AppData/Local/Microsoft/WindowsApps/python.exe -m pytest tests/test_doctor.py::test_installed_qwen_repo_deepseek_regression -q -p no:cacheprovider`
 
 The synthetic installed overlay held `opencode-go/qwen3.7-plus`; the repo overlay held `opencode-go/deepseek-v4.1-flash`, reproducing the exact model values from the brief without accessing the live backup.
 
@@ -30,7 +30,7 @@ E       assert False is True
 
 ## Verification
 
-`C:/Users/caspe/AppData/Local/Microsoft/WindowsApps/python.exe -m pytest tests -q -p no:cacheprovider`
+`C:/Users/<user>/AppData/Local/Microsoft/WindowsApps/python.exe -m pytest tests -q -p no:cacheprovider`
 
 ```text
 647 passed in 50.95s

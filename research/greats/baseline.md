@@ -23,7 +23,7 @@ Scan: `Bash` tool_use command strings for runner invocations; `STATUS:` tokens i
 Evidence: `.hx/devin-review-result.json`, `.hx/devin-review-tests-result.json`, `.hx/devin-tests-result.json` in herdr-orchestration (devin worker: 50 tool calls, 3.7M tokens, 892 s, `ok: true`); routed review-ish tasks `devin-review`, `devin-review-tests`, `devin-tests`.
 
 - Cross-model review is wired and used: routed review tasks ran and produced artifact results; reviews did find real things (the Q-178 dupes above; the greats page rework).
-- But volume is small: ~3 routed review tasks visible vs **334 commits in todo-rpg** over the window (all authored "Casper5253" — workers have no git). Most changes are not independently reviewed before landing.
+- But volume is small: ~3 routed review tasks visible vs **334 commits in todo-rpg** over the window (all authored under the creator's GitHub account — workers have no git). Most changes are not independently reviewed before landing.
 
 ## 4. Delegation — heavy traffic, high routed failure, one cause
 

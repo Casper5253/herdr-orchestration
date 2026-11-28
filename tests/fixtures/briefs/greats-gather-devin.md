@@ -2,11 +2,11 @@
 
 Use poteto-mode, Investigation playbook. Open your report with the goal, the playbook and the principles you applied.
 
-Read C:\Users\caspe\Documents\Projects\herdr-orchestration\docs\greats\PROGRAM.md first: it holds the creator's direction, verbatim. You do phase 1 only, for the people named in the message that sent you here.
+Read C:\Users\<user>\Documents\Projects\herdr-orchestration\docs\greats\PROGRAM.md first: it holds the creator's direction, verbatim. You do phase 1 only, for the people named in the message that sent you here.
 
 ## Rules
 
-- Write only `research/greats/<person-slug>.md` in C:\Users\caspe\Documents\Projects\herdr-orchestration. No git writes, no deletes, no installs. Do not run `gh` or `git clone`: read repos through the web.
+- Write only `research/greats/<person-slug>.md` in C:\Users\<user>\Documents\Projects\herdr-orchestration. No git writes, no deletes, no installs. Do not run `gh` or `git clone`: read repos through the web.
 - Every claim gets a primary-source URL. Never invent a source, quote, repo or file. If something is not public, say so.
 
 ## For each person

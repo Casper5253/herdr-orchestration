@@ -35,6 +35,10 @@ ROOT = Path(__file__).resolve().parents[2]
 PROJECTS = ROOT.parent
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 
+
+def _claude_home_slug() -> str:
+    return str(Path.home()).replace(":", "-").replace("\\", "-").replace("/", "-")
+
 DURABLE_DIR = Path(__file__).resolve().parents[1] / "durable-steps"
 if str(DURABLE_DIR) not in sys.path:
     sys.path.insert(0, str(DURABLE_DIR))
@@ -689,7 +693,7 @@ def options_from_args(args) -> Options:
     routing = [Path(item) for item in args.routing] if args.routing else list(DEFAULT_ROUTING)
     ledger = Path(args.ledger) if args.ledger else DEFAULT_LEDGER
     todo_repo = Path(args.todo_repo) if args.todo_repo else DEFAULT_TODO_REPO
-    default_leads = [CLAUDE_PROJECTS / "C--Users-caspe" / f"{sid}.jsonl" for sid in LEAD_SESSION_IDS]
+    default_leads = [CLAUDE_PROJECTS / _claude_home_slug() / f"{sid}.jsonl" for sid in LEAD_SESSION_IDS]
     lead_sessions = [Path(item) for item in args.lead_session] if args.lead_session else default_leads
     session_paths = sorted(Path(args.sessions_root).rglob("*.jsonl"))
     commit_counter = (lambda repo, start, end: args.commits) if args.commits is not None else None

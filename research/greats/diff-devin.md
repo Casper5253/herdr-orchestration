@@ -70,7 +70,7 @@ Verdict scale: `implemented as they do it` / `weaker` (gap named) / `missing` / 
 
 **Their method.** Karpathy only, no disagreement: Software 2.0 (dataset+weights are the program), the Recipe (become one with the data, end-to-end skeleton, dumb baseline, overfit, regularize, tune), nanoGPT/nanochat (minimal readable loops, one `--depth` dial), llm.c, micrograd, and **autoresearch**: an agent edits one file (`train.py`), runs a fixed-budget experiment (5 min), keeps or discards on `val_bpb`, repeats overnight — `program.md` is the research org.
 
-**Our method, exactly.** Nothing. No shared layer has a training surface or an experiment loop. But the *shape* is general: agent + editable file + fixed-budget run + metric keep/discard + `program.md`. Candidate surfaces exist: `~/Documents/Projects/algo-trading` and `QuantLab` (Projects dir listing) for real experiments, and hx `routing.jsonl` outcomes for policy hill-climbing.
+**Our method, exactly.** Nothing. No shared layer has a training surface or an experiment loop. But the *shape* is general: agent + editable file + fixed-budget run + metric keep/discard + `program.md`. Candidate surfaces exist: `~/Documents/Projects/experiment-one` and `experiment-two` (Projects dir listing) for real experiments, and hx `routing.jsonl` outcomes for policy hill-climbing.
 
 **Verdict: missing** (and partly `does not fit`): no project currently trains a model, so nanoGPT-style training isn't the gap — the autoresearch *loop shape* is. Their approach wins on the transferable part only.
 

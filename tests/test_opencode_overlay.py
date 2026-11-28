@@ -2,10 +2,12 @@
 and must never open a token file.
 
 Creator, 9 Nov: "I have to approve a million things a day for opencode. not very
-autonomous". The matcher below is OpenCode 1.18.27's, as established by the security
-review (`.hx/reports/kx-rev-F.md`): backslashes become slashes on both sides, matching
-is case-insensitive, ``*`` spans separators, and the last matching rule wins. The
-engine asks ``external_directory`` with ``dirname(file)\\*``, never the file.
+autonomous". The matcher below copies OpenCode 1.19.5's behaviour as established by the
+security review (`.hx/reports/kx-rev-F.md`): backslashes become slashes on both
+sides, matching is case-insensitive, ``*`` spans separators, and the last matching
+rule wins. The engine expands only ``~/``, a bare ``~``, ``$HOME/`` and a
+``$HOME`` prefix; a ``~`` before a backslash stays literal. It asks
+``external_directory`` with ``dirname(file)\\*``, never the file.
 """
 import json
 import re
@@ -14,15 +16,24 @@ from pathlib import Path
 from hx import profile as profile_mod
 
 OVERLAY = Path(__file__).resolve().parents[1] / "team" / "opencode-trusted-dev.jsonc"
-HOME = "C:\\Users\\caspe\\"
+HOME = "C:\\Users\\tester\\"
 
 BS = chr(92)
 DEFAULT_READ = {"*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow"}
 
 
 def match(target: str, pattern: str) -> bool:
-    """The engine matcher, copied from the 1.18.27 behaviour."""
+    """The engine matcher, with its fromConfig expansion of home prefixes."""
     target = target.replace(BS, "/")
+    home = HOME.rstrip(BS)
+    if pattern.startswith("~/"):
+        pattern = home + pattern[1:]
+    elif pattern == "~":
+        pattern = home
+    elif pattern == "$HOME":
+        pattern = home
+    elif pattern.startswith("$HOME"):
+        pattern = home + pattern[len("$HOME"):]
     pattern = pattern.replace(BS, "/")
     regex = re.escape(pattern).replace(re.escape("*"), ".*").replace(re.escape("?"), ".")
     tail = re.escape(" ") + ".*"
@@ -122,12 +133,12 @@ def test_bash_cat_of_a_secret_path_is_not_allowed():
         for form in _directory_patterns(directory):
             assert evaluate("external_directory", rules, form) != "allow", form
     for target in (
-        "C:/Users/caspe/.codex/auth.json",
-        "C:/Users/caspe/.codex/config.toml",
-        "C:/Users/caspe/.claude/.credentials.json",
-        "C:/Users/caspe/.config/opencode/opencode.jsonc",
-        "C:/Users/caspe/AppData/Roaming/devin/credentials.toml",
-        "C:/Users/caspe/.ssh/id_ed25519",
+        "C:/Users/tester/.codex/auth.json",
+        "C:/Users/tester/.codex/config.toml",
+        "C:/Users/tester/.claude/.credentials.json",
+        "C:/Users/tester/.config/opencode/opencode.jsonc",
+        "C:/Users/tester/AppData/Roaming/devin/credentials.toml",
+        "C:/Users/tester/.ssh/id_ed25519",
         ".env",
     ):
         assert evaluate("bash", rules, "cat " + target) == "deny", target
@@ -149,13 +160,37 @@ def test_root_env_is_denied_on_read():
     assert evaluate("read", rules, "..\\..\\..\\.agents\\pstack\\TEAM.md") == "allow"
 
 
+def test_tilde_backslash_is_literal_and_home_rules_expand():
+    # OpenCode leaves a "~" followed by a backslash literal, so the overlay
+    # must use a form the engine expands and the evaluator must reach it.
+    target = HOME + ".codex" + BS + "sub" + BS + "file"
+    assert not match(target, "~" + BS + ".codex" + BS + "*")
+    assert match(target, "~/.codex/*")
+    assert match(target, "$HOME" + BS + ".codex" + BS + "*")
+    rules = _overlay()
+    assert evaluate("external_directory", rules, target) == "ask", "the .codex ask rule must match"
+    for block in ("external_directory", "read", "edit"):
+        assert not [key for key in rules[block] if key.startswith("~")], block
+
+
+def test_every_home_rule_matches_a_concrete_target():
+    rules = _overlay()
+    home = HOME.rstrip(BS)
+    for block in ("external_directory", "read", "edit"):
+        for key in rules[block]:
+            if not key.startswith("$HOME"):
+                continue
+            target = home + key[len("$HOME"):].replace("*", "x")
+            assert match(target, key), (block, key)
+
+
 def test_drive_relative_edits_outside_the_repo_are_denied():
     rules = _overlay()
     for target in (
-        "Users/caspe/Kintsugi/a.cs",
-        "Users/caspe/.bashrc",
-        "users/CASPE/Kintsugi/a.cs",
-        "../../../Kintsugi/a.cs",
+        "Users/tester/work-repo/a.cs",
+        "Users/tester/.bashrc",
+        "users/TESTER/work-repo/a.cs",
+        "../../../work-repo/a.cs",
         "..\\..\\..\\.claude\\skills\\x\\SKILL.md",
     ):
         assert evaluate("edit", rules, target) == "deny", target
@@ -165,13 +200,32 @@ def test_drive_relative_edits_outside_the_repo_are_denied():
 def test_overlay_matches_the_one_off_permission_model():
     rules = _overlay()
     external = rules["external_directory"]
+    home = str(Path.home())
+
+    def portable(value: str) -> str:
+        if value == home:
+            return "$HOME"
+        if value.startswith(home + BS) or value.startswith(home + "/"):
+            return "$HOME" + value[len(home):]
+        return value
+
+    def target(value: str) -> str:
+        if value == "$HOME":
+            return HOME.rstrip(BS)
+        if value.startswith("$HOME"):
+            return HOME.rstrip(BS) + value[len("$HOME"):]
+        return value
+
     for root in profile_mod.OPENCODE_READ_ROOTS:
-        assert external.get(root) == "allow", root
-        assert evaluate("external_directory", rules, root) == "allow", root
+        key = portable(root)
+        assert external.get(key) == "allow", key
+        assert evaluate("external_directory", rules, target(key)) == "allow", key
     for directory in profile_mod.OPENCODE_ASK_DIRS:
-        assert external.get(directory) == "ask", directory
+        key = portable(directory)
+        assert external.get(key) == "ask", key
+        assert evaluate("external_directory", rules, target(key)) == "ask", key
     for glob in profile_mod.OPENCODE_SECRET_GLOBS:
-        assert external.get(glob) == "deny", glob
+        assert external.get(portable(glob)) == "deny", glob
     assert rules["bash"] == profile_mod.OPENCODE_TEAM_BASH
 
 
@@ -199,30 +253,30 @@ def test_worker_can_report_to_the_lead_with_hx_say():
 # asks are the review's finding 1: a read of a file directly in `.codex` or
 # `.config\opencode` now asks, because those directories also hold a token.
 MINED_EXTERNAL = {
-    "C:\\Users\\caspe\\.agents\\pstack\\*": 7,
-    "C:\\Users\\caspe\\.agents\\skills\\herdr-team\\*": 1,
-    "C:\\Users\\caspe\\.agents\\skills\\kickoff\\*": 1,
-    "C:\\Users\\caspe\\.claude\\skills\\*": 1,
-    "C:\\Users\\caspe\\.config\\herdr-app\\*": 1,
-    "C:\\Users\\caspe\\.config\\opencode\\node_modules\\*": 1,
-    "C:\\Users\\caspe\\.herdr-team\\state\\hc-bindings\\*": 3,
-    "C:\\Users\\caspe\\.local\\bin\\*": 1,
-    "C:\\Users\\caspe\\AppData\\Local\\Temp\\*": 1,
-    "C:\\Users\\caspe\\AppData\\Local\\Temp\\claude\\6c78b54081e86add\\30c7d0f5-5b60-4da6-9a8d-f77c8958cf05\\scratchpad\\*": 1,
-    "C:\\Users\\caspe\\AppData\\Local\\Temp\\claude\\C--Users-caspe\\6363b92e-c30b-4a81-a5d4-d382a2848927\\scratchpad\\artifact-files\\62569bbb-a8ca-4690-81af-ee10254dd452\\project\\*": 1,
-    "C:\\Users\\caspe\\AppData\\Local\\Temp\\claude\\C--Users-caspe\\6363b92e-c30b-4a81-a5d4-d382a2848927\\scratchpad\\artifact-files\\62569bbb-a8ca-4690-81af-ee10254dd452\\project\\slides\\*": 3,
-    "C:\\Users\\caspe\\AppData\\Local\\herdr-core\\default\\*": 1,
-    "C:\\Users\\caspe\\AppData\\Roaming\\herdr-core\\*": 1,
-    "C:\\Users\\caspe\\Documents\\Notes\\FDE Knowledge\\*": 1,
-    "C:\\Users\\caspe\\Documents\\Projects\\chill-game\\docs\\prompts\\*": 1,
-    "C:\\Users\\caspe\\Kintsugi\\*": 2,
-    "C:\\Users\\caspe\\Kintsugi\\.artifacts\\unity-slice\\*": 1,
-    "C:\\Users\\caspe\\Kintsugi\\.hx\\briefs\\*": 1,
+    "C:\\Users\\tester\\.agents\\pstack\\*": 7,
+    "C:\\Users\\tester\\.agents\\skills\\herdr-team\\*": 1,
+    "C:\\Users\\tester\\.agents\\skills\\kickoff\\*": 1,
+    "C:\\Users\\tester\\.claude\\skills\\*": 1,
+    "C:\\Users\\tester\\.config\\herdr-app\\*": 1,
+    "C:\\Users\\tester\\.config\\opencode\\node_modules\\*": 1,
+    "C:\\Users\\tester\\.herdr-team\\state\\hc-bindings\\*": 3,
+    "C:\\Users\\tester\\.local\\bin\\*": 1,
+    "C:\\Users\\tester\\AppData\\Local\\Temp\\*": 1,
+    "C:\\Users\\tester\\AppData\\Local\\Temp\\claude\\0000000000000000\\30c7d0f5-5b60-4da6-9a8d-f77c8958cf05\\scratchpad\\*": 1,
+    "C:\\Users\\tester\\AppData\\Local\\Temp\\claude\\C--Users-tester\\6363b92e-c30b-4a81-a5d4-d382a2848927\\scratchpad\\artifact-files\\62569bbb-a8ca-4690-81af-ee10254dd452\\project\\*": 1,
+    "C:\\Users\\tester\\AppData\\Local\\Temp\\claude\\C--Users-tester\\6363b92e-c30b-4a81-a5d4-d382a2848927\\scratchpad\\artifact-files\\62569bbb-a8ca-4690-81af-ee10254dd452\\project\\slides\\*": 3,
+    "C:\\Users\\tester\\AppData\\Local\\herdr-core\\default\\*": 1,
+    "C:\\Users\\tester\\AppData\\Roaming\\herdr-core\\*": 1,
+    "C:\\Users\\tester\\Documents\\Notes\\FDE Knowledge\\*": 1,
+    "C:\\Users\\tester\\Documents\\Projects\\sample-app\\docs\\prompts\\*": 1,
+    "C:\\Users\\tester\\work-repo\\*": 2,
+    "C:\\Users\\tester\\work-repo\\.artifacts\\unity-slice\\*": 1,
+    "C:\\Users\\tester\\work-repo\\.hx\\briefs\\*": 1,
     "C:\\plugin\\dist\\*": 1,
 }
 MINED_ASK_ONLY = {
-    "C:\\Users\\caspe\\.codex\\*": 1,
-    "C:\\Users\\caspe\\.config\\opencode\\*": 1,
+    "C:\\Users\\tester\\.codex\\*": 1,
+    "C:\\Users\\tester\\.config\\opencode\\*": 1,
 }
 MINED_BASH = {
     "rg -n \"\\[\\\"\"": "allow",

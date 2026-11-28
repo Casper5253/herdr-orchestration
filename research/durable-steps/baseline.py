@@ -32,6 +32,10 @@ PROJECTS = ROOT.parent
 TODO = PROJECTS / "todo-rpg"
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 
+
+def _claude_home_slug() -> str:
+    return str(Path.home()).replace(":", "-").replace("\\", "-").replace("/", "-")
+
 DEFAULT_OUTBOX = (TODO / ".hx" / "outbox", ROOT / ".hx" / "outbox")
 DEFAULT_BRIEFS = (TODO / ".hx" / "briefs", ROOT / ".hx" / "briefs")
 DEFAULT_REPORTS = (TODO / ".hx" / "reports", ROOT / ".hx" / "reports")
@@ -872,7 +876,7 @@ def options_from_args(args) -> Options:
     until = parse_day(args.until)
     if until <= since:
         raise SystemExit("--until must be after --since")
-    default_leads = [CLAUDE_PROJECTS / "C--Users-caspe" / f"{sid}.jsonl" for sid in LEAD_SESSION_IDS]
+    default_leads = [CLAUDE_PROJECTS / _claude_home_slug() / f"{sid}.jsonl" for sid in LEAD_SESSION_IDS]
     return Options(
         since,
         until,

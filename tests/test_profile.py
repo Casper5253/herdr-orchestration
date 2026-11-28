@@ -48,7 +48,7 @@ def test_implement_allows_checkout_b_refuses_push(tmp_path: Path) -> None:
 
 
 def test_research_refuses_a_write_path(tmp_path: Path) -> None:
-    brief = "Read the repo and write findings to C:\\Users\\caspe\\out\\notes.md."
+    brief = "Read the repo and write findings to C:\\Users\\tester\\out\\notes.md."
     findings = capability.prompt_findings("devin", brief, tmp_path, _policy(), "research")
     assert any(f["kind"] == "outside-cwd" for f in findings)
 
@@ -221,7 +221,7 @@ def _relative(target: str) -> str:
 
 
 def _drive_relative(target: str) -> str:
-    return "Users\\caspe" + target[len(HOME):]
+    return "Users\\" + Path(HOME).name + target[len(HOME):]
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -285,10 +285,10 @@ def test_secret_writes_denied_in_every_mode(mode: str) -> None:
 def test_writes_outside_the_repo_stay_denied(mode: str) -> None:
     permission = _permission(mode)
     for target in (
-        "..\\..\\..\\Kintsugi\\scripts\\build.py",
-        "Users\\caspe\\Kintsugi\\scripts\\build.py",
-        "Users\\caspe\\.bashrc",
-        "users\\CASPE\\Kintsugi\\scripts\\build.py",
+        "..\\..\\..\\work-repo\\scripts\\build.py",
+        f"Users\\{Path(HOME).name}\\work-repo\\scripts\\build.py",
+        f"Users\\{Path(HOME).name}\\.bashrc",
+        f"users\\{Path(HOME).name.upper()}\\work-repo\\scripts\\build.py",
     ):
         assert evaluate("edit", permission, target) == "deny", (mode, target)
     if mode in ("implement", "baseline"):
@@ -319,12 +319,12 @@ def test_unprofiled_baseline_keeps_the_team_bash_boundary() -> None:
     assert evaluate("bash", permission, "hc schema --json") == "allow"
     assert evaluate("bash", permission, "cat .env") == "deny"
     for target in (
-        "C:/Users/caspe/.codex/auth.json",
-        "C:/Users/caspe/.codex/config.toml",
-        "C:/Users/caspe/.claude/.credentials.json",
-        "C:/Users/caspe/.config/opencode/opencode.jsonc",
-        "C:/Users/caspe/AppData/Roaming/devin/credentials.toml",
-        "C:/Users/caspe/.ssh/id_ed25519",
+        HOME.replace("\\", "/") + "/.codex/auth.json",
+        HOME.replace("\\", "/") + "/.codex/config.toml",
+        HOME.replace("\\", "/") + "/.claude/.credentials.json",
+        HOME.replace("\\", "/") + "/.config/opencode/opencode.jsonc",
+        HOME.replace("\\", "/") + "/AppData/Roaming/devin/credentials.toml",
+        HOME.replace("\\", "/") + "/.ssh/id_ed25519",
     ):
         assert evaluate("bash", permission, "cat " + target) == "deny", target
 
@@ -343,16 +343,16 @@ MINED_ALLOW = [
     HOME + "\\.herdr-team\\state\\hc-bindings\\*",
     HOME + "\\.local\\bin\\*",
     HOME + "\\AppData\\Local\\Temp\\*",
-    HOME + "\\AppData\\Local\\Temp\\claude\\C--Users-caspe\\6363b92e-c30b-4a81-a5d4-d382a2848927\\scratchpad\\artifact-files\\62569bbb-a8ca-4690-81af-ee10254dd452\\project\\slides\\*",
+    HOME + "\\AppData\\Local\\Temp\\claude\\C--Users-" + Path(HOME).name + "\\6363b92e-c30b-4a81-a5d4-d382a2848927\\scratchpad\\artifact-files\\62569bbb-a8ca-4690-81af-ee10254dd452\\project\\slides\\*",
     HOME + "\\AppData\\Local\\herdr-core\\default\\*",
     HOME + "\\AppData\\Roaming\\herdr-core\\*",
     HOME + "\\Documents\\Notes\\FDE Knowledge\\*",
 ]
 MINED_CROSS_PROJECT = [
-    HOME + "\\Kintsugi\\*",
-    HOME + "\\Kintsugi\\.hx\\briefs\\*",
-    HOME + "\\Kintsugi\\.artifacts\\unity-slice\\*",
-    HOME + "\\Documents\\Projects\\chill-game\\docs\\prompts\\*",
+    HOME + "\\work-repo\\*",
+    HOME + "\\work-repo\\.hx\\briefs\\*",
+    HOME + "\\work-repo\\.artifacts\\unity-slice\\*",
+    HOME + "\\Documents\\Projects\\sample-app\\docs\\prompts\\*",
     "C:\\plugin\\dist\\*",
 ]
 MINED_SECRET_PARENTS = [

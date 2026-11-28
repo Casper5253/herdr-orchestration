@@ -2,7 +2,7 @@
 
 Use poteto-mode, Investigation playbook. Open your report with the goal, the playbook and the principles you applied.
 
-Read C:\Users\caspe\Documents\Projects\herdr-orchestration\docs\greats\PROGRAM.md first, including the creator's verbatim direction. Their rule: assume nothing is implemented, compare exactly how they do it with exactly how we do it, and prefer their approach unless the evidence shows it does not fit.
+Read C:\Users\<user>\Documents\Projects\herdr-orchestration\docs\greats\PROGRAM.md first, including the creator's verbatim direction. Their rule: assume nothing is implemented, compare exactly how they do it with exactly how we do it, and prefer their approach unless the evidence shows it does not fit.
 
 ## Inputs (all in herdr-orchestration/research/greats/)
 
@@ -10,7 +10,7 @@ Read C:\Users\caspe\Documents\Projects\herdr-orchestration\docs\greats\PROGRAM.m
 - The person files, for the exact mechanisms.
 - baseline.md: our measured behaviour over 14 days. One caveat: its review count only sees routed hx tasks and misses reviews sent through the team panes (hx say, herdr agent prompt), so recount review from the session logs.
 - context-management.md: the measured root causes for rare compaction.
-- Our setup, to read as it actually is: ~/.agents/pstack/ (TEAM.md, sync.py, the skills), ~/.claude/CLAUDE.md, the Codex and OpenCode global instructions, the hx repo (hx/, policy.json, docs/), agentmem (C:\Users\caspe\Documents\Projects\agent-memory or wherever the `mem` CLI lives), and the herdr-team skill.
+- Our setup, to read as it actually is: ~/.agents/pstack/ (TEAM.md, sync.py, the skills), ~/.claude/CLAUDE.md, the Codex and OpenCode global instructions, the hx repo (hx/, policy.json, docs/), agentmem (C:\Users\<user>\Documents\Projects\agent-memory or wherever the `mem` CLI lives), and the herdr-team skill.
 
 ## Rules
 

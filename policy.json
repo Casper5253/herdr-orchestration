@@ -137,10 +137,9 @@
       "no"
     ],
     "creator_names": [
-      "Casper",
       "creator"
     ],
-    "note": "I-132 / Q-1014. One heavy unit runs at a time. A second is allowed when free memory meets free_memory_gb_threshold. At the cap hx next returns light units only. answer_window_days limits suggestions from the creator-answer source. Open items stay suppressed while their latest human activity is an answer that parked the work or that an agent already acted on. Explicit declines are always treated as postponements. Configured postpone_words match the whole chosen key or label. creator_names identifies explicit creator actions at the start of a clause.",
+    "note": "I-132 / Q-1014. One heavy unit runs at a time. A second is allowed when free memory meets free_memory_gb_threshold. At the cap hx next returns light units only. answer_window_days limits suggestions from the creator-answer source. Open items stay suppressed while their latest human activity is an answer that parked the work or that an agent already acted on. Explicit declines are always treated as postponements. Configured postpone_words match the whole chosen key or label. creator_names identifies explicit creator actions at the start of a clause. A real name belongs in the optional local file ~/.hx/creator_names.json (a JSON list), never in this public file.",
     "worker_assignment_rules": {
       "codex": {
         "allow_if_any": [

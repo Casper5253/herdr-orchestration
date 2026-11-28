@@ -2,7 +2,7 @@
 
 Goal. The lead must be able to trust hx say receipts. Followed the poteto-mode Bug fix playbook. Fix Root Causes placed the change at composer interpretation and receipt evidence. Test Behavior, Not Implementation checks delivered receipts, held drafts and emitted submit keys through say. Model the Domain preserved the existing empty, nonempty and unidentified composer states.
 
-Changes are on branch `q572-composer` in `C:/Users/caspe/Documents/Projects/herdr-orchestration-q572`. Main was not edited or committed. No pushes were run.
+Changes are on branch `q572-composer` in `C:/Users/<user>/Documents/Projects/herdr-orchestration-q572`. Main was not edited or committed. No pushes were run.
 
 The OpenCode parser included right-hand screen content in the input region. It now clips at the input box bottom border before reading its rows. The captured home screen also exposed an unrecognized placeholder, now treated as empty.
 

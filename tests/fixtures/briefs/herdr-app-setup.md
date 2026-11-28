@@ -4,12 +4,12 @@ Use poteto-mode, Feature playbook. Open your report with the goal, the playbook 
 
 ## Rules
 
-- Work only inside C:\Users\caspe\Documents\Projects\herdr-orchestration\herdr-app\ (new folder). No git commits, pushes or deletes. Do not write to ~/.config/herdr-app: the lead installs after reviewing.
+- Work only inside C:\Users\<user>\Documents\Projects\herdr-orchestration\herdr-app\ (new folder). No git commits, pushes or deletes. Do not write to ~/.config/herdr-app: the lead installs after reviewing.
 - Never print or copy tokens or credentials.
 
 ## Goal
 
-The creator installed the Herdr desktop app (herdr-app 0.1.13, core CLI hc 0.1.18) and chose, from the research page C:\Users\caspe\Documents\Projects\todo-rpg\.artifacts\q196\herdr-customization.html, "Triage layout + our own usage/context bar". Their original idea: "Include for sure the usage % for all sessions and context %."
+The creator installed the Herdr desktop app (herdr-app 0.1.13, core CLI hc 0.1.18) and chose, from the research page C:\Users\<user>\Documents\Projects\todo-rpg\.artifacts\q196\herdr-customization.html, "Triage layout + our own usage/context bar". Their original idea: "Include for sure the usage % for all sessions and context %."
 
 ## Do
 

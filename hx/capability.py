@@ -386,6 +386,8 @@ def _path_rule_denied(rule: tuple[str, str], path_norm: str, home_norm: str, is_
         return None
     label = f"{'Write' if tool == 'write' else 'Read'}({pattern})"
     pattern = pattern.replace("/", os.sep).replace("\\", os.sep)
+    if pattern == "$HOME" or pattern.startswith("$HOME" + os.sep):
+        pattern = "~" + pattern[len("$HOME"):]
     if pattern.startswith("~"):
         base = _norm(pattern[:-2] if pattern.endswith(os.sep + "**") else pattern.rstrip(os.sep + "*"))
         if _under(path_norm, base):

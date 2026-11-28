@@ -39,7 +39,7 @@ def fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeHc:
     ))
     fake.terminals["t24"]["labels"]["herdr.seen"] = "7"
     fake.terminals["t24"]["foreground"] = {
-        "argv": ["powershell.exe"], "cwd": "C:\\Users\\caspe",
+        "argv": ["powershell.exe"], "cwd": "C:\\Users\\tester",
         "name": "powershell.exe", "pid": 1944,
     }
     monkeypatch.setenv("HC_TERMINAL_ID", "t24")

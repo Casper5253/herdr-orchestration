@@ -37,10 +37,6 @@ prefix_rule(pattern=["git", "stash", ["drop", "clear"]], decision="prompt")
 # pytest still runs through python; hx itself must run through the pinned shim.
 prefix_rule(pattern=["python", "-m", "pytest"], decision="allow")
 prefix_rule(pattern=["hx"], decision="allow")
-# Absolute path to the Personal Finance Dashboard venv, used from worktrees (added 2026-10-16).
-prefix_rule(pattern=[["C:/Users/caspe/Documents/Projects/Personal Finance Dashboard/backend/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\Personal Finance Dashboard\\backend\\.venv\\Scripts\\python.exe", "../../backend/.venv/Scripts/python.exe", "..\\..\\backend\\.venv\\Scripts\\python.exe"]], decision="allow")
-# QuantLab venv, used from the main checkout and from worktrees (added 2026-10-17, owner request).
-prefix_rule(pattern=[["C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe", "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe", "../../quantlab/.venv/Scripts/python.exe", "..\\..\\quantlab\\.venv\\Scripts\\python.exe", "../quantlab/.venv/Scripts/python.exe", "..\\quantlab\\.venv\\Scripts\\python.exe"]], decision="allow")
 # Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request).
 prefix_rule(pattern=[["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "msedge", "msedge.exe"]], decision="allow")
 # Lead compaction by Codex (15 Nov): only these exact commands against the lead terminal t2x.

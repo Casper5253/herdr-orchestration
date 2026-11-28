@@ -572,6 +572,25 @@ def _scan_prose(policy: dict[str, Any], roots: dict[str, Path]) -> list[dict[str
     return findings
 
 
+def _creator_names_check(roots: dict[str, Path]) -> dict[str, Any]:
+    """Whether the optional local creator_names file exists and is well formed."""
+    home = roots.get("home") or Path.home()
+    path = home / ".hx" / "creator_names.json"
+    shape = 'JSON list of strings, for example ["Creator"]'
+    if not path.exists():
+        return {"status": "missing", "path": str(path), "format": shape}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"status": "invalid", "path": str(path), "format": shape, "reason": str(exc)}
+    if not isinstance(value, list) or not all(
+        isinstance(name, str) and name.strip() for name in value
+    ):
+        return {"status": "invalid", "path": str(path), "format": shape,
+                "reason": "not a list of non-empty strings"}
+    return {"status": "ok", "path": str(path), "names": len(value)}
+
+
 def doctor(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None = None) -> dict[str, Any]:
     """The full read-only drift report; never raises on unreadable inputs."""
     if policy is None:
@@ -598,7 +617,8 @@ def doctor(policy: dict[str, Any] | None = None, roots: dict[str, Path] | None =
         for member in members.get("members", {}).values()
     ) or any(f.get("status") == "drift" for f in prose + installed)
     return {"workers": workers, "members": members, "prose": prose,
-            "installed_files": installed, "runtime": runtime_check, "drift": drift}
+            "installed_files": installed, "runtime": runtime_check,
+            "creator_names": _creator_names_check(roots), "drift": drift}
 
 
 def _summary(report: dict[str, Any]) -> str:
@@ -633,6 +653,12 @@ def _summary(report: dict[str, Any]) -> str:
             lines.append(f"drift  {finding['file']}:{finding['line']} {finding['message']}")
         elif finding["status"] == "unknown":
             lines.append(f"unknown {finding['file']} (unreadable)")
+    names = report.get("creator_names") or {}
+    if names.get("status") not in (None, "ok"):
+        lines.append(
+            f"creator names: {names.get('status')} at {names.get('path')} "
+            f"({names.get('format')})"
+        )
     rt = report.get("runtime") or {}
     if rt:
         loaded = (rt.get("loaded_commit") or "unknown")[:12]

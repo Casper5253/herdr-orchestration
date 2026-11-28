@@ -100,11 +100,18 @@ def _expand_glob(entry: str, home: Path | None = None) -> str:
 
 
 def _unexpand(rule: str, home: Path | None = None) -> str:
-    """Fold the current home prefix back to a portable form for comparison."""
+    """Fold the current home prefix back to the portable form OpenCode expands.
+
+    OpenCode 1.19.5 expands only ``~/``, a bare ``~``, ``$HOME/`` and a
+    ``$HOME`` prefix. A ``~`` followed by a backslash stays literal, so home
+    rules render as ``$HOME`` plus the backslash remainder.
+    """
     home = home or _home()
     prefix = _backslash(str(home))
-    if rule.startswith(prefix):
-        return "~" + rule[len(prefix):]
+    if rule == prefix:
+        return "$HOME"
+    if rule.startswith(prefix + "\\") or rule.startswith(prefix + "/"):
+        return "$HOME" + rule[len(prefix):]
     return rule
 
 
@@ -339,15 +346,15 @@ def render_opencode_overlay(manifest: dict[str, Any] | None = None, home: Path |
         "      // Directories that hold a token file: ask before access.",
     ]
     for entry in oc["home_ask_dirs"]:
-        lines.append(kv(_expand_glob(entry, home), "ask"))
+        lines.append(kv(_unexpand(_expand_glob(entry, home), home), "ask"))
     lines.append("      // The directories the team needs, allowed after the parent asks.")
     for entry in oc["home_read_dirs"]:
-        lines.append(kv(_expand_glob(entry, home), "allow"))
+        lines.append(kv(_unexpand(_expand_glob(entry, home), home), "allow"))
     lines += [
         "      // Secret files and keys, denied last so they win. File rules do not gate",
         "      // external_directory, but they are the read/edit boundary.",
     ]
-    secrets = opencode_secret_globs(manifest, home)
+    secrets = [_unexpand(glob, home) for glob in opencode_secret_globs(manifest, home)]
     for glob in secrets:
         lines.append(kv(glob, "deny"))
     lines[-1] = lines[-1].rstrip(",")
@@ -375,13 +382,13 @@ def render_opencode_overlay(manifest: dict[str, Any] | None = None, home: Path |
     ]
     edit_rules: list[str] = []
     for root, tail in zip(oc["skill_roots"], oc["skill_edit_tails"]):
-        edit_rules.append(_expand_glob(root, home))
+        edit_rules.append(_unexpand(_expand_glob(root, home), home))
         edit_rules.append("*" + tail)
     for entry in oc["no_write_dirs_with_relative"]:
-        edit_rules.append(_expand_glob(entry, home))
+        edit_rules.append(_unexpand(_expand_glob(entry, home), home))
         edit_rules.append("*\\" + _backslash(entry) + "\\*")
     for entry in oc["no_write_dirs"]:
-        edit_rules.append(_expand_glob(entry, home))
+        edit_rules.append(_unexpand(_expand_glob(entry, home), home))
     edit_rules += [glob for glob in secrets if not glob.startswith("*")]
     edit_rules += list(oc["overlay_edit_extra_globs"])
     for i, glob in enumerate(edit_rules):

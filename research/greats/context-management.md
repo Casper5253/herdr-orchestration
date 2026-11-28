@@ -1,8 +1,8 @@
 # Context management: mechanisms, measured behavior, and gaps
 
-Goal: explain why smart compaction is rarely seen, then compare the actual mechanisms with the named practitioners and harnesses. Playbook: poteto-mode Investigation with a root-cause mindset. Fix Root Causes separates absent triggers, unavailable telemetry, and guard refusals. Prove It Works requires execution records rather than treating a feature description as acceptance. Guard the Context Window favors bounded evidence summaries over pasted transcripts. This is gather, measurement, and difference analysis only. Sources: `docs/greats/PROGRAM.md:3`, `.hx/briefs/greats-context.md:1`, `C:/Users/caspe/.claude/skills/principle-fix-root-causes/SKILL.md:8`, `C:/Users/caspe/.claude/skills/principle-prove-it-works/SKILL.md:8`, `C:/Users/caspe/.claude/skills/principle-guard-the-context-window/SKILL.md:10`.
+Goal: explain why smart compaction is rarely seen, then compare the actual mechanisms with the named practitioners and harnesses. Playbook: poteto-mode Investigation with a root-cause mindset. Fix Root Causes separates absent triggers, unavailable telemetry, and guard refusals. Prove It Works requires execution records rather than treating a feature description as acceptance. Guard the Context Window favors bounded evidence summaries over pasted transcripts. This is gather, measurement, and difference analysis only. Sources: `docs/greats/PROGRAM.md:3`, `.hx/briefs/greats-context.md:1`, `C:/Users/<user>/.claude/skills/principle-fix-root-causes/SKILL.md:8`, `C:/Users/<user>/.claude/skills/principle-prove-it-works/SKILL.md:8`, `C:/Users/<user>/.claude/skills/principle-guard-the-context-window/SKILL.md:10`.
 
-Throughput checkpoint: n/a, read-only investigation. Investigation and synthesis ran inline under the assignee contract; no delegation, native compaction, clear, configuration change, or live decision command was performed. Source: `.hx/briefs/greats-context.md:7` and `C:/Users/caspe/.codex/skills/herdr-team/SKILL.md:16`.
+Throughput checkpoint: n/a, read-only investigation. Investigation and synthesis ran inline under the assignee contract; no delegation, native compaction, clear, configuration change, or live decision command was performed. Source: `.hx/briefs/greats-context.md:7` and `C:/Users/<user>/.codex/skills/herdr-team/SKILL.md:16`.
 
 ## Finding
 
@@ -14,7 +14,7 @@ The strongest current example is the active DeepSeek session. It reached 967,737
 
 ### pstack / Lauren Tan
 
-The local upstream pin is `180939f9e59cc9512e9330649175763e81fad16f`, dated 2026-11-03. Its source is `cursor/plugins/pstack`; the requested `github.com/poteto` profile was checked, but the implementation source is the plugin repository. Source: `C:/Users/caspe/.agents/pstack/upstream/UPSTREAM:1` and [the pinned plugin](https://github.com/cursor/plugins/tree/180939f9e59cc9512e9330649175763e81fad16f/pstack).
+The local upstream pin is `180939f9e59cc9512e9330649175763e81fad16f`, dated 2026-11-03. Its source is `cursor/plugins/pstack`; the requested `github.com/poteto` profile was checked, but the implementation source is the plugin repository. Source: `C:/Users/<user>/.agents/pstack/upstream/UPSTREAM:1` and [the pinned plugin](https://github.com/cursor/plugins/tree/180939f9e59cc9512e9330649175763e81fad16f/pstack).
 
 The guard principle is a prompt-level rule: bound phases, files and turns, and account for mechanism cost. Poteto-mode additionally says bulk reads belong in subagent contexts, with summaries returned to the main thread. New work normally gets a fresh agent; reuse is reserved for expensive live state. Briefs carry consolidated scope and file pointers. This is context prevention and isolation, not a numeric auto-compaction controller. Neither cited rule supplies a token threshold or a keep/drop algorithm. Sources: [guard principle](https://raw.githubusercontent.com/cursor/plugins/main/pstack/skills/principle-guard-the-context-window/SKILL.md), [pinned poteto-mode, lines 65–92](https://raw.githubusercontent.com/cursor/plugins/180939f9e59cc9512e9330649175763e81fad16f/pstack/skills/poteto-mode/SKILL.md).
 
@@ -69,13 +69,13 @@ His context-engineering skill organizes persistent rules, feature specs, relevan
 | Cooldown / loop guard | Defaults are 20 minutes and two reservations per task; a failed attempt also blocks that task's retry. No explicit overrides for these appear in the inspected context policy. | `hx/context.py:388`; `hx/context.py:461`; `policy.json:175` |
 | Worker execution | Reserve session, validate checkpoint and authored sections, recheck pane/task, send native `/compact`, demand fresh lower usage in the same session, then demand a nonce plus next-action acknowledgement. | `hx/context.py:501`; `hx/context.py:541`; `hx/context.py:579` |
 | Unknown outcome | Preserve a `compact-unknown` lease after a submitted, unverified attempt. Recovery does not erase the no-retry task guard. | `hx/context.py:599`; `hx/context.py:604` |
-| Lead execution | Return instructions for checkpoint, delayed background prompt and turn exit. `hx compact` does not perform this self-compaction. Confirmation separately records the lead guard. | `hx/context.py:397`; `hx/context.py:407`; `C:/Users/caspe/.codex/skills/hx-router/SKILL.md:52` |
+| Lead execution | Return instructions for checkpoint, delayed background prompt and turn exit. `hx compact` does not perform this self-compaction. Confirmation separately records the lead guard. | `hx/context.py:397`; `hx/context.py:407`; `C:/Users/<user>/.codex/skills/hx-router/SKILL.md:52` |
 | Checkpoint fidelity | Completion and later validation compare owned-file status/committed changes and require authored sections. This is stronger than an unchecked prose summary. | `hx/checkpoint.py:466`; `hx/checkpoint.py:518`; `hx/context.py:549` |
 | Hooks | Claude PreCompact supplies guardrails and existing valid checkpoints; SessionStart(compact) restores active task state. These react to compaction; neither creates an early trigger. | `team/claude-settings.json:60`; `hooks/claude_precompact.py:1`; `hooks/claude_session_compact.py:130` |
 
-The documented boundary rule is therefore an instruction to the lead, not an enforced task lifecycle event. `hx-router` explicitly asks for a decision at every boundary, but the completion handler does not make that call. This is the operational gap behind “we have context management” being weaker than “it reliably happens.” Sources: `C:/Users/caspe/.codex/skills/hx-router/SKILL.md:48`; `hx/__main__.py:192`.
+The documented boundary rule is therefore an instruction to the lead, not an enforced task lifecycle event. `hx-router` explicitly asks for a decision at every boundary, but the completion handler does not make that call. This is the operational gap behind “we have context management” being weaker than “it reliably happens.” Sources: `C:/Users/<user>/.codex/skills/hx-router/SKILL.md:48`; `hx/__main__.py:192`.
 
-There is also a structural lead-specific ceiling. The lead always uses the guard task key `lead`; the default two-per-task cap therefore becomes two confirmed self-compactions per provider session, rather than per changing work item. The retained guard for session `2ae4a6ff-a32a-4c42-bde7-0472d1fd1188` already has count two. That session would fail the loop guard on another early decision under this code. This is a code-and-state inference, not an observed refusal in the 13-call project inventory. Sources: `hx/context.py:386`, `hx/context.py:415`, `C:/Users/caspe/.herdr-team/state/compact-guard.json:67`.
+There is also a structural lead-specific ceiling. The lead always uses the guard task key `lead`; the default two-per-task cap therefore becomes two confirmed self-compactions per provider session, rather than per changing work item. The retained guard for session `2ae4a6ff-a32a-4c42-bde7-0472d1fd1188` already has count two. That session would fail the loop guard on another early decision under this code. This is a code-and-state inference, not an observed refusal in the 13-call project inventory. Sources: `hx/context.py:386`, `hx/context.py:415`, `C:/Users/<user>/.herdr-team/state/compact-guard.json:67`.
 
 ### Devin's special case is a verification-order limitation
 
@@ -113,7 +113,7 @@ The 89% Devin example is particularly informative: a pressure warning was visibl
 
 The two refused Codex requests were below the 40% boundary threshold anyway, at roughly 15.8% and 11.6%. Fixing their task selection would not have made compaction due. They demonstrate workflow mismatch, not an unsafe refusal or proof that guards blocked a necessary compaction. The high-pressure Devin samples are the stronger evidence of blocked or uncompleted early recovery. Sources: [^C5363] [^C7542] [^C4906] [^N1131]; `policy.json:176`.
 
-The two `.hx/routing.jsonl` files contain 84 and 35 records respectively. Their kinds are routing decisions, outcomes, ocrun records and older untyped rows; none is a context-decision audit record. That is **not** proof of zero context calls. The controller prints CLI results and updates guard/lease state; it does not append decision events there. Sources: `.hx/routing.jsonl:1`, `.hx/routing.jsonl:84`, `C:/Users/caspe/Documents/Projects/todo-rpg/.hx/routing.jsonl:1`, `C:/Users/caspe/Documents/Projects/todo-rpg/.hx/routing.jsonl:35`, `hx/route.py:978`, `hx/__main__.py:133`, `hx/context.py:422`.
+The two `.hx/routing.jsonl` files contain 84 and 35 records respectively. Their kinds are routing decisions, outcomes, ocrun records and older untyped rows; none is a context-decision audit record. That is **not** proof of zero context calls. The controller prints CLI results and updates guard/lease state; it does not append decision events there. Sources: `.hx/routing.jsonl:1`, `.hx/routing.jsonl:84`, `C:/Users/<user>/Documents/Projects/todo-rpg/.hx/routing.jsonl:1`, `C:/Users/<user>/Documents/Projects/todo-rpg/.hx/routing.jsonl:35`, `hx/route.py:978`, `hx/__main__.py:133`, `hx/context.py:422`.
 
 ### How high each family got, and what actually compacted
 
@@ -128,14 +128,14 @@ The two `.hx/routing.jsonl` files contain 84 and 35 records respectively. Their 
 
 The seven Codex markers are at rollout lines 1178; 873 and 2370; and 1489, 3102, 4463 and 6482. They are completion records, not recall-quality evaluations. Source paths: [^Kcompact1] [^Kcompact2] [^Kcompact3].
 
-At the fresh 05:04:42 UTC status snapshot, the lead had 272,431 current input/cache tokens. The native display said 27%, while hx's 400K denominator makes that 68.1%, already above its 60% threshold. This discrepancy explains why the visible native percentage can look comfortable while hx policy would prefer a boundary. It does not prove a decision ran at that time. Sources: `C:/Users/caspe/.herdr-team/state/claude-status-6363b92e-c30b-4a81-a5d4-d382a2848927.json:3`, `hx/context.py:246`, `policy.json:165`.
+At the fresh 05:04:42 UTC status snapshot, the lead had 272,431 current input/cache tokens. The native display said 27%, while hx's 400K denominator makes that 68.1%, already above its 60% threshold. This discrepancy explains why the visible native percentage can look comfortable while hx policy would prefer a boundary. It does not prove a decision ran at that time. Sources: `C:/Users/<user>/.herdr-team/state/claude-status-6363b92e-c30b-4a81-a5d4-d382a2848927.json:3`, `hx/context.py:246`, `policy.json:165`.
 
-The shared guard snapshot has seven session entries and 11 recorded reservation/confirmation counts; its newest `last_at` is 2026-10-24. This is retained state, not a complete invocation log or a count of successful compactions. A guard can record a failed attempt, and the lead confirmation path differs from worker execution. Sources: `C:/Users/caspe/.herdr-team/state/compact-guard.json:1`, `hx/context.py:407`, `hx/context.py:529`, `hx/context.py:485`.
+The shared guard snapshot has seven session entries and 11 recorded reservation/confirmation counts; its newest `last_at` is 2026-10-24. This is retained state, not a complete invocation log or a count of successful compactions. A guard can record a failed attempt, and the lead confirmation path differs from worker execution. Sources: `C:/Users/<user>/.herdr-team/state/compact-guard.json:1`, `hx/context.py:407`, `hx/context.py:529`, `hx/context.py:485`.
 
 ### What the record cannot establish
 
 - A machine-wide exact decision frequency cannot be reconstructed from the routing files, because context decisions are not logged there and some historical output was deliberately truncated. The 13/2 inventory is an observed project-session count, not an all-time total. Sources: routing discussion and transcript inventory above; `hx/__main__.py:133`.
-- The 144 currently closed tasks in the two ledgers are not a valid denominator for those calls: ledger history and retained transcript scope differ. No boundary-coverage percentage is claimed. Sources: `.hx/ledger.json:1`; `C:/Users/caspe/Documents/Projects/todo-rpg/.hx/ledger.json:1` and the scoped inventory above.
+- The 144 currently closed tasks in the two ledgers are not a valid denominator for those calls: ledger history and retained transcript scope differ. No boundary-coverage percentage is claimed. Sources: `.hx/ledger.json:1`; `C:/Users/<user>/Documents/Projects/todo-rpg/.hx/ledger.json:1` and the scoped inventory above.
 - The current `.hx` Devin exports expose cumulative token totals, not enough instantaneous context telemetry to infer a peak. Earlier footer samples provide the measured pressure evidence instead. Source: `.hx/runs/hx-20261108-044545/export.json:3350`; [^N1767].
 - A small post-compaction token count does not prove the correct constraints or next action survived. The native markers above have not undergone the hx nonce/next-action acceptance test in this audit. Source: `hx/context.py:592` compared with the native event fields cited above.
 
@@ -148,12 +148,12 @@ The shared guard snapshot has seven session entries and 11 recorded reservation/
 | Pocock's ticket boundary and fresh explicit handoff; pstack's fresh-agent default. | Persistent panes accumulate multiple briefs; task prerequisites can be absent, unfinished or mismatched. | **Weaker boundary discipline.** Those exact guard outcomes appear in the inventory. [^C4906] [^C5363] [^C7542]; Pocock and pstack sources above. |
 | Addy's deliberate keep/drop choices and protection of current task state. | Authored checkpoint sections plus a verified next-action acknowledgement. | **Substantially implemented at the worker protocol level**, but not reached in the two observed attempts. `hx/context.py:549`, `hx/context.py:592`; [^C5363] [^C7542]. |
 | Native completion events and post-compaction state. | Shared guards hold some outcome state; CLI decisions have no append-only context audit stream. | **Missing operational visibility.** Call coverage, refusals and before/after effects cannot be calculated from `.hx/routing.jsonl`. `hx/context.py:485`, `hx/route.py:978`. |
-| Claude reloads instructions/memory and can isolate bulk reads. | Claude hooks restore active task checkpoints; installed pstack also directs context isolation. | **Mechanisms present, effectiveness unmeasured.** This audit does not claim that all startup material is bounded or every hook restored the right project. `hooks/claude_session_compact.py:130`; `C:/Users/caspe/.claude/skills/poteto-mode/SKILL.md:74`; official Claude sources above. |
+| Claude reloads instructions/memory and can isolate bulk reads. | Claude hooks restore active task checkpoints; installed pstack also directs context isolation. | **Mechanisms present, effectiveness unmeasured.** This audit does not claim that all startup material is bounded or every hook restored the right project. `hooks/claude_session_compact.py:130`; `C:/Users/<user>/.claude/skills/poteto-mode/SKILL.md:74`; official Claude sources above. |
 | A provider-aware verifier accepts the real completion sequence. | Devin drops the footer before hx's verification stage. | **Provider mismatch.** Preserve verification, but adapt its ordering before enabling native Devin compaction. `docs/audit/devin.md:65`; `hx/context.py:579`. |
 
 ### Top three gaps, ranked
 
-1. **No enforced early decision loop, with no durable coverage record.** Boundary checking is an instruction in a skill; ordinary dispatch merely warns. Make each eligible boundary produce a persisted decision and ensure that a high-pressure refusal leads to a recorded checkpoint/repair/defer action, rather than simply another brief. This is a proposed shared-layer change, not implemented work. Evidence: `C:/Users/caspe/.codex/skills/hx-router/SKILL.md:48`, `hx/__main__.py:192`, `hx/say.py:37`, [^N1767].
+1. **No enforced early decision loop, with no durable coverage record.** Boundary checking is an instruction in a skill; ordinary dispatch merely warns. Make each eligible boundary produce a persisted decision and ensure that a high-pressure refusal leads to a recorded checkpoint/repair/defer action, rather than simply another brief. This is a proposed shared-layer change, not implemented work. Evidence: `C:/Users/<user>/.codex/skills/hx-router/SKILL.md:48`, `hx/__main__.py:192`, `hx/say.py:37`, [^N1767].
 2. **Telemetry does not cover the selected model or expose the same budget as the UI.** Resolve native and effective limits explicitly for every dispatched model, fail visibly on an unmapped model, and show the denominator with the percentage. DeepSeek's missing entry is a concrete fault; the 27%-versus-68% lead snapshot is a separate presentation mismatch. Evidence: `policy.json:117`, `policy.json:164`, `hx/context.py:217`, `hx/context.py:258`, fresh status snapshot above.
 3. **Recovery prerequisites and provider verification are not carried through the normal workflow.** Stale or missing task ownership blocks otherwise useful recovery, and Devin's telemetry ordering requires a different acceptance sequence. Keep the safety guards; do not bypass worktree checks or enable an unverified command merely to make compaction visible. Evidence: [^C4906] [^C5363] [^C7542] [^D346]; `docs/audit/devin.md:69`; `hx/context.py:340`.
 
@@ -161,11 +161,11 @@ The evidence does **not** support “no one ever calls it” or “all compactio
 
 ## Appendix A. Read-only OpenCode row snapshot
 
-Captured on 2026-11-08 around 05:00–05:04 UTC from `C:/Users/caspe/.local/share/opencode/opencode.db`, opened with SQLite URI `mode=ro`. SQLite has no text line numbers, so record keys and the actual query are provided instead of inventing line references. This block is the measurement evidence for the corresponding rows above. The schema and hx's own accounting query are corroborated by `hx/context.py:209`.
+Captured on 2026-11-08 around 05:00–05:04 UTC from `C:/Users/<user>/.local/share/opencode/opencode.db`, opened with SQLite URI `mode=ro`. SQLite has no text line numbers, so record keys and the actual query are provided instead of inventing line references. This block is the measurement evidence for the corresponding rows above. The schema and hx's own accounting query are corroborated by `hx/context.py:209`.
 
 ```text
 session.id = ses_e470971bbffecwoJ3hRwT9Ii51
-session.directory = C:/Users/caspe/Documents/Projects
+session.directory = C:/Users/<user>/Documents/Projects
 session.version = 1.18.27
 peak message.id = msg_1b981089c001uXmy7VD8PoAWrk
 peak input + cache.read = 967737
@@ -178,7 +178,7 @@ first ordinary nonzero-input message after = msg_1b981da0e001sm1Y2KyUCg4kAw
 first ordinary post-compaction input + cache.read = 41893
 
 older session.id = ses_ebdc0e37bffe2HRdUnfnfQ8GiW
-directory = C:/Users/caspe/Documents/Projects/herdr-orchestration
+directory = C:/Users/<user>/Documents/Projects/herdr-orchestration
 GLM peak message.id = msg_142b1a090001DX7L5Lk16ol3JW; input + cache.read = 310130
 Kimi peak message.id = msg_1425d895a001FuV1yDxjKBFkWp; input + cache.read = 230102
 auto compaction part.id = prt_1425dde750018tSkx3fGZpKmXs
@@ -205,7 +205,7 @@ None
  'utilisation': None, 'sampled_at': '2026-11-08T05:12:11.834000+00:00'}
 ```
 
-The fresh Claude status observation is preserved here because the status file is overwritten in place. Source: `C:/Users/caspe/.herdr-team/state/claude-status-6363b92e-c30b-4a81-a5d4-d382a2848927.json:3`, read at the timestamp shown.
+The fresh Claude status observation is preserved here because the status file is overwritten in place. Source: `C:/Users/<user>/.herdr-team/state/claude-status-6363b92e-c30b-4a81-a5d4-d382a2848927.json:3`, read at the timestamp shown.
 
 ```text
 timestamp = 2026-11-08T05:04:42.883861+00:00
@@ -227,29 +227,29 @@ SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER B
 
 These transcripts were read for structured tool calls, result metadata, usage and compaction boundaries. No credential files or private financial records were needed. Home-root Claude sessions span work beyond one repository; only the explicitly identified project command sites enter the 13/2 inventory. Source scope is therefore narrower than all calls ever issued by these panes. Sources: transcript locations below and `hx/paths.py:21`.
 
-[^C6363]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:2502` through the cited command/result sites.
-[^C9633]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1130` through the cited command/result sites.
-[^Cb695]: `C:/Users/caspe/.claude/projects/C--Users-caspe/b695d635-94c5-45b5-8306-15c85ee22c6f.jsonl:700`.
-[^Cdab6]: `C:/Users/caspe/.claude/projects/C--Users-caspe/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:133` and later cited sites.
-[^B701]: `C:/Users/caspe/.claude/projects/C--Users-caspe/b695d635-94c5-45b5-8306-15c85ee22c6f.jsonl:701`.
-[^D134]: `C:/Users/caspe/.claude/projects/C--Users-caspe/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:134`.
-[^D346]: `C:/Users/caspe/.claude/projects/C--Users-caspe/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:346`.
-[^D388]: `C:/Users/caspe/.claude/projects/C--Users-caspe/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:388`.
-[^N1131]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1131`.
-[^N1665]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1665`.
-[^N1767]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1767`.
-[^N1986]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1986`.
-[^N2091]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:2091`.
-[^C2503]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:2503`.
-[^C4906]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:4906`.
-[^C8003]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:8003`.
-[^C5363]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:5363`.
-[^C7542]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:7542`.
-[^C4627]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:4611` and `:4627`.
-[^C9577]: `C:/Users/caspe/.claude/projects/C--Users-caspe/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:9577`.
-[^N2791]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:2791`.
-[^N6009]: `C:/Users/caspe/.claude/projects/C--Users-caspe/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:6009`.
-[^Kpeak]: `C:/Users/caspe/.codex/sessions/2026/11/05/rollout-2026-11-05T16-56-26-01a1aaec-762e-7cb0-9f3c-f1b86569c98a.jsonl:4461`.
-[^Kcompact1]: `C:/Users/caspe/.codex/sessions/2026/11/01/rollout-2026-11-01T14-13-39-01a195bd-fe28-7330-8a69-894523de635a.jsonl:1178`.
-[^Kcompact2]: `C:/Users/caspe/.codex/sessions/2026/11/02/rollout-2026-11-02T14-21-47-01a19aeb-ce1f-7332-b65b-78ada3ec06e1.jsonl:873` and `:2370`.
-[^Kcompact3]: `C:/Users/caspe/.codex/sessions/2026/11/05/rollout-2026-11-05T16-56-26-01a1aaec-762e-7cb0-9f3c-f1b86569c98a.jsonl:1489`, `:3102`, `:4463`, `:6482`.
+[^C6363]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:2502` through the cited command/result sites.
+[^C9633]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1130` through the cited command/result sites.
+[^Cb695]: `C:/Users/<user>/.claude/projects/C--Users-<user>/b695d635-94c5-45b5-8306-15c85ee22c6f.jsonl:700`.
+[^Cdab6]: `C:/Users/<user>/.claude/projects/C--Users-<user>/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:133` and later cited sites.
+[^B701]: `C:/Users/<user>/.claude/projects/C--Users-<user>/b695d635-94c5-45b5-8306-15c85ee22c6f.jsonl:701`.
+[^D134]: `C:/Users/<user>/.claude/projects/C--Users-<user>/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:134`.
+[^D346]: `C:/Users/<user>/.claude/projects/C--Users-<user>/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:346`.
+[^D388]: `C:/Users/<user>/.claude/projects/C--Users-<user>/dab6c5ce-9924-482a-9bcc-77d010b3131c.jsonl:388`.
+[^N1131]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1131`.
+[^N1665]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1665`.
+[^N1767]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1767`.
+[^N1986]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:1986`.
+[^N2091]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:2091`.
+[^C2503]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:2503`.
+[^C4906]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:4906`.
+[^C8003]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:8003`.
+[^C5363]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:5363`.
+[^C7542]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:7542`.
+[^C4627]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:4611` and `:4627`.
+[^C9577]: `C:/Users/<user>/.claude/projects/C--Users-<user>/6363b92e-c30b-4a81-a5d4-d382a2848927.jsonl:9577`.
+[^N2791]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:2791`.
+[^N6009]: `C:/Users/<user>/.claude/projects/C--Users-<user>/9633d81c-2b0a-4528-bbf7-753635f6f109.jsonl:6009`.
+[^Kpeak]: `C:/Users/<user>/.codex/sessions/2026/11/05/rollout-2026-11-05T16-56-26-01a1aaec-762e-7cb0-9f3c-f1b86569c98a.jsonl:4461`.
+[^Kcompact1]: `C:/Users/<user>/.codex/sessions/2026/11/01/rollout-2026-11-01T14-13-39-01a195bd-fe28-7330-8a69-894523de635a.jsonl:1178`.
+[^Kcompact2]: `C:/Users/<user>/.codex/sessions/2026/11/02/rollout-2026-11-02T14-21-47-01a19aeb-ce1f-7332-b65b-78ada3ec06e1.jsonl:873` and `:2370`.
+[^Kcompact3]: `C:/Users/<user>/.codex/sessions/2026/11/05/rollout-2026-11-05T16-56-26-01a1aaec-762e-7cb0-9f3c-f1b86569c98a.jsonl:1489`, `:3102`, `:4463`, `:6482`.

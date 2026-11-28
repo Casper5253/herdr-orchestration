@@ -10,7 +10,7 @@ Tags describe the evidence, not a guarantee for another installation or account.
 
 ## Installation and available models
 
-- **measured** `codex --version` returned `codex-cli 0.162.1`. `Get-Command codex` resolved to `C:\Users\caspe\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe`.
+- **measured** `codex --version` returned `codex-cli 0.162.1`. `Get-Command codex` resolved to `C:\Users\<user>\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe`.
 - **measured** Help/version commands completed despite warnings about access denied while cleaning stale arg0 directories and creating PATH aliases under `~/.codex/tmp/arg0`. This audit made no PATH or installation changes.
 - **measured** `~/.codex/models_cache.json` reported `client_version = 0.162.1` and `fetched_at = 2026-10-16T01:06:06.107733900Z`. Its model records contained the following IDs and reasoning levels.
 
@@ -63,7 +63,7 @@ Tags describe the evidence, not a guarantee for another installation or account.
 
 - **documented** `/status` displays the chat ID, context usage, and rate limits. `/usage daily`, `/usage weekly`, and `/usage cumulative` display account token activity. [Developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
 - **documented** App-server offers `account/rateLimits/read` and `account/rateLimits/updated`. `usedPercent` describes window usage, `windowDurationMins` describes window length, and `resetsAt` is Unix seconds. `rateLimitsByLimitId`, when present, supplies multiple buckets. [Codex app-server](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
-- **measured** This project's current log exists at `C:\Users\caspe\.codex\sessions\2026\10\16\rollout-2026-10-16T09-06-12-01a1423e-c361-7641-b58e-c4b9cb1760ee.jsonl`. Its `session_meta` records this repository as `cwd`, `cli_version = 0.162.1`, `originator = codex-tui`, and `source = cli`.
+- **measured** This project's current log exists at `C:\Users\<user>\.codex\sessions\2026\10\16\rollout-2026-10-16T09-06-12-01a1423e-c361-7641-b58e-c4b9cb1760ee.jsonl`. Its `session_meta` records this repository as `cwd`, `cli_version = 0.162.1`, `originator = codex-tui`, and `source = cli`.
 - **measured** At the 01:07:09.454Z sample, the log contained an `event_msg` whose `payload.type` was `token_count`. `payload.info` contained `total_token_usage`, `last_token_usage`, and `model_context_window`. Both usage objects contained input, cached input, cache-write input, output, reasoning output, and total token fields.
 - **measured** The same event contained `payload.rate_limits`, including `limit_id`, `primary`, `secondary`, `credits`, `plan_type`, and `rate_limit_reached_type`. The primary window reported `used_percent = 1.0`, `window_minutes = 300`, and `resets_at = 1792130450`. The secondary window reported `used_percent = 0.0`, `window_minutes = 10080`, and `resets_at = 1792717250`. These are timestamped observations, not current remaining quota promises.
 - **measured** This inspected log had nested `rate_limits` inside `token_count` events. No separate `event_msg` with `payload.type = rate_limits` was observed. Separate `token_usage_record` top-level records were also present.
@@ -85,7 +85,7 @@ Tags describe the evidence, not a guarantee for another installation or account.
 ## Herdr rule compatibility
 
 - **measured** `HERDR_PANE_ID = w7:p2`. `herdr agent get hx-codex` identifies that pane as `hx-codex` in this repository.
-- **measured** `C:\Users\caspe\.codex\rules\herdr-team.rules` explicitly allows the plain prefix `herdr agent prompt` for `dev-claude`, `dev-opencode`, `hx-claude`, and `hx-opencode`. No rule in that file blocks a plain prompt to either hx teammate.
+- **measured** `C:\Users\<user>\.codex\rules\herdr-team.rules` explicitly allows the plain prefix `herdr agent prompt` for `dev-claude`, `dev-opencode`, `hx-claude`, and `hx-opencode`. No rule in that file blocks a plain prompt to either hx teammate.
 
 ```python
 prefix_rule(pattern=["herdr", "agent", "prompt", ["dev-claude", "dev-opencode", "hx-claude", "hx-opencode"]], decision="allow")

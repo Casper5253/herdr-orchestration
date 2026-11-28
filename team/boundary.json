@@ -383,36 +383,6 @@
       },
       {
         "comments": [
-          "# Absolute path to the Personal Finance Dashboard venv, used from worktrees (added 2026-10-16)."
-        ],
-        "decision": "allow",
-        "pattern": [
-          [
-            "C:/Users/caspe/Documents/Projects/Personal Finance Dashboard/backend/.venv/Scripts/python.exe",
-            "C:\\Users\\caspe\\Documents\\Projects\\Personal Finance Dashboard\\backend\\.venv\\Scripts\\python.exe",
-            "../../backend/.venv/Scripts/python.exe",
-            "..\\..\\backend\\.venv\\Scripts\\python.exe"
-          ]
-        ]
-      },
-      {
-        "comments": [
-          "# QuantLab venv, used from the main checkout and from worktrees (added 2026-10-17, owner request)."
-        ],
-        "decision": "allow",
-        "pattern": [
-          [
-            "C:/Users/caspe/Documents/Projects/QuantLab/quantlab/.venv/Scripts/python.exe",
-            "C:\\Users\\caspe\\Documents\\Projects\\QuantLab\\quantlab\\.venv\\Scripts\\python.exe",
-            "../../quantlab/.venv/Scripts/python.exe",
-            "..\\..\\quantlab\\.venv\\Scripts\\python.exe",
-            "../quantlab/.venv/Scripts/python.exe",
-            "..\\quantlab\\.venv\\Scripts\\python.exe"
-          ]
-        ]
-      },
-      {
-        "comments": [
           "# Installed Edge, for headless render checks and screenshots (added 2026-10-17, owner request)."
         ],
         "decision": "allow",

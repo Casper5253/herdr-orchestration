@@ -97,6 +97,28 @@ def test_ok(tmp_path: Path) -> None:
     assert report["drift"] is False
 
 
+def test_creator_names_missing_file_is_reported(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    roots["home"] = tmp_path
+    report = doctor.doctor(_policy(), roots)
+    names = report["creator_names"]
+    assert names["status"] == "missing"
+    assert names["path"] == str(tmp_path / ".hx" / "creator_names.json")
+    assert "JSON list of strings" in names["format"]
+    assert report["drift"] is False
+
+
+def test_creator_names_local_file_is_read_and_validated(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    roots["home"] = tmp_path
+    path = tmp_path / ".hx" / "creator_names.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('["Mira"]', encoding="utf-8")
+    assert doctor.doctor(_policy(), roots)["creator_names"]["status"] == "ok"
+    path.write_text('{"name": "Mira"}', encoding="utf-8")
+    assert doctor.doctor(_policy(), roots)["creator_names"]["status"] == "invalid"
+
+
 def test_drift_model_and_missing_skills(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     roots["overlay"].write_text('{"model": "opencode-go/qwen3.7-plus"}\n', encoding="utf-8")

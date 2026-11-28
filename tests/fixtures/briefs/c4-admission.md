@@ -4,7 +4,7 @@ Use poteto-mode, Feature playbook. Open your report with the goal, the playbook 
 
 ## Workspace and rules
 
-- Worktree: C:\Users\caspe\Documents\Projects\herdr-orchestration-worktrees\devin-hx, branch feat/c4-admission (already checked out). No git writes, no deletes. Do not run gh or git clone.
+- Worktree: C:\Users\<user>\Documents\Projects\herdr-orchestration-worktrees\devin-hx, branch feat/c4-admission (already checked out). No git writes, no deletes. Do not run gh or git clone.
 - Don't change hx/context.py, hx/compact.py or hx/say.py: Codex is changing the context lifecycle (C1) in parallel.
 
 ## Goal

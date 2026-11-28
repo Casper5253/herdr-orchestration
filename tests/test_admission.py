@@ -220,7 +220,7 @@ def test_clean_brief_has_no_findings(tmp_path: Path) -> None:
 
 
 def test_codex_refuses_write_outside_workspace(tmp_path: Path) -> None:
-    brief = "write the mod into C:\\Users\\caspe\\.config\\herdr-app\\mods\\x"
+    brief = "write the mod into C:\\Users\\tester\\.config\\herdr-app\\mods\\x"
     findings = capability.prompt_findings("codex", brief, tmp_path)
     assert any(f["kind"] == "outside-cwd" for f in findings)
     inside = f"write the file to {tmp_path}\\out\\x.txt"
@@ -334,7 +334,7 @@ def test_implement_write_scope_is_cwd_not_anywhere(tmp_path: Path) -> None:
 
     policy = _json.loads(Path("policy.json").read_text(encoding="utf-8"))
     outside = capability.prompt_findings(
-        "devin", "write the output to C:\\Users\\caspe\\outside\\x.md", tmp_path, policy, "implement"
+        "devin", "write the output to C:\\Users\\tester\\outside\\x.md", tmp_path, policy, "implement"
     )
     assert any(f["kind"] == "outside-cwd" for f in outside)
     inside = capability.prompt_findings(

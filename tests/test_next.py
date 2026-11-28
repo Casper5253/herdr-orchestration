@@ -409,14 +409,14 @@ def test_declining_answer_is_suppressed(tmp_path: Path, key: str, label: str) ->
 def test_open_item_title_filters_explicit_creator_actions(tmp_path: Path) -> None:
     data = _data()
     titles = {
-        "Q-26": "Independent review and two-model comparison; Casper edits",
+        "Q-26": "Independent review and two-model comparison; Creator edits",
         "Q-27": "Creator decides the release date",
-        "Q-28": "Compare what Casper edits in each draft",
+        "Q-28": "Compare what Creator edits in each draft",
         "Q-29": "Review the Creator checks table",
     }
     for ref, title in titles.items():
         data["items"][ref] = {"ref": ref, "title": title, "status": "todo"}
-    policy = {"next": {**POLICY["next"], "creator_names": ["Casper", "creator"]}}
+    policy = {"next": {**POLICY["next"], "creator_names": ["Creator", "creator"]}}
     sources = next_mod.Sources(
         FakeJotarium(data), FakeLedger(tmp_path, []), policy=policy, now=NOW,
     )
@@ -843,3 +843,20 @@ def test_childless_project_stays_eligible(tmp_path: Path) -> None:
     }
     refs = {unit["ref"] for unit in _sources_from(data, tmp_path).open_items()}
     assert "P-3" in refs
+
+
+def test_local_creator_name_override(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(next_mod.Path, "home", lambda: tmp_path)
+    (tmp_path / ".hx").mkdir()
+    (tmp_path / ".hx" / "creator_names.json").write_text('["Mira"]', encoding="utf-8")
+    assert next_mod._local_creator_names() == ["Mira"]
+
+
+def test_local_creator_name_filters_open_items(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(next_mod.Path, "home", lambda: tmp_path)
+    (tmp_path / ".hx").mkdir()
+    (tmp_path / ".hx" / "creator_names.json").write_text('["Mira"]', encoding="utf-8")
+    data = _data()
+    data["items"]["Q-30"] = {"ref": "Q-30", "title": "Mira edits the draft", "status": "todo"}
+    sources = next_mod.Sources(FakeJotarium(data), FakeLedger(tmp_path, []), policy=POLICY, now=NOW)
+    assert "Q-30" not in {unit["ref"] for unit in sources.open_items()}

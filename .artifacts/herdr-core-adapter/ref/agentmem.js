@@ -9,8 +9,8 @@
 
 import { spawn } from "node:child_process";
 
-const PYTHON = "C:/Users/caspe/AppData/Local/Microsoft/WindowsApps/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/python.exe";
-const RUNNER = "C:/Users/caspe/.agents/memory/app/run.py";
+const PYTHON = "C:/Users/<user>/AppData/Local/Microsoft/WindowsApps/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/python.exe";
+const RUNNER = "C:/Users/<user>/.agents/memory/app/run.py";
 const TRANSFORM = "experimental.chat.system.transform";
 const START_TIMEOUT_MS = 15000;
 const childSessions = new Set();

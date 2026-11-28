@@ -21,13 +21,19 @@ from collections import defaultdict
 from pathlib import Path
 
 HOME = Path.home()
-CLAUDE = HOME / ".claude/projects/C--Users-caspe/19bea786-d5c8-4351-8086-29c396ac0796.jsonl"
+
+
+def _claude_slug(path: Path) -> str:
+    """Claude's project-folder name for a home path, e.g. C--Users-name."""
+    return str(path).replace(":", "-").replace("\\", "-").replace("/", "-")
+
+
+CLAUDE = HOME / ".claude" / "projects" / _claude_slug(HOME) / "19bea786-d5c8-4351-8086-29c396ac0796.jsonl"
 DEVIN = HOME / ".herdr-team/state/dev-devin"
 OPENCODE_DB = HOME / ".local/share/opencode/opencode.db"
 CODEX = HOME / ".codex/sessions"
 HX_RUNS = [
-    Path(r"C:\Users\caspe\Documents\Projects\todo-rpg\.hx\runs"),
-    Path(r"C:\Users\caspe\Documents\Projects\fde-portfolio-wealthops\wops-q799\.hx\runs"),
+    HOME / "Documents" / "Projects" / "todo-rpg" / ".hx" / "runs",
 ]
 SECRET = re.compile(
     r"(?i)(token|api[_-]?key|secret|password)\s*[:=]\s*\S+|sk-[A-Za-z0-9_-]{8,}")
@@ -39,11 +45,9 @@ def safe_command(text: str) -> str:
 
 
 REPO_HINTS = [
-    r"C:\Users\caspe\Documents\Projects\todo-rpg",
-    r"C:\Users\caspe\Documents\Projects\todo-rpg-worktrees",
-    r"C:\Users\caspe\Documents\Projects\fde-portfolio-wealthops",
-    r"C:\Users\caspe\Documents\Projects\herdr-orchestration-stall",
-    r"C:\Users\caspe\Documents\Projects\book-circle",
+    str(HOME / "Documents" / "Projects" / "todo-rpg"),
+    str(HOME / "Documents" / "Projects" / "todo-rpg-worktrees"),
+    str(HOME / "Documents" / "Projects" / "herdr-orchestration-stall"),
 ]
 
 SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")

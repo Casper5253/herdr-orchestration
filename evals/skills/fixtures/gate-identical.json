@@ -3,8 +3,8 @@
   "harness": "evals/skills/run.py",
   "model": "opencode-go/deepseek-v4.1-flash",
   "repeat": 3,
-  "before": "C:\\Users\\caspe\\.claude\\skills",
-  "after": "C:\\Users\\caspe\\.claude\\skills",
+  "before": "C:\\Users\\<user>\\.claude\\skills",
+  "after": "C:\\Users\\<user>\\.claude\\skills",
   "results": [
     {
       "skill": "poteto-mode",

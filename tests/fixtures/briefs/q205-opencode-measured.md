@@ -4,7 +4,7 @@ Use poteto-mode, Feature playbook. Open your report with the goal, the playbook 
 
 ## Rules
 
-- Repo: C:\Users\caspe\Documents\Projects\herdr-orchestration, on a new branch `git checkout -b fix/usage-context` (untracked files may stay). No commits or pushes; the lead owns git.
+- Repo: C:\Users\<user>\Documents\Projects\herdr-orchestration, on a new branch `git checkout -b fix/usage-context` (untracked files may stay). No commits or pushes; the lead owns git.
 - Never print, log, copy or store a token or credential. Read OpenCode's stored login only in memory, and only to call OpenCode's own servers.
 
 ## 1. The DeepSeek context limit (from your own finding)

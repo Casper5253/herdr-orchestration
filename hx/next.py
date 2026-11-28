@@ -403,6 +403,17 @@ def _phrase_set(words: list[Any]) -> set[str]:
     }
 
 
+def _local_creator_names() -> list[str]:
+    """Optional real names from ~/.hx/creator_names.json, kept out of this public file."""
+    try:
+        value = json.loads((Path.home() / ".hx" / "creator_names.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [name for name in value if isinstance(name, str) and name.strip()]
+
+
 def _chosen_option(
     activity: dict[str, Any], item: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -591,7 +602,7 @@ class Sources:
         self._siblings: dict[str, list[dict[str, Any]]] = {}
         config = self.policy.get("next") or {}
         self._postpone_words = config.get("postpone_words") or []
-        names = _phrase_set(config.get("creator_names") or []) | {"creator"}
+        names = _phrase_set([*(config.get("creator_names") or []), *_local_creator_names()]) | {"creator"}
         alternatives = "|".join(re.escape(name) for name in sorted(names))
         self._creator_action = re.compile(
             rf"(?:^|[;:!?\.\n]|\s[-–—]\s)\s*(?:{alternatives})"

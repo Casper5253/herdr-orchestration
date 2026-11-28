@@ -3,7 +3,7 @@
   "harness": "evals/skills/run.py",
   "model": "opencode-go/deepseek-v4.1-flash",
   "repeat": 3,
-  "before": "C:\\Users\\caspe\\.claude\\skills\\poteto-mode\\SKILL.md",
+  "before": "C:\\Users\\<user>\\.claude\\skills\\poteto-mode\\SKILL.md",
   "after": "evals\\skills\\fixtures\\poteto-mode-broken.md",
   "results": [
     {
