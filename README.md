@@ -43,13 +43,13 @@ Workers run their final full check through `hx check` from the repo or worktree 
 
     hx check -- npm run check
 
-It refuses tracked changes, runs the command, and writes `.hx/receipts/<commit>-<slug>.json` with the repo, HEAD commit and tree, command, start and end, duration, exit code and the last 40 output lines. It exits with the command's code. Report the receipt path with the result.
+It runs the command on a clean or dirty tree and writes `.hx/receipts/<tree>-<slug>.json` with the repo, the exact git tree, the base HEAD commit, command, start and end, duration, exit code and the last 40 output lines. For a clean tree the tree is HEAD's and the file is named by the commit. For a dirty tree the tree includes tracked changes and untracked files that are not ignored. It is built through a temporary index, so the real index, working files and HEAD stay untouched, and the file is named by the tree. It exits with the command's code. Report the receipt path with the result.
 
 The lead verifies the receipt instead of rerunning a check a worker already ran on the same code:
 
     hx check verify HEAD --command 'npm run check'
 
-`verify` exits 0 only for a passing receipt for that exact commit and command. A rerun of the same commit and command replaces its receipt atomically; a failed run stays visible and fails verification.
+`verify` exits 0 only for a passing receipt whose tree equals that commit's tree and whose command matches. A commit with a different tree fails and says the trees differ. A rerun of the same tree and command replaces its receipt atomically; a failed run stays visible and fails verification.
 
 ## Context boundaries
 

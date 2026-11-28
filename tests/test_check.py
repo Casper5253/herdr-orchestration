@@ -1,4 +1,7 @@
-"""Q-843: hx check leaves and verifies receipts tied to exact code."""
+"""Q-843: hx check leaves and verifies receipts tied to exact code.
+
+Q-1206: a dirty run names the working tree, and verification matches the tree.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +24,9 @@ def repo(tmp_path):
     git(root, "init", "-q")
     git(root, "config", "user.email", "test@example.com")
     git(root, "config", "user.name", "Test")
+    (root / ".gitignore").write_text(".hx/\n", encoding="utf-8")
     (root / "a.txt").write_text("one\n", encoding="utf-8")
-    git(root, "add", "a.txt")
+    git(root, "add", ".gitignore", "a.txt")
     git(root, "commit", "-q", "-m", "first")
     return root
 
@@ -39,16 +43,70 @@ def tree(root):
     return git(root, "rev-parse", "HEAD^{tree}").stdout.strip()
 
 
-def test_dirty_tracked_tree_is_refused(tmp_path, capsys):
+def test_dirty_tree_receipt_verifies_after_committing_exact_files(tmp_path):
     root = repo(tmp_path)
+    original = head(root)
+    command = [sys.executable, "-c", "print('dirty receipt')"]
     (root / "a.txt").write_text("changed\n", encoding="utf-8")
+    (root / "new.txt").write_text("new\n", encoding="utf-8")
 
-    code = check.run([sys.executable, "-c", "raise SystemExit(9)"], cwd=root)
+    assert check.run(command, cwd=root) == 0
 
-    assert code != 0
-    assert code != 9
-    assert "tracked changes" in capsys.readouterr().err
-    assert receipts(root) == []
+    files = receipts(root)
+    assert len(files) == 1
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert data["dirty"] is True
+    assert data["commit"] == original
+    assert data["base_commit"] == original
+    assert data["tree"] != tree(root)
+    assert files[0].name.startswith(data["tree"])
+
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "dirty state")
+    assert check.verify("HEAD", " ".join(command), cwd=root) == 0
+
+
+def test_a_subset_commit_does_not_verify_and_says_the_trees_differ(tmp_path, capsys):
+    root = repo(tmp_path)
+    command = [sys.executable, "-c", "print('dirty receipt')"]
+    (root / "a.txt").write_text("changed\n", encoding="utf-8")
+    (root / "new.txt").write_text("new\n", encoding="utf-8")
+    assert check.run(command, cwd=root) == 0
+
+    git(root, "add", "a.txt")
+    git(root, "commit", "-q", "-m", "subset")
+    capsys.readouterr()
+    assert check.verify("HEAD", " ".join(command), cwd=root) == 1
+    assert "trees differ" in capsys.readouterr().err
+
+
+def test_an_untracked_file_is_part_of_the_dirty_tree(tmp_path):
+    root = repo(tmp_path)
+    command = [sys.executable, "-c", "print('new file')"]
+    (root / "new.txt").write_text("new\n", encoding="utf-8")
+
+    assert check.run(command, cwd=root) == 0
+
+    data = json.loads(receipts(root)[0].read_text(encoding="utf-8"))
+    assert data["dirty"] is True
+    assert data["tree"] != tree(root)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "new file")
+    assert check.verify("HEAD", " ".join(command), cwd=root) == 0
+
+
+def test_a_dirty_run_leaves_the_real_index_unchanged(tmp_path):
+    root = repo(tmp_path)
+    command = [sys.executable, "-c", "print('dirty receipt')"]
+    (root / "a.txt").write_text("changed\n", encoding="utf-8")
+    (root / "new.txt").write_text("new\n", encoding="utf-8")
+    assert git(root, "diff", "--cached").stdout == ""
+
+    assert check.run(command, cwd=root) == 0
+
+    assert git(root, "diff", "--cached").stdout == ""
+    assert "a.txt" in git(root, "status", "--porcelain").stdout
+    assert "new.txt" in git(root, "status", "--porcelain").stdout
 
 
 def test_receipt_fields_and_exit_code_passthrough(tmp_path):
@@ -61,7 +119,9 @@ def test_receipt_fields_and_exit_code_passthrough(tmp_path):
     data = json.loads(files[0].read_text(encoding="utf-8"))
     assert data["repo"] == str(root.resolve())
     assert data["commit"] == head(root)
+    assert data["base_commit"] == head(root)
     assert data["tree"] == tree(root)
+    assert data["dirty"] is False
     assert data["command"] == passing
     assert data["command_text"] == " ".join(passing)
     assert data["started_at"]
@@ -161,6 +221,8 @@ def test_windows_command_shim_is_resolved(tmp_path, monkeypatch):
     root = repo(tmp_path)
     shim = root / "tool.cmd"
     shim.write_text("@echo off\r\necho shim-ok\r\n", encoding="ascii")
+    git(root, "add", "tool.cmd")
+    git(root, "commit", "-q", "-m", "shim")
     monkeypatch.setenv("PATH", str(root) + os.pathsep + os.environ.get("PATH", ""))
 
     assert check.run(["tool"], cwd=root) == 0
