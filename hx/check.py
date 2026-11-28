@@ -3,11 +3,11 @@
 A receipt is one JSON file under the repo's ``.hx/receipts``. It names the
 repo, the code's git tree, the base HEAD commit, the command, its start and
 end, its exit code and the last 40 output lines. For a dirty tree the tree is
-computed from the working files, including untracked files that are not
-ignored, through a temporary index. The real index, working files and HEAD are
-untouched, and the receipt file is named by its tree. A rerun for the same tree
-and command replaces its receipt atomically, so a retry converges on the
-latest result.
+computed through a temporary index. Untracked Git-ignored files and untracked
+state under .hx/ (except briefs) and .artifacts/ are excluded. The real index, working files
+and HEAD are untouched, and the receipt file is named by its tree. A rerun
+for the same tree and command replaces its receipt atomically, so a retry
+converges on the latest result.
 """
 
 from __future__ import annotations
@@ -31,17 +31,22 @@ from hx import spawn
 TAIL_LINES = 40
 RECEIPT_VERSION = 2
 _RECEIPT_DIR = Path(".hx") / "receipts"
+_UNTRACKED_STATE_EXCLUDES = (":(exclude,top,literal).hx",
+                             ":(exclude,top,literal).artifacts")
+_BRIEFS = ":(top,literal).hx/briefs"
 
 
 class CheckError(RuntimeError):
     pass
 
 
-def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
+def _git(cwd: Path, *args: str, env: dict[str, str] | None = None,
+         input: str | None = None) -> str:
     try:
         completed = spawn.run(
             ["git", *args], cwd=str(cwd), capture_output=True, text=True,
             encoding="utf-8", errors="replace", check=False, env=env,
+            input=input,
         )
     except OSError as exc:
         raise CheckError(f"git is not available: {exc}") from exc
@@ -58,8 +63,11 @@ def repo_root(cwd: Path | None = None) -> Path:
 
 
 def worktree_status(root: Path) -> str:
-    """Porcelain lines for tracked and untracked changes; ignored files do not count."""
-    return _git(root, "status", "--porcelain", "--untracked-files=normal")
+    """Return evidence of tracked changes or eligible untracked files."""
+    return _git(root, "status", "--porcelain", "--untracked-files=no") or _git(
+        root, "ls-files", "--others", "--exclude-standard", "--directory",
+        "--", ".", *_UNTRACKED_STATE_EXCLUDES,
+    ) or _git(root, "ls-files", "--others", "--exclude-standard", "--", _BRIEFS)
 
 
 def working_tree(root: Path) -> str:
@@ -73,7 +81,15 @@ def working_tree(root: Path) -> str:
             shutil.copyfile(real_index, temp_index)
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = str(temp_index)
-        _git(root, "add", "-A", env=env)
+        _git(root, "add", "-u", env=env)
+        untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z",
+                         "--", ".", *_UNTRACKED_STATE_EXCLUDES)
+        untracked += _git(root, "ls-files", "--others", "--exclude-standard", "-z",
+                          "--", _BRIEFS)
+        paths = [path for path in untracked.split(chr(0)) if path]
+        if paths:
+            _git(root, "add", "--pathspec-from-file=-", "--pathspec-file-nul",
+                 env=env, input=chr(0).join(paths))
         return _git(root, "write-tree", env=env)
 
 

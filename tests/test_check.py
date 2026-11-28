@@ -18,13 +18,13 @@ def git(root, *args):
         ["git", *args], cwd=root, check=True, text=True, capture_output=True)
 
 
-def repo(tmp_path):
+def repo(tmp_path, *, ignore_hx=True):
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q")
     git(root, "config", "user.email", "test@example.com")
     git(root, "config", "user.name", "Test")
-    (root / ".gitignore").write_text(".hx/\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".hx/\n" if ignore_hx else "", encoding="utf-8")
     (root / "a.txt").write_text("one\n", encoding="utf-8")
     git(root, "add", ".gitignore", "a.txt")
     git(root, "commit", "-q", "-m", "first")
@@ -41,6 +41,64 @@ def head(root):
 
 def tree(root):
     return git(root, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+
+def write_untracked_state(root):
+    for name in (".hx/outbox/x.json", ".hx/receipts/y.json", ".hx/afk-test.tsv",
+                 ".artifacts/scratch.txt"):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+
+
+def test_untracked_state_does_not_make_a_clean_checkout_dirty(tmp_path):
+    root = repo(tmp_path, ignore_hx=False)
+    write_untracked_state(root)
+    command = [sys.executable, "-c", "print('clean receipt')"]
+
+    assert check.run(command, cwd=root) == 0
+
+    path = check.receipt_path(root, head(root), command)
+    assert path.is_file(), "untracked state caused a dirty receipt"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["dirty"] is False
+    assert data["tree"] == tree(root)
+
+
+def test_dirty_tree_receipt_verifies_after_committing_code_only(tmp_path):
+    root = repo(tmp_path, ignore_hx=False)
+    write_untracked_state(root)
+    (root / "a.txt").write_text("changed\n", encoding="utf-8")
+    (root / "new.txt").write_text("new\n", encoding="utf-8")
+    command = [sys.executable, "-c", "print('code-only receipt')"]
+
+    assert check.run(command, cwd=root) == 0
+
+    git(root, "add", "a.txt", "new.txt")
+    git(root, "commit", "-q", "-m", "code only")
+    path = check.receipt_path(root, tree(root), command)
+    assert check.verify("HEAD", " ".join(command), cwd=root) == 0
+    assert json.loads(path.read_text(encoding="utf-8"))["dirty"] is True
+
+
+def test_dirty_tree_receipt_includes_changed_tracked_brief(tmp_path):
+    root = repo(tmp_path, ignore_hx=False)
+    brief = root / ".hx" / "briefs" / "a.md"
+    brief.parent.mkdir(parents=True)
+    brief.write_text("original\n", encoding="utf-8")
+    git(root, "add", ".hx/briefs/a.md")
+    git(root, "commit", "-q", "-m", "add brief")
+    brief.write_text("changed\n", encoding="utf-8")
+    write_untracked_state(root)
+    command = [sys.executable, "-c", "print('tracked brief receipt')"]
+
+    assert check.run(command, cwd=root) == 0
+
+    git(root, "add", ".hx/briefs/a.md")
+    git(root, "commit", "-q", "-m", "change brief")
+    path = check.receipt_path(root, tree(root), command)
+    assert check.verify("HEAD", " ".join(command), cwd=root) == 0
+    assert json.loads(path.read_text(encoding="utf-8"))["dirty"] is True
 
 
 def test_dirty_tree_receipt_verifies_after_committing_exact_files(tmp_path):
@@ -231,3 +289,19 @@ def test_windows_command_shim_is_resolved(tmp_path, monkeypatch):
     assert data["command"] == ["tool"]
     assert "shim-ok" in data["output_tail"]
     assert check.verify("HEAD", "tool", cwd=root) == 0
+
+
+def test_untracked_brief_counts_so_committing_it_with_the_code_verifies(tmp_path):
+    root = repo(tmp_path, ignore_hx=False)
+    write_untracked_state(root)
+    brief = root / ".hx" / "briefs" / "Q-1.md"
+    brief.parent.mkdir(parents=True, exist_ok=True)
+    brief.write_text("brief\n", encoding="utf-8")
+    (root / "a.txt").write_text("changed\n", encoding="utf-8")
+    command = [sys.executable, "-c", "print('brief receipt')"]
+
+    assert check.run(command, cwd=root) == 0
+    git(root, "add", "a.txt", ".hx/briefs/Q-1.md")
+    git(root, "commit", "-q", "-m", "code and brief")
+
+    assert check.verify("HEAD", " ".join(command), cwd=root) == 0
