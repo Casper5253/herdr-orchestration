@@ -1,10 +1,10 @@
-"""hx.test_quality: the shared test quality gate (Q-1189).
+"""hx.test_quality: the shared test quality gate (Q-1189, Q-1190).
 
-Scans the pytest files of the repo it runs in. Fails on a test with no
-assertion, only truthiness or not-None assertions, or a patch of the module
-the test file is named after. Exceptions live in
-``test-quality-allowlist.json`` with a required reason; a stale entry
-fails the check.
+Scans the pytest and JavaScript/TypeScript test files of the repo it runs in.
+Fails on a test with no assertion, only truthiness or not-None assertions, or
+a patch of the module the test file is named after. Exceptions live in
+``test-quality-allowlist.json`` with a required reason; a stale entry fails
+the check.
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,7 +37,8 @@ PYTEST_RAISES = {
     "warns",
     "deprecated_call",
 }
-SKIP_DIRS = {"__pycache__", ".git", ".venv", "node_modules", ".artifacts"}
+SKIP_DIRS = {"__pycache__", ".git", ".venv", "node_modules", ".artifacts", "dist", "coverage", "playwright-report", "test-results", ".hx"}
+JS_SUFFIXES = (".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx", ".test.mjs", ".test.js", ".spec.mjs", ".spec.js")
 
 
 def _as_list(value: Any) -> list[str]:
@@ -85,11 +89,57 @@ def test_files(root: Path) -> list[str]:
         candidate = (root / entry).resolve()
         if candidate.is_dir():
             for path in list(candidate.rglob("test_*.py")) + list(candidate.rglob("*_test.py")):
-                if not _skip(path):
+                if not _skip(path.relative_to(root)):
                     found.add(path.relative_to(root).as_posix())
         elif candidate.is_file() and candidate.name.endswith(".py"):
             found.add(candidate.relative_to(root).as_posix())
     return sorted(found)
+
+
+def has_js_tests(root: Path) -> bool:
+    for _dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+        for name in filenames:
+            if name.endswith(JS_SUFFIXES):
+                return True
+    return False
+
+
+def run_js(root: Path) -> dict[str, Any]:
+    scanner = Path(__file__).with_name("test_quality_js.mjs")
+    node = shutil.which("node")
+    if node is None:
+        return {
+            "files": 0,
+            "tests": [],
+            "problems": [
+                "node is not available but this repo has JS or TS tests; install Node or remove the JS tests"
+            ],
+        }
+    try:
+        completed = subprocess.run(
+            [node, str(scanner), str(root)],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"files": 0, "tests": [], "problems": [f"test quality JS scan failed: {exc}"]}
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        return {"files": 0, "tests": [], "problems": [f"test quality JS scan failed: {detail}"]}
+    try:
+        data = json.loads(completed.stdout)
+    except ValueError as exc:
+        return {"files": 0, "tests": [], "problems": [f"test quality JS scan returned invalid JSON: {exc}"]}
+    if not isinstance(data, dict):
+        return {"files": 0, "tests": [], "problems": ["test quality JS scan returned an unexpected shape"]}
+    tests = data.get("tests") if isinstance(data.get("tests"), list) else []
+    problems = data.get("problems") if isinstance(data.get("problems"), list) else []
+    files = data.get("files") if isinstance(data.get("files"), int) else 0
+    return {"files": files, "tests": tests, "problems": problems}
 
 
 def _call_name(node: ast.AST) -> str:
@@ -250,16 +300,21 @@ def analyze_source(file: str, text: str) -> list[dict[str, Any]]:
     return tests
 
 
-def load_allowlist(root: Path) -> tuple[list[dict[str, str]], list[str]]:
-    path = root / ALLOWLIST
-    if not path.is_file():
+def load_allowlist(
+    root: Path, path: str | Path | None = None
+) -> tuple[list[dict[str, str]], list[str]]:
+    allow_path = Path(path) if path is not None else root / ALLOWLIST
+    if not allow_path.is_absolute():
+        allow_path = root / allow_path
+    if not allow_path.is_file():
         return [], []
+    label = allow_path.as_posix()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(allow_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return [], [f"{ALLOWLIST}: {exc}"]
+        return [], [f"{label}: {exc}"]
     if not isinstance(raw, list):
-        return [], [f"{ALLOWLIST}: must hold a JSON array"]
+        return [], [f"{label}: must hold a JSON array"]
     entries: list[dict[str, str]] = []
     problems: list[str] = []
     for entry in raw:
@@ -268,7 +323,7 @@ def load_allowlist(root: Path) -> tuple[list[dict[str, str]], list[str]]:
             or not isinstance(entry.get("file"), str)
             or not isinstance(entry.get("test"), str)
         ):
-            problems.append(f"{ALLOWLIST}: an entry needs a file and a test name")
+            problems.append(f"{label}: an entry needs a file and a test name")
             continue
         reason = entry.get("reason")
         if not isinstance(reason, str) or not reason.strip():
@@ -289,6 +344,7 @@ def check(
     files: list[str] | None = None,
     allowlist: list[dict[str, str]] | None = None,
     stale_scope: str = "all",
+    include_js: bool | None = None,
 ) -> dict[str, Any]:
     selected = test_files(root) if files is None else [file.replace("\\", "/") for file in files]
     allowlist = allowlist or []
@@ -300,8 +356,16 @@ def check(
             tests.extend(analyze_source(file, text))
         except (OSError, SyntaxError) as exc:
             scan_problems.append(f"{file}: {exc}")
+    js_files = 0
+    if include_js is None:
+        include_js = files is None
+    if include_js and has_js_tests(root):
+        js_result = run_js(root)
+        tests.extend(js_result["tests"])
+        js_files = js_result["files"]
+        scan_problems.extend(js_result["problems"])
     live = {f'{test["file"]}\0{test["name"]}' for test in tests}
-    scanned = set(selected)
+    scanned = {test["file"] for test in tests}
     allowed: set[str] = set()
     stale: list[dict[str, str]] = []
     for entry in allowlist:
@@ -318,7 +382,7 @@ def check(
         if test["rules"] and f'{test["file"]}\0{test["name"]}' not in allowed
     ]
     return {
-        "files": len(selected),
+        "files": len(selected) + js_files,
         "tests": len(tests),
         "failures": failures,
         "stale": stale,
@@ -330,11 +394,12 @@ def check(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="hx test-quality",
-        description="Shared test quality gate for the pytest files of this repo.",
+        description="Shared test quality gate for the pytest and JS/TS test files of this repo.",
     )
-    parser.parse_args(argv)
+    parser.add_argument("--allowlist", help="allowlist path, relative to the repo root")
+    args = parser.parse_args(argv)
     root = paths.project_root()
-    entries, problems = load_allowlist(root)
+    entries, problems = load_allowlist(root, args.allowlist)
     result = check(root, allowlist=entries)
     problems = list(problems) + list(result["problems"])
     for entry in result["stale"]:

@@ -1,5 +1,6 @@
 """The shared pytest test quality gate (Q-1189)."""
 
+import json
 from pathlib import Path
 
 from hx import test_quality
@@ -160,3 +161,96 @@ def test_a_typical_empty_agent_test_is_rejected(tmp_path: Path) -> None:
     )
     records = failures(tmp_path)
     assert [record["rules"] for record in records] == [["truthiness-only"]]
+
+
+def js_failures(root: Path) -> list[dict]:
+    return test_quality.check(root)["failures"]
+
+
+def write_js_package(root: Path, name: str = "sample.test.mjs") -> None:
+    write_test(
+        root,
+        "package.json",
+        json.dumps({"scripts": {"test": f"node --test {name}"}}),
+    )
+
+
+def test_js_no_assertion_is_flagged(tmp_path: Path) -> None:
+    write_js_package(tmp_path)
+    write_test(
+        tmp_path,
+        "sample.test.mjs",
+        "import test from 'node:test';\ntest('does nothing', () => { doThing(); });\n",
+    )
+    assert [failure["rules"] for failure in js_failures(tmp_path)] == [["no-assertion"]]
+
+
+def test_js_truthiness_is_flagged(tmp_path: Path) -> None:
+    write_js_package(tmp_path)
+    write_test(
+        tmp_path,
+        "sample.test.mjs",
+        "import test from 'node:test';\ntest('is truthy', () => { expect(value).toBeTruthy(); });\n",
+    )
+    assert [failure["rules"] for failure in js_failures(tmp_path)] == [["truthiness-only"]]
+
+
+def test_js_concrete_comparison_passes(tmp_path: Path) -> None:
+    write_js_package(tmp_path)
+    write_test(
+        tmp_path,
+        "sample.test.mjs",
+        "import test from 'node:test';\ntest('is exact', () => { expect(value).toBe(3); });\n",
+    )
+    assert js_failures(tmp_path) == []
+
+
+def test_js_mocking_the_subject_is_flagged(tmp_path: Path) -> None:
+    write_js_package(tmp_path)
+    write_test(
+        tmp_path,
+        "sample.test.mjs",
+        "import { vi } from 'vitest';\nvi.mock('./sample.js');\ntest('mocks itself', () => { expect(value).toBe(1); });\n",
+    )
+    assert [failure["rules"] for failure in js_failures(tmp_path)] == [["patches-subject"]]
+
+
+def test_ts_fixture_covers_each_rule(tmp_path: Path) -> None:
+    write_test(
+        tmp_path,
+        "vitest.config.ts",
+        "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    )
+    (tmp_path / "src").mkdir()
+    write_test(
+        tmp_path,
+        "src/mocked.test.ts",
+        "import { expect, it, vi } from 'vitest';\nvi.mock('./mocked.js');\nit('mocks itself', () => { expect(value).toBe(1); });\n",
+    )
+    write_test(
+        tmp_path,
+        "src/sample.test.ts",
+        "import { expect, it } from 'vitest';\nit('is truthy', () => { expect(value).toBeTruthy(); });\nit('does nothing', () => { doThing(); });\n",
+    )
+    assert [
+        (failure["file"], failure["name"], failure["rules"])
+        for failure in js_failures(tmp_path)
+    ] == [
+        ("src/mocked.test.ts", "mocks itself", ["patches-subject"]),
+        ("src/sample.test.ts", "is truthy", ["truthiness-only"]),
+        ("src/sample.test.ts", "does nothing", ["no-assertion"]),
+    ]
+
+
+def test_node_missing_fails_clearly(tmp_path: Path, monkeypatch) -> None:
+    write_js_package(tmp_path)
+    write_test(
+        tmp_path,
+        "sample.test.mjs",
+        "import test from 'node:test';\ntest('is exact', () => { expect(value).toBe(3); });\n",
+    )
+    monkeypatch.setattr(test_quality.shutil, "which", lambda _name: None)
+    result = test_quality.check(tmp_path)
+    assert result["failures"] == []
+    assert len(result["problems"]) == 1
+    assert "node is not available" in result["problems"][0]
