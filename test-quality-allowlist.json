@@ -1,0 +1,257 @@
+[
+  {
+    "file": "tests/test_admission.py",
+    "test": "test_checkout_brief_finding_for_devin",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_admission.py",
+    "test": "test_codex_profile_bounds_writes",
+    "reason": "The not-None guard is followed by a concrete writes_outside_cwd False flag; the flag is the contract"
+  },
+  {
+    "file": "tests/test_admission.py",
+    "test": "test_codex_refuses_write_outside_workspace",
+    "reason": "The any() check asserts an outside-cwd finding; the generator expression is the contract"
+  },
+  {
+    "file": "tests/test_admission.py",
+    "test": "test_devin_denied_path_rules",
+    "reason": "The any() check asserts the ssh rule; the generator expression is the contract"
+  },
+  {
+    "file": "tests/test_admission.py",
+    "test": "test_research_refuses_even_inside_cwd_writes",
+    "reason": "The any() checks assert the refused write findings; the generator expressions are the contract"
+  },
+  {
+    "file": "tests/test_brief_refs.py",
+    "test": "test_a_message_without_a_brief_pointer_is_ignored",
+    "reason": "The validator has no return value; the test fails if it raises"
+  },
+  {
+    "file": "tests/test_brief_refs.py",
+    "test": "test_a_unique_item_is_allowed",
+    "reason": "The validator has no return value; the test fails if it raises"
+  },
+  {
+    "file": "tests/test_brief_refs.py",
+    "test": "test_two_items_on_one_line_are_allowed",
+    "reason": "The validator has no return value; the test fails if it raises"
+  },
+  {
+    "file": "tests/test_checkpoint.py",
+    "test": "test_validate_empty_agent_sections_fail",
+    "reason": "The any() checks name the validation errors; the boolean ok flag is the contract"
+  },
+  {
+    "file": "tests/test_checkpoint.py",
+    "test": "test_validate_git_mismatch",
+    "reason": "The any() checks name the validation errors; the boolean ok flag is the contract"
+  },
+  {
+    "file": "tests/test_checkpoint.py",
+    "test": "test_validate_missing_next_action",
+    "reason": "The any() check names the required Next action error; the boolean ok flag is the contract"
+  },
+  {
+    "file": "tests/test_checkpoint.py",
+    "test": "test_validate_rev_mismatch_fails",
+    "reason": "The any() checks name the validation errors; the boolean ok flag is the contract"
+  },
+  {
+    "file": "tests/test_context.py",
+    "test": "test_acknowledgement_survives_tui_hard_wrapping",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_context.py",
+    "test": "test_compact_steps_route_through_hx_compact_only",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_context.py",
+    "test": "test_multiline_acknowledgement_matches_parsed_text",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_devin.py",
+    "test": "test_acquire_slot_breaks_stale_lock",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_doctor.py",
+    "test": "test_ready_reproduces_the_lead_terminal_output",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_doctor.py",
+    "test": "test_ready_verdict_names_the_missing_pieces",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_git_isolation.py",
+    "test": "test_each_run_has_its_own_basetemp",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_host_contract.py",
+    "test": "test_unknown_status_is_never_available",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_jotarium_audit.py",
+    "test": "test_a_cancelled_newest_child_does_not_hide_an_older_live_one",
+    "reason": "Only asserts audit ok is True; the named cancelled-child behavior is not asserted"
+  },
+  {
+    "file": "tests/test_jotarium_audit.py",
+    "test": "test_the_audit_finds_a_new_child_past_the_first_page_of_a_large_parent",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_ledger.py",
+    "test": "test_status_done_removes_lease",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_ocrun.py",
+    "test": "test_completed_read_mentioning_rejection_is_not_a_permission_failure",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_ocrun.py",
+    "test": "test_run_quietly_keeps_going_when_routing_log_unwritable",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_ocrun_codex.py",
+    "test": "test_codex_warnings_are_not_failures",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_ocrun_reporting.py",
+    "test": "test_prohibiting_live_reports_is_allowed",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_ocrun_reporting.py",
+    "test": "test_report_spellings_are_refused",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_opencode_overlay.py",
+    "test": "test_every_home_rule_matches_a_concrete_target",
+    "reason": "Every home rule must match its target; the loop asserts each one"
+  },
+  {
+    "file": "tests/test_opencode_overlay.py",
+    "test": "test_worker_reads_team_folders_without_a_prompt",
+    "reason": "The missing list must be empty; an empty list is the contract"
+  },
+  {
+    "file": "tests/test_paths.py",
+    "test": "test_package_root_holds_policy_json",
+    "reason": "The policy file must exist; the file check is the contract"
+  },
+  {
+    "file": "tests/test_profile.py",
+    "test": "test_research_refuses_a_write_path",
+    "reason": "The any() check asserts an outside-cwd finding; the generator expression is the contract"
+  },
+  {
+    "file": "tests/test_q346_recheck2.py",
+    "test": "test_task_release_does_not_open_admission_during_compaction",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_route.py",
+    "test": "test_module_main_block_runs",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say.py",
+    "test": "test_a_report_after_the_brief_closes_the_exchange",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say.py",
+    "test": "test_a_report_before_the_latest_brief_does_not_close_it",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say.py",
+    "test": "test_a_worker_brief_with_no_report_has_no_report_since_it",
+    "reason": "The function returns a boolean; False is the contract"
+  },
+  {
+    "file": "tests/test_say.py",
+    "test": "test_delivery_time_not_creation_time_decides_latest_brief",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say.py",
+    "test": "test_no_brief_means_nothing_to_expect",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say.py",
+    "test": "test_unconfirmed_report_does_not_suppress_blocked_warning",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_pace_hold.py",
+    "test": "test_brief_to_pool_on_pace_is_sent",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_pace_hold.py",
+    "test": "test_plain_message_is_never_held",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_pace_hold.py",
+    "test": "test_policy_can_turn_the_hold_off",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_pace_hold.py",
+    "test": "test_posix_pointer_is_a_brief_too",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_pace_hold.py",
+    "test": "test_unknown_usage_fails_open",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_receipts.py",
+    "test": "test_devin_queue_holds_only_the_sent_text",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_say_receipts.py",
+    "test": "test_opencode_rotating_placeholder_is_an_empty_composer",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_step.py",
+    "test": "test_a_report_before_any_test_closes_the_window",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_step.py",
+    "test": "test_exit_codes_come_from_the_transcript",
+    "reason": "The any() checks assert the exit trailers in the harvested steps; the generator expressions are the contract"
+  },
+  {
+    "file": "tests/test_step.py",
+    "test": "test_untracked_steps_do_not_break_validation",
+    "reason": "Existing test when the gate started (Q-1189); not reviewed by hand"
+  },
+  {
+    "file": "tests/test_usage.py",
+    "test": "test_agents_usage_blocked",
+    "reason": "The use case is a blocked agent; available False is the contract"
+  }
+]

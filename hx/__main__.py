@@ -8,7 +8,7 @@ import json
 import sys
 
 from hx import __version__
-from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, muse, next as next_mod, ocrun, pace, profile, reconcile, review, route, runtime, say, task_index, team_stalls, team_watch, usage
+from hx import balance, boundary, check, checkpoint, context, doctor, handoff, jotarium, ledger, muse, next as next_mod, ocrun, pace, profile, reconcile, review, route, runtime, say, task_index, team_stalls, team_watch, test_quality, usage
 
 
 def _add_usage_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -211,6 +211,14 @@ def _add_activate_parser(subparsers: argparse._SubParsersAction) -> None:
     activate.set_defaults(func=_activate)
 
 
+def _add_test_quality_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "test-quality",
+        help="Shared test quality gate for the pytest files of this repo.",
+    )
+    parser.set_defaults(func=lambda _args: test_quality.main([]))
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hx",
@@ -227,6 +235,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_jotarium_parser(subparsers)
     _add_checkpoint_parser(subparsers)
     _add_step_parser(subparsers)
+    _add_test_quality_parser(subparsers)
     boundary = subparsers.add_parser("boundary", help="Record a context decision without executing compaction. `hx boundary check|gen` handles the worker boundary manifest.")
     boundary.add_argument("agent")
     boundary.add_argument("--task")
@@ -512,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"hx: {exc}", file=sys.stderr)
             return 1
-    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile", "check", "next", "muse"}:
+    if args_list and args_list[0] in {"route", "ocrun", "doctor", "handoff", "review", "profile", "check", "next", "muse", "test-quality"}:
         handler = {
             "route": route.main,
             "ocrun": ocrun.main,
@@ -523,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             "check": check.main,
             "next": next_mod.main,
             "muse": muse.main,
+            "test-quality": test_quality.main,
         }[args_list[0]]
         try:
             return int(handler(args_list[1:]) or 0)
